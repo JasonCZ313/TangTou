@@ -1,3 +1,4 @@
+import { applyLocalHeuristics } from '../shared/llm/localHeuristics';
 import { buildFillPrompt } from '../shared/llm/prompt';
 import {
   ensureHostPermission,
@@ -6,8 +7,12 @@ import {
 } from '../shared/llm/openaiCompatible';
 import { listProfiles, getProfile } from '../shared/storage/profileStore';
 import { getSettings } from '../shared/storage/settingsStore';
+import type { FillPlan } from '../shared/types/fill';
 import type { ExtensionMessage } from '../shared/types/messages';
 import { sendToActiveTab } from '../shared/messaging/send';
+
+/** 无 API Key 仅用启发式填写时的用户提示文案 */
+const HEURISTICS_ONLY_TIP = '未配置 API，仅填写高置信基础字段';
 
 /**
  * 将未知错误归一化为可展示的 code + message（绝不包含 apiKey）。
@@ -135,19 +140,78 @@ async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
 }
 
 /**
- * 处理 BUILD_FILL_PLAN：读取档案、构造 prompt、仅在 background 用 apiKey 调 LLM。
+ * 合并本地启发式 items 与 LLM 计划：items 拼接，skipped 仅保留 LLM 侧结果。
+ */
+function mergeHeuristicAndLlmPlan(
+  heuristicPlan: FillPlan,
+  llmPlan: FillPlan,
+): FillPlan {
+  return {
+    items: [...heuristicPlan.items, ...llmPlan.items],
+    skippedFieldIds: llmPlan.skippedFieldIds,
+  };
+}
+
+/**
+ * 处理 BUILD_FILL_PLAN：先跑本地启发式，仅将剩余字段送 LLM；无 Key 时按 Step 2 降级。
  * 失败返回 ERROR；成功返回 FILL_PLAN_RESULT。绝不向 content 转发 apiKey。
  */
 async function handleBuildFillPlan(
   message: Extract<ExtensionMessage, { type: 'BUILD_FILL_PLAN' }>,
 ): Promise<ExtensionMessage> {
-  const settings = await getSettings();
-  if (!settings.apiBaseUrl.trim() || !settings.apiKey.trim()) {
+  const profile = await getProfile(message.profileId);
+  if (!profile) {
     return {
       type: 'ERROR',
       requestId: message.requestId,
-      code: 'API_NOT_CONFIGURED',
-      message: '请先在设置中配置 API Base URL 与 API Key',
+      code: 'PROFILE_NOT_FOUND',
+      message: '未找到所选档案',
+    };
+  }
+
+  // 先本地高置信映射，降低 Token；未命中字段再考虑调模型
+  const { partialPlan, remainingFields } = applyLocalHeuristics(
+    profile.data,
+    message.fields,
+  );
+
+  const settings = await getSettings();
+  const hasApiConfigured =
+    settings.apiBaseUrl.trim().length > 0 && settings.apiKey.trim().length > 0;
+
+  // Step 2：无 Key 时——仅启发式能覆盖全部字段则返回部分计划；仍有剩余则报错要求配置
+  if (!hasApiConfigured) {
+    if (remainingFields.length > 0) {
+      return {
+        type: 'ERROR',
+        requestId: message.requestId,
+        code: 'API_NOT_CONFIGURED',
+        message: '请先在设置中配置 API Base URL 与 API Key',
+      };
+    }
+    // 无剩余字段：允许只应用启发式；在 reason 中附带提示文案供 UI 展示
+    const tippedItems = partialPlan.items.map((item) => ({
+      ...item,
+      reason: item.reason
+        ? `${item.reason}；${HEURISTICS_ONLY_TIP}`
+        : HEURISTICS_ONLY_TIP,
+    }));
+    return {
+      type: 'FILL_PLAN_RESULT',
+      requestId: message.requestId,
+      plan: {
+        items: tippedItems,
+        skippedFieldIds: [],
+      },
+    };
+  }
+
+  // 启发式已覆盖全部字段，无需调 LLM
+  if (remainingFields.length === 0) {
+    return {
+      type: 'FILL_PLAN_RESULT',
+      requestId: message.requestId,
+      plan: partialPlan,
     };
   }
 
@@ -161,18 +225,8 @@ async function handleBuildFillPlan(
     };
   }
 
-  const profile = await getProfile(message.profileId);
-  if (!profile) {
-    return {
-      type: 'ERROR',
-      requestId: message.requestId,
-      code: 'PROFILE_NOT_FOUND',
-      message: '未找到所选档案',
-    };
-  }
-
-  const { system, user } = buildFillPrompt(profile.data, message.fields);
-  const plan = await requestFillPlan({
+  const { system, user } = buildFillPrompt(profile.data, remainingFields);
+  const llmPlan = await requestFillPlan({
     apiBaseUrl: settings.apiBaseUrl,
     apiKey: settings.apiKey,
     model: settings.model,
@@ -183,7 +237,7 @@ async function handleBuildFillPlan(
   return {
     type: 'FILL_PLAN_RESULT',
     requestId: message.requestId,
-    plan,
+    plan: mergeHeuristicAndLlmPlan(partialPlan, llmPlan),
   };
 }
 
