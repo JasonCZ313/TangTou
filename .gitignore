@@ -1,0 +1,141 @@
+# =========================
+# 操作系统 / 编辑器杂项
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+*.swp
+*.swo
+*~
+
+# IDE / 编辑器本地配置（保留可共享的项目级配置）
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+.cursor/
+.history/
+
+# =========================
+# 环境变量与密钥（禁止入库）
+# =========================
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+service-account*.json
+
+# =========================
+# 依赖与构建产物
+# =========================
+node_modules/
+jspm_packages/
+.pnpm-store/
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+bower_components/
+vendor/
+dist/
+build/
+out/
+.next/
+.nuxt/
+.output/
+.turbo/
+.cache/
+.parcel-cache/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Java / JVM
+target/
+*.class
+*.jar
+*.war
+*.ear
+.gradle/
+*.iml
+
+# Go
+bin/
+pkg/
+
+# Rust
+target/
+
+# =========================
+# 日志、临时与本地数据
+# =========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# 本地数据库 / 缓存文件
+*.sqlite
+*.sqlite3
+*.db
+*.pid
+
+# =========================
+# 压缩包与大体积二进制（按需再放开）
+# =========================
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.tgz
+*.dmg
+*.iso
+
+# =========================
+# 媒体与设计源文件（默认忽略大文件；需要版本管理时再显式取消忽略）
+# =========================
+*.psd
+*.ai
+*.sketch
+*.fig
+
+# Superpowers SDD scratch
+.superpowers/
+
