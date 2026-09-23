@@ -29,6 +29,7 @@ export type ExtensionMessage =
       profiles: Profile[];
     }
   | { type: 'OPEN_SIDE_PANEL'; requestId: string }
+  | { type: 'OPEN_SIDE_PANEL_RESULT'; requestId: string; ok: boolean }
   | { type: 'TEST_API'; requestId: string }
   | { type: 'TEST_API_RESULT'; requestId: string; ok: boolean; detail: string }
   | {

@@ -59,9 +59,22 @@ function buildErrorResponse(
 
 /**
  * 处理 GET_STATE：返回 settings（可含 apiKey，仅扩展源 UI）与全部 profiles。
+ * 若消息来自网页标签（content script），拒绝，避免 apiKey 泄露到页面上下文。
  * 禁止在日志中打印 apiKey。
  */
-async function handleGetState(requestId: string): Promise<ExtensionMessage> {
+async function handleGetState(
+  requestId: string,
+  sender: chrome.runtime.MessageSender,
+): Promise<ExtensionMessage> {
+  // sender.tab 有值表示来自 content script / 网页标签，禁止下发密钥
+  if (sender.tab) {
+    return {
+      type: 'ERROR',
+      requestId,
+      code: 'FORBIDDEN',
+      message: '不允许从网页上下文读取密钥',
+    };
+  }
   const [settings, profiles] = await Promise.all([
     getSettings(),
     listProfiles(),
@@ -200,16 +213,11 @@ async function handleOpenSidePanel(
   }
 
   await chrome.sidePanel.open({ tabId });
-  // 协议无专用成功类型；回传 GET_STATE_RESULT 便于调用方顺带刷新 UI
-  const [settings, profiles] = await Promise.all([
-    getSettings(),
-    listProfiles(),
-  ]);
+  // 专用成功 ack，不附带 settings/apiKey
   return {
-    type: 'GET_STATE_RESULT',
+    type: 'OPEN_SIDE_PANEL_RESULT',
     requestId,
-    settings,
-    profiles,
+    ok: true,
   };
 }
 
@@ -232,7 +240,7 @@ async function dispatchMessage(
 ): Promise<ExtensionMessage> {
   switch (message.type) {
     case 'GET_STATE':
-      return handleGetState(message.requestId);
+      return handleGetState(message.requestId, sender);
     case 'TEST_API':
       return handleTestApi(message.requestId);
     case 'BUILD_FILL_PLAN':
