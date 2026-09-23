@@ -3,11 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Resume Autofill Side Panel</title>
+    <title>填写预览 — Resume Autofill</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <main class="sidepanel-page">
+      <header class="sidepanel-header">
+        <h1>填写预览</h1>
+        <p class="sidepanel-subtitle">核对映射后确认写入，或撤销本轮填写</p>
+      </header>
+
+      <section class="sidepanel-section" aria-labelledby="profileHeading">
+        <h2 id="profileHeading" class="section-label">档案</h2>
+        <label class="field-label" for="profileSelect">选用档案</label>
+        <select id="profileSelect" class="profile-select">
+          <option value="">加载中…</option>
+        </select>
+      </section>
+
+      <section class="sidepanel-section mapping-section" aria-labelledby="mappingHeading">
+        <h2 id="mappingHeading" class="section-label">映射表</h2>
+        <div class="table-scroll">
+          <table class="mapping-table" aria-describedby="statusMessage">
+            <thead>
+              <tr>
+                <th scope="col">字段</th>
+                <th scope="col">填写值</th>
+                <th scope="col">置信度</th>
+              </tr>
+            </thead>
+            <tbody id="mappingTableBody">
+              <tr class="empty-row">
+                <td colspan="3">暂无预览计划，请先在 Popup 扫描或点击「重新扫描」</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="skippedSummary" class="skipped-summary" hidden></p>
+      </section>
+
+      <section class="sidepanel-actions" aria-label="预览操作">
+        <button type="button" id="confirmButton" class="btn btn-primary">
+          确认写入
+        </button>
+        <button type="button" id="undoButton" class="btn btn-ghost">
+          撤销本轮
+        </button>
+        <button type="button" id="rescanButton" class="btn btn-secondary">
+          重新扫描
+        </button>
+      </section>
+
+      <p
+        id="statusMessage"
+        class="status-message"
+        role="status"
+        aria-live="polite"
+      ></p>
+    </main>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
