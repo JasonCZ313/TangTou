@@ -3,11 +3,294 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Resume Autofill Options</title>
+    <title>Resume Autofill — 设置</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <main class="options-page">
+      <header class="page-header">
+        <h1>Resume Autofill 设置</h1>
+        <p class="page-subtitle">管理 API、填写模式与本机简历档案（最多 5 份）</p>
+      </header>
+
+      <!-- 全局状态提示：操作成功/失败文案写在这里 -->
+      <p id="statusMessage" class="status-message" role="status" aria-live="polite"></p>
+
+      <!-- 分区 1：OpenAI 兼容 API 配置 -->
+      <section class="panel" id="apiSection" aria-labelledby="apiHeading">
+        <h2 id="apiHeading">API 设置</h2>
+        <form id="apiForm" class="form-grid">
+          <label class="field">
+            <span class="field-label">API Base URL</span>
+            <input
+              id="apiBaseUrlInput"
+              name="apiBaseUrl"
+              type="url"
+              autocomplete="off"
+              placeholder="https://api.openai.com/v1"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">API Key</span>
+            <input
+              id="apiKeyInput"
+              name="apiKey"
+              type="password"
+              autocomplete="off"
+              placeholder="仅保存在本机"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">模型名</span>
+            <input
+              id="modelInput"
+              name="model"
+              type="text"
+              autocomplete="off"
+              placeholder="gpt-4o-mini"
+            />
+          </label>
+          <div class="button-row">
+            <button type="submit" id="saveApiButton" class="btn btn-primary">
+              保存
+            </button>
+            <button type="button" id="testApiButton" class="btn btn-secondary">
+              测试连接
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- 分区 2：填写模式（预览 / 直接） -->
+      <section class="panel" id="fillModeSection" aria-labelledby="fillModeHeading">
+        <h2 id="fillModeHeading">填写模式</h2>
+        <fieldset class="radio-group">
+          <legend class="sr-only">选择填写模式</legend>
+          <label class="radio-option">
+            <input
+              type="radio"
+              name="fillMode"
+              value="preview"
+              id="fillModePreview"
+            />
+            <span>预览后写入（推荐）</span>
+          </label>
+          <label class="radio-option">
+            <input
+              type="radio"
+              name="fillMode"
+              value="direct"
+              id="fillModeDirect"
+            />
+            <span>直接填写</span>
+          </label>
+        </fieldset>
+      </section>
+
+      <!-- 分区 3：档案列表 -->
+      <section class="panel" id="profilesSection" aria-labelledby="profilesHeading">
+        <h2 id="profilesHeading">档案列表</h2>
+        <p class="hint" id="profileCountHint"></p>
+        <ul id="profileList" class="profile-list"></ul>
+        <p id="emptyProfilesHint" class="empty-hint hidden">暂无档案，请在下方新建。</p>
+      </section>
+
+      <!-- 分区 4：新建档案（空白或从已有复制） -->
+      <section class="panel" id="createSection" aria-labelledby="createHeading">
+        <h2 id="createHeading">新建档案</h2>
+        <form id="createProfileForm" class="form-inline">
+          <label class="field field-grow">
+            <span class="field-label">名称</span>
+            <input
+              id="newProfileNameInput"
+              type="text"
+              maxlength="64"
+              placeholder="例如：海投版"
+            />
+          </label>
+          <label class="field field-grow">
+            <span class="field-label">来源</span>
+            <select id="cloneSourceSelect">
+              <option value="">空白档案</option>
+            </select>
+          </label>
+          <button type="submit" id="createProfileButton" class="btn btn-primary">
+            创建
+          </button>
+        </form>
+      </section>
+
+      <!-- 分区 5：档案编辑区（选中「编辑」后显示） -->
+      <section
+        class="panel hidden"
+        id="editorSection"
+        aria-labelledby="editorHeading"
+      >
+        <div class="editor-header">
+          <h2 id="editorHeading">编辑档案</h2>
+          <p id="editingProfileName" class="editing-name"></p>
+        </div>
+        <form id="profileEditorForm">
+          <!-- 基本信息 -->
+          <details class="editor-block" open>
+            <summary>基本信息</summary>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field-label">姓名</span>
+                <input data-path="basic.fullName" type="text" />
+              </label>
+              <label class="field">
+                <span class="field-label">手机</span>
+                <input data-path="basic.phone" type="tel" />
+              </label>
+              <label class="field">
+                <span class="field-label">邮箱</span>
+                <input data-path="basic.email" type="email" />
+              </label>
+              <label class="field">
+                <span class="field-label">城市</span>
+                <input data-path="basic.city" type="text" />
+              </label>
+              <label class="field">
+                <span class="field-label">生日</span>
+                <input data-path="basic.birthday" type="text" placeholder="可选" />
+              </label>
+              <label class="field">
+                <span class="field-label">性别</span>
+                <input data-path="basic.gender" type="text" placeholder="可选" />
+              </label>
+              <label class="field field-span-2">
+                <span class="field-label">个人网站</span>
+                <input
+                  data-path="basic.personalWebsite"
+                  type="url"
+                  placeholder="可选"
+                />
+              </label>
+            </div>
+          </details>
+
+          <!-- 教育经历：动态行由脚本渲染 -->
+          <details class="editor-block" open>
+            <summary>教育经历</summary>
+            <div id="educationList" class="item-list"></div>
+            <button type="button" class="btn btn-ghost" data-add-list="education">
+              添加教育经历
+            </button>
+          </details>
+
+          <!-- 工作经历 -->
+          <details class="editor-block" open>
+            <summary>工作经历</summary>
+            <div id="experienceList" class="item-list"></div>
+            <button type="button" class="btn btn-ghost" data-add-list="experience">
+              添加工作经历
+            </button>
+          </details>
+
+          <!-- 项目经历 -->
+          <details class="editor-block" open>
+            <summary>项目经历</summary>
+            <div id="projectsList" class="item-list"></div>
+            <button type="button" class="btn btn-ghost" data-add-list="projects">
+              添加项目经历
+            </button>
+          </details>
+
+          <!-- 技能 -->
+          <details class="editor-block" open>
+            <summary>技能</summary>
+            <label class="field">
+              <span class="field-label">每行一项技能</span>
+              <textarea
+                id="skillsTextarea"
+                rows="4"
+                placeholder="例如：&#10;TypeScript&#10;React"
+              ></textarea>
+            </label>
+          </details>
+
+          <!-- 求职意向 -->
+          <details class="editor-block" open>
+            <summary>求职意向</summary>
+            <div class="form-grid">
+              <label class="field">
+                <span class="field-label">目标职位</span>
+                <input data-path="jobIntent.targetRole" type="text" />
+              </label>
+              <label class="field">
+                <span class="field-label">期望薪资</span>
+                <input
+                  data-path="jobIntent.expectedSalary"
+                  type="text"
+                  placeholder="可选"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">到岗日期</span>
+                <input
+                  data-path="jobIntent.availableDate"
+                  type="text"
+                  placeholder="可选"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">工作城市</span>
+                <input
+                  data-path="jobIntent.workCity"
+                  type="text"
+                  placeholder="可选"
+                />
+              </label>
+            </div>
+          </details>
+
+          <!-- 补充说明 -->
+          <details class="editor-block" open>
+            <summary>补充说明</summary>
+            <label class="field">
+              <span class="field-label">证书、自我评价等（供模型参考）</span>
+              <textarea
+                id="notesTextarea"
+                rows="5"
+                placeholder="可选自由文本"
+              ></textarea>
+            </label>
+          </details>
+
+          <div class="button-row">
+            <button type="submit" class="btn btn-primary">保存档案</button>
+            <button type="button" id="closeEditorButton" class="btn btn-secondary">
+              关闭编辑
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- 分区 6：导入 / 导出（导出剔除 apiKey） -->
+      <section
+        class="panel"
+        id="importExportSection"
+        aria-labelledby="importExportHeading"
+      >
+        <h2 id="importExportHeading">导入 / 导出</h2>
+        <p class="hint">导出文件不包含 API Key。导入为追加合并；合计超过 5 份将被拒绝。</p>
+        <div class="button-row">
+          <button type="button" id="exportButton" class="btn btn-secondary">
+            导出全部
+          </button>
+          <label class="btn btn-secondary file-label">
+            导入 JSON
+            <input
+              id="importFileInput"
+              type="file"
+              accept="application/json,.json"
+              hidden
+            />
+          </label>
+        </div>
+      </section>
+    </main>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
