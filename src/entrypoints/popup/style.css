@@ -1,6 +1,172 @@
-/* Popup 样式占位，后续补充布局与主题 */
+/* Popup：紧凑一键操作面板，变量与 Options 视觉语言对齐 */
+
+:root {
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-border: #d8dde6;
+  --color-text: #1a1f2c;
+  --color-muted: #5c6578;
+  --color-primary: #1f6feb;
+  --color-primary-hover: #1558c0;
+  --color-danger: #c62828;
+  --color-success: #1b7a3d;
+  --color-warn-bg: #fff8e6;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
-  margin: 12px;
-  font-family: system-ui, sans-serif;
-  font-size: 14px;
+  margin: 0;
+  min-width: 300px;
+  max-width: 360px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.popup-page {
+  padding: 14px 14px 16px;
+}
+
+.popup-header h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.popup-subtitle {
+  margin: 4px 0 0;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.popup-section {
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.section-label {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.profile-select {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--color-text);
+  font: inherit;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-row input {
+  margin: 0;
+}
+
+.popup-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.btn {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  grid-column: 1 / -1;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.btn-secondary {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-text);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: #b8c0ce;
+  background: #f0f2f5;
+}
+
+.btn-ghost {
+  grid-column: 1 / -1;
+  background: transparent;
+  border-color: var(--color-border);
+  color: var(--color-muted);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  color: var(--color-text);
+  background: #eef0f3;
+}
+
+.status-message {
+  min-height: 1.35em;
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--color-muted);
+  word-break: break-word;
+}
+
+.status-message.is-info {
+  background: var(--color-warn-bg);
+  color: #7a5b00;
+}
+
+.status-message.is-success {
+  background: #e8f6ec;
+  color: var(--color-success);
+}
+
+.status-message.is-error {
+  background: #fdecea;
+  color: var(--color-danger);
 }

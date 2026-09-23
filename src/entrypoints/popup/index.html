@@ -3,11 +3,50 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Resume Autofill Popup</title>
+    <title>Resume Autofill</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <main class="popup-page">
+      <header class="popup-header">
+        <h1>Resume Autofill</h1>
+        <p class="popup-subtitle">选择档案后一键扫描并填写当前页</p>
+      </header>
+
+      <section class="popup-section" aria-labelledby="profileHeading">
+        <h2 id="profileHeading" class="section-label">档案</h2>
+        <label class="field-label" for="profileSelect">选用档案</label>
+        <select id="profileSelect" class="profile-select">
+          <option value="">加载中…</option>
+        </select>
+        <label class="checkbox-row" for="setDefaultCheckbox">
+          <input type="checkbox" id="setDefaultCheckbox" />
+          <span>设为默认档案</span>
+        </label>
+      </section>
+
+      <section class="popup-actions" aria-label="快捷操作">
+        <button type="button" id="fillButton" class="btn btn-primary">
+          扫描并填写
+        </button>
+        <button type="button" id="openSidePanelButton" class="btn btn-secondary">
+          打开侧边栏
+        </button>
+        <button type="button" id="openOptionsButton" class="btn btn-secondary">
+          打开设置
+        </button>
+        <button type="button" id="undoButton" class="btn btn-ghost">
+          撤销本轮
+        </button>
+      </section>
+
+      <p
+        id="statusMessage"
+        class="status-message"
+        role="status"
+        aria-live="polite"
+      ></p>
+    </main>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
