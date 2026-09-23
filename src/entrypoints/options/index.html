@@ -95,9 +95,11 @@
         <p id="emptyProfilesHint" class="empty-hint hidden">暂无档案，请在下方新建。</p>
       </section>
 
-      <!-- 分区 4：新建档案（空白或从已有复制） -->
+      <!-- 分区 4：新建档案（空白或从已有复制）；满 5 份时由脚本禁用控件 -->
       <section class="panel" id="createSection" aria-labelledby="createHeading">
         <h2 id="createHeading">新建档案</h2>
+        <!-- 达到上限时显示，默认隐藏 -->
+        <p id="profileLimitTip" class="hint hidden" role="status">最多保存 5 份档案</p>
         <form id="createProfileForm" class="form-inline">
           <label class="field field-grow">
             <span class="field-label">名称</span>

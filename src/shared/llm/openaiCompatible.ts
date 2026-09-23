@@ -1,9 +1,74 @@
-import type { FillPlan } from '../types/fill';
+import type { FillMappingItem, FillPlan } from '../types/fill';
 
 /** Chat Completions 请求体中的单条消息 */
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+}
+
+/**
+ * 将任意数值夹紧到 [0, 1]，供 FillPlan.confidence 规范化。
+ * 非有限数字视为 0，避免 NaN/Infinity 进入填写路径。
+ */
+function clampConfidence(rawConfidence: unknown): number {
+  if (typeof rawConfidence !== 'number' || !Number.isFinite(rawConfidence)) {
+    return 0;
+  }
+  if (rawConfidence < 0) {
+    return 0;
+  }
+  if (rawConfidence > 1) {
+    return 1;
+  }
+  return rawConfidence;
+}
+
+/**
+ * 规范化并校验 LLM 返回的 FillPlan：
+ * - 每项须有 string 类型的 fieldId / value，否则丢弃；
+ * - confidence 夹紧到 0..1；
+ * - skippedFieldIds 仅保留非空字符串。
+ * 非法 item 不进入后续 UI / 写入路径，避免静默异常。
+ */
+export function normalizeFillPlan(rawPlan: {
+  items: unknown[];
+  skippedFieldIds: unknown[];
+}): FillPlan {
+  const normalizedItems: FillMappingItem[] = [];
+
+  for (const rawItem of rawPlan.items) {
+    if (rawItem === null || typeof rawItem !== 'object') {
+      continue;
+    }
+    const candidate = rawItem as Record<string, unknown>;
+    if (typeof candidate.fieldId !== 'string' || candidate.fieldId.length === 0) {
+      continue;
+    }
+    if (typeof candidate.value !== 'string') {
+      continue;
+    }
+    const mappingItem: FillMappingItem = {
+      fieldId: candidate.fieldId,
+      value: candidate.value,
+      confidence: clampConfidence(candidate.confidence),
+    };
+    if (typeof candidate.reason === 'string') {
+      mappingItem.reason = candidate.reason;
+    }
+    normalizedItems.push(mappingItem);
+  }
+
+  const normalizedSkipped: string[] = [];
+  for (const rawSkippedId of rawPlan.skippedFieldIds) {
+    if (typeof rawSkippedId === 'string' && rawSkippedId.length > 0) {
+      normalizedSkipped.push(rawSkippedId);
+    }
+  }
+
+  return {
+    items: normalizedItems,
+    skippedFieldIds: normalizedSkipped,
+  };
 }
 
 /** requestFillPlan 的入参：仅允许 background 传入 apiKey */
@@ -151,14 +216,21 @@ export async function requestFillPlan(
       throw new Error('LLM_EMPTY_CONTENT');
     }
 
-    const parsed = JSON.parse(content) as FillPlan;
+    const parsed = JSON.parse(content) as {
+      items?: unknown;
+      skippedFieldIds?: unknown;
+    };
     if (
       !Array.isArray(parsed.items) ||
       !Array.isArray(parsed.skippedFieldIds)
     ) {
       throw new Error('LLM_INVALID_SHAPE');
     }
-    return parsed;
+    // 过滤畸形 item，并对 confidence 做 0..1 夹紧后再返回
+    return normalizeFillPlan({
+      items: parsed.items,
+      skippedFieldIds: parsed.skippedFieldIds,
+    });
   } finally {
     clearTimeout(timer);
   }

@@ -91,6 +91,14 @@ const newProfileNameInput = document.getElementById(
 const cloneSourceSelect = document.getElementById(
   'cloneSourceSelect',
 ) as HTMLSelectElement;
+/** 创建按钮：满 5 份时禁用，避免误触后再报错 */
+const createProfileButton = document.getElementById(
+  'createProfileButton',
+) as HTMLButtonElement;
+/** 满员提示文案节点：显示「最多保存 5 份档案」 */
+const profileLimitTip = document.getElementById(
+  'profileLimitTip',
+) as HTMLParagraphElement;
 const editorSection = document.getElementById(
   'editorSection',
 ) as HTMLElement;
@@ -202,12 +210,26 @@ async function bootstrapOptionsPage(): Promise<void> {
 }
 
 /**
+ * 按当前档案数量启用/禁用新建相关控件，并切换满员中文提示。
+ * profiles.length >= 5 时禁用创建按钮、名称输入与复制来源下拉。
+ */
+function syncCreateControlsWithLimit(): void {
+  const isAtProfileLimit = cachedProfiles.length >= MAX_PROFILES;
+  createProfileButton.disabled = isAtProfileLimit;
+  newProfileNameInput.disabled = isAtProfileLimit;
+  cloneSourceSelect.disabled = isAtProfileLimit;
+  profileLimitTip.classList.toggle('hidden', !isAtProfileLimit);
+}
+
+/**
  * 刷新档案列表卡片（名称、更新时间、操作按钮）。
  */
 function renderProfileList(): void {
   profileListElement.replaceChildren();
   profileCountHint.textContent = `已保存 ${cachedProfiles.length} / ${MAX_PROFILES} 份`;
   emptyProfilesHint.classList.toggle('hidden', cachedProfiles.length > 0);
+  // 列表刷新后同步新建区禁用态，满足规格「满 5 份 UI 禁用新建」
+  syncCreateControlsWithLimit();
 
   for (const profile of cachedProfiles) {
     const listItem = document.createElement('li');

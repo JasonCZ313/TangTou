@@ -87,7 +87,33 @@ function fillContentEditable(element: HTMLElement, nextValue: string): void {
 }
 
 /**
+ * 判断字符串是否为「应勾选」的布尔真值语义（含 yes/on/1）。
+ */
+function isTruthyCheckToken(normalized: string): boolean {
+  return (
+    normalized === 'true' ||
+    normalized === '1' ||
+    normalized === 'yes' ||
+    normalized === 'on'
+  );
+}
+
+/**
+ * 判断字符串是否为「应取消勾选」的布尔假值语义（含 no/off/0）。
+ * 撤销快照对 checkbox/radio 存 'true'/'false'，假值必须能可靠恢复为未选中。
+ */
+function isFalsyCheckToken(normalized: string): boolean {
+  return (
+    normalized === 'false' ||
+    normalized === '0' ||
+    normalized === 'no' ||
+    normalized === 'off'
+  );
+}
+
+/**
  * 写入 checkbox / radio：按布尔语义或 value 匹配更新 checked，不触发提交。
+ * radio 对显式 false 会取消选中，保证 undo 能恢复写入前的未选中状态。
  */
 function fillCheckableInput(
   inputElement: HTMLInputElement,
@@ -96,10 +122,7 @@ function fillCheckableInput(
   const normalized = nextValue.trim().toLowerCase();
   if (inputElement.type === 'checkbox') {
     const shouldCheck =
-      normalized === 'true' ||
-      normalized === '1' ||
-      normalized === 'yes' ||
-      normalized === 'on' ||
+      isTruthyCheckToken(normalized) ||
       normalized === inputElement.value.toLowerCase();
     inputElement.checked = shouldCheck;
     inputElement.dispatchEvent(new Event('input', { bubbles: true }));
@@ -108,10 +131,16 @@ function fillCheckableInput(
   }
 
   if (inputElement.type === 'radio') {
+    // 显式布尔假值：恢复为未选中（撤销场景）；不依赖 value 匹配
+    if (isFalsyCheckToken(normalized)) {
+      inputElement.checked = false;
+      inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
     const shouldCheck =
       normalized === inputElement.value.toLowerCase() ||
-      normalized === 'true' ||
-      normalized === 'yes';
+      isTruthyCheckToken(normalized);
     if (!shouldCheck) {
       return false;
     }
