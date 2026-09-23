@@ -123,9 +123,11 @@ export async function updateProfileData(
     throw new Error('PROFILE_NOT_FOUND');
   }
 
+  // 深拷贝后再写入，避免调用方保留 data 引用并后续 mutate 污染 storage 中的档案
+  const clonedData = structuredClone(data);
   const updatedProfile: Profile = {
     ...profiles[index],
-    data,
+    data: clonedData,
     updatedAt: nowIso(),
   };
 
