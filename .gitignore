@@ -55,6 +55,7 @@ out/
 .next/
 .nuxt/
 .output/
+.wxt/
 .turbo/
 .cache/
 .parcel-cache/
