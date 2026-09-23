@@ -168,3 +168,29 @@ export async function setActiveProfileId(
   }
   await saveSettings({ activeProfileId: profileId });
 }
+
+/**
+ * 原子追加多份档案：先校验总数上限，再一次性写入 storage。
+ * 任一步失败时不会留下「只写入了部分新档案」的半成品状态。
+ * 若当前无默认档案且追加列表非空，则将第一份新档案设为默认。
+ */
+export async function appendProfilesAtomic(
+  profilesToAppend: Profile[],
+): Promise<void> {
+  if (profilesToAppend.length === 0) {
+    return;
+  }
+
+  const existingProfiles = await listProfiles();
+  if (existingProfiles.length + profilesToAppend.length > MAX_PROFILES) {
+    throw new Error('PROFILE_LIMIT_REACHED');
+  }
+
+  // 一次 set，避免循环 create/update 造成部分成功
+  await writeProfiles([...existingProfiles, ...profilesToAppend]);
+
+  const settings = await getSettings();
+  if (!settings.activeProfileId) {
+    await saveSettings({ activeProfileId: profilesToAppend[0].id });
+  }
+}

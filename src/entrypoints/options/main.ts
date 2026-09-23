@@ -3,6 +3,7 @@
  * 在扩展页上下文中直接调用 storage API，不经 Background。
  */
 import {
+  appendProfilesAtomic,
   createProfile,
   deleteProfile,
   listProfiles,
@@ -11,7 +12,10 @@ import {
   updateProfileData,
 } from '../../shared/storage/profileStore';
 import { getSettings, saveSettings } from '../../shared/storage/settingsStore';
-import { MAX_PROFILES } from '../../shared/storage/defaults';
+import {
+  createEmptyProfileData,
+  MAX_PROFILES,
+} from '../../shared/storage/defaults';
 import type {
   EducationItem,
   ExperienceItem,
@@ -861,8 +865,90 @@ function formatExportStamp(): string {
 }
 
 /**
- * 导入 JSON：若现有 + 导入档案合计超过 MAX_PROFILES 则拒绝。
- * 档案以 createProfile 追加；设置合并时保留本机 apiKey（导入文件通常为空）。
+ * 生成新档案 id（导入批次在内存组装时使用，与 profileStore 一致）。
+ */
+function createImportedProfileId(): string {
+  return crypto.randomUUID();
+}
+
+/**
+ * 当前时间的 ISO 字符串，用于导入档案的 createdAt / updatedAt。
+ */
+function createImportedTimestamp(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * 将任意对象深度合并到目标上：对象递归合并，数组与原始值整体覆盖。
+ * 用于把残缺导入 data 铺到 createEmptyProfileData() 骨架上，保证 skills 等必有数组。
+ */
+function deepMergeRecord(
+  targetValue: Record<string, unknown>,
+  sourceValue: Record<string, unknown>,
+): Record<string, unknown> {
+  const mergedResult: Record<string, unknown> = { ...targetValue };
+
+  for (const [fieldKey, sourceFieldValue] of Object.entries(sourceValue)) {
+    if (sourceFieldValue === undefined) {
+      continue;
+    }
+
+    const targetFieldValue = mergedResult[fieldKey];
+    const sourceIsPlainObject =
+      sourceFieldValue !== null &&
+      typeof sourceFieldValue === 'object' &&
+      !Array.isArray(sourceFieldValue);
+    const targetIsPlainObject =
+      targetFieldValue !== null &&
+      typeof targetFieldValue === 'object' &&
+      !Array.isArray(targetFieldValue);
+
+    if (sourceIsPlainObject && targetIsPlainObject) {
+      mergedResult[fieldKey] = deepMergeRecord(
+        targetFieldValue as Record<string, unknown>,
+        sourceFieldValue as Record<string, unknown>,
+      );
+      continue;
+    }
+
+    if (Array.isArray(sourceFieldValue)) {
+      mergedResult[fieldKey] = structuredClone(sourceFieldValue);
+      continue;
+    }
+
+    if (sourceIsPlainObject) {
+      mergedResult[fieldKey] = structuredClone(sourceFieldValue);
+      continue;
+    }
+
+    mergedResult[fieldKey] = sourceFieldValue;
+  }
+
+  return mergedResult;
+}
+
+/**
+ * 将导入的残缺 data 规范化：以空白 ProfileData 为底，深度合并导入字段。
+ * 缺省的 education / experience / projects / skills / basic / jobIntent / notes 均保留空骨架，
+ * 避免编辑区调用 skills.join 等时因 undefined 崩溃。
+ */
+function normalizeImportedProfileData(rawData: unknown): ProfileData {
+  const emptyProfileData = createEmptyProfileData();
+  if (!rawData || typeof rawData !== 'object' || Array.isArray(rawData)) {
+    return emptyProfileData;
+  }
+
+  const mergedData = deepMergeRecord(
+    emptyProfileData as unknown as Record<string, unknown>,
+    rawData as Record<string, unknown>,
+  );
+
+  return mergedData as unknown as ProfileData;
+}
+
+/**
+ * 导入 JSON：先校验并在内存组装全部待写入档案，再一次性原子追加。
+ * 跳过无效条目；成功计数不含跳过项。设置合并时保留本机 apiKey（导入文件通常为空）。
  */
 async function handleImportFileChange(): Promise<void> {
   const fileList = importFileInput.files;
@@ -884,8 +970,34 @@ async function handleImportFileChange(): Promise<void> {
       return;
     }
 
+    // 先在内存中规范化全部有效档案；任一项失败则整批不写 storage
+    const profilesToAppend: Profile[] = [];
+    let skippedCount = 0;
+
+    for (const importedProfile of parsed.profiles) {
+      if (!importedProfile || typeof importedProfile !== 'object') {
+        skippedCount += 1;
+        continue;
+      }
+
+      const profileName =
+        typeof importedProfile.name === 'string' && importedProfile.name.trim()
+          ? importedProfile.name.trim()
+          : '导入档案';
+      const timestamp = createImportedTimestamp();
+      const normalizedData = normalizeImportedProfileData(importedProfile.data);
+
+      profilesToAppend.push({
+        id: createImportedProfileId(),
+        name: profileName,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        data: normalizedData,
+      });
+    }
+
     const existingProfiles = await listProfiles();
-    if (existingProfiles.length + parsed.profiles.length > MAX_PROFILES) {
+    if (existingProfiles.length + profilesToAppend.length > MAX_PROFILES) {
       showStatus(
         `导入后将超过 ${MAX_PROFILES} 份档案上限，已取消`,
         'error',
@@ -893,22 +1005,8 @@ async function handleImportFileChange(): Promise<void> {
       return;
     }
 
-    for (const importedProfile of parsed.profiles) {
-      if (!importedProfile || typeof importedProfile !== 'object') {
-        continue;
-      }
-      const profileName =
-        typeof importedProfile.name === 'string' && importedProfile.name.trim()
-          ? importedProfile.name.trim()
-          : '导入档案';
-      const created = await createProfile({ name: profileName });
-      if (importedProfile.data && typeof importedProfile.data === 'object') {
-        await updateProfileData(
-          created.id,
-          structuredClone(importedProfile.data) as ProfileData,
-        );
-      }
-    }
+    // 单次 storage 写入；失败时原有档案保持不变
+    await appendProfilesAtomic(profilesToAppend);
 
     if (parsed.settings && typeof parsed.settings === 'object') {
       const currentSettings = await getSettings();
@@ -937,7 +1035,15 @@ async function handleImportFileChange(): Promise<void> {
     }
 
     await bootstrapOptionsPage();
-    showStatus(`已导入 ${parsed.profiles.length} 份档案`, 'success');
+    const importedCount = profilesToAppend.length;
+    if (skippedCount > 0) {
+      showStatus(
+        `已导入 ${importedCount} 份档案（跳过 ${skippedCount} 项无效条目）`,
+        'success',
+      );
+    } else {
+      showStatus(`已导入 ${importedCount} 份档案`, 'success');
+    }
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   } finally {
