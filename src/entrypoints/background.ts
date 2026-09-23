@@ -63,16 +63,39 @@ function buildErrorResponse(
 }
 
 /**
+ * 判断消息是否来自本扩展的 UI 页（options / popup / sidepanel 等）。
+ * 扩展页以标签打开时也会带 sender.tab，不能单靠 tab 判定；
+ * 真正危险的是 content script（url 为 http(s) 页面）。
+ */
+function isTrustedExtensionUiSender(
+  sender: chrome.runtime.MessageSender,
+): boolean {
+  // 其它扩展发来的消息一律不信任
+  if (sender.id && sender.id !== chrome.runtime.id) {
+    return false;
+  }
+  const extensionOrigin = `chrome-extension://${chrome.runtime.id}/`;
+  // 本扩展页面：即使挂了 tab 也允许读取 settings（含 apiKey）
+  if (typeof sender.url === 'string' && sender.url.startsWith(extensionOrigin)) {
+    return true;
+  }
+  // 无 tab、且为本扩展或未标明 id：兼容部分扩展上下文
+  if (!sender.tab && (!sender.id || sender.id === chrome.runtime.id)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * 处理 GET_STATE：返回 settings（可含 apiKey，仅扩展源 UI）与全部 profiles。
- * 若消息来自网页标签（content script），拒绝，避免 apiKey 泄露到页面上下文。
+ * 仅拦截 content script / 外站上下文，避免 apiKey 泄露到页面。
  * 禁止在日志中打印 apiKey。
  */
 async function handleGetState(
   requestId: string,
   sender: chrome.runtime.MessageSender,
 ): Promise<ExtensionMessage> {
-  // sender.tab 有值表示来自 content script / 网页标签，禁止下发密钥
-  if (sender.tab) {
+  if (!isTrustedExtensionUiSender(sender)) {
     return {
       type: 'ERROR',
       requestId,
@@ -159,7 +182,7 @@ function mergeHeuristicAndLlmPlan(
 }
 
 /**
- * 处理 BUILD_FILL_PLAN：先跑本地启发式，仅将剩余字段送 LLM；无 Key 时按 Step 2 降级。
+ * 处理 BUILD_FILL_PLAN：先跑本地启发式，仅将剩余字段送 LLM；无 Key 时软降级返回部分计划。
  * 失败返回 ERROR；成功返回 FILL_PLAN_RESULT。绝不向 content 转发 apiKey。
  */
 async function handleBuildFillPlan(
@@ -185,9 +208,9 @@ async function handleBuildFillPlan(
   const hasApiConfigured =
     settings.apiBaseUrl.trim().length > 0 && settings.apiKey.trim().length > 0;
 
-  // Step 2：无 Key 时——仅启发式能覆盖全部字段则返回部分计划；仍有剩余则报错要求配置
+  // 无 Key：有启发式命中则返回部分计划（剩余字段进 skipped）；零命中才报错
   if (!hasApiConfigured) {
-    if (remainingFields.length > 0) {
+    if (partialPlan.items.length === 0) {
       return {
         type: 'ERROR',
         requestId: message.requestId,
@@ -195,7 +218,6 @@ async function handleBuildFillPlan(
         message: '请先在设置中配置 API Base URL 与 API Key',
       };
     }
-    // 无剩余字段：允许只应用启发式；在 reason 中附带提示文案供 UI 展示
     const tippedItems = partialPlan.items.map((item) => ({
       ...item,
       reason: item.reason
@@ -207,7 +229,7 @@ async function handleBuildFillPlan(
       requestId: message.requestId,
       plan: {
         items: tippedItems,
-        skippedFieldIds: [],
+        skippedFieldIds: remainingFields.map((field) => field.fieldId),
       },
     };
   }

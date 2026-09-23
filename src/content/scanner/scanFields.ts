@@ -24,22 +24,41 @@ function isElementVisible(element: Element): boolean {
 }
 
 /**
+ * 从 label 元素提取纯文本：去掉内部控件节点，避免 input 当前值污染标签。
+ */
+function extractCleanLabelText(labelElement: Element): string {
+  const clonedLabel = labelElement.cloneNode(true) as HTMLElement;
+  clonedLabel
+    .querySelectorAll('input, select, textarea, button')
+    .forEach((nestedControl) => {
+      nestedControl.remove();
+    });
+  return (clonedLabel.textContent ?? '').trim().replace(/\s+/g, ' ');
+}
+
+/**
  * 按优先级解析字段的人类可读标签：
- * htmlFor 关联 label → 包裹 label → aria-label → placeholder → name。
+ * htmlFor 关联 label → 清洁后的包裹 label → aria-label → placeholder → name。
  */
 function resolveFieldLabel(element: Element): string {
   if (element instanceof HTMLElement && element.id) {
     const labelForElement = document.querySelector(
       `label[for="${CSS.escape(element.id)}"]`,
     );
-    if (labelForElement?.textContent?.trim()) {
-      return labelForElement.textContent.trim();
+    if (labelForElement) {
+      const labelText = extractCleanLabelText(labelForElement);
+      if (labelText) {
+        return labelText;
+      }
     }
   }
 
   const wrappingLabel = element.closest('label');
-  if (wrappingLabel?.textContent?.trim()) {
-    return wrappingLabel.textContent.trim().replace(/\s+/g, ' ');
+  if (wrappingLabel) {
+    const labelText = extractCleanLabelText(wrappingLabel);
+    if (labelText) {
+      return labelText;
+    }
   }
 
   const ariaLabel = element.getAttribute('aria-label')?.trim();

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>QA-02 English Labels</title>
+  <style>
+    body { font-family: sans-serif; max-width: 640px; margin: 24px auto; }
+    label { display: block; margin: 12px 0; }
+    input, select, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <h1>QA-02 English Labels</h1>
+  <form id="form">
+    <label>Full Name <input name="full_name" type="text" /></label>
+    <label>Email Address <input name="email" type="email" /></label>
+    <label>Phone Number <input name="phone" type="tel" /></label>
+    <label>City <input name="city" type="text" /></label>
+    <label>Hotel preference <input name="hotel" type="text" /></label>
+    <button type="submit">Submit</button>
+  </form>
+  <script>
+    document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); window.__qaSubmitted = true; });
+  </script>
+</body>
+</html>

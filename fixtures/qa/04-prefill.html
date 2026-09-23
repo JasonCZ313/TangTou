@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>QA-04 Prefill Undo</title>
+  <style>body{font-family:sans-serif;max-width:640px;margin:24px auto}label{display:block;margin:12px 0}input{width:100%;padding:8px;box-sizing:border-box}</style>
+</head>
+<body>
+  <h1>QA-04 预填后撤销</h1>
+  <form id="form">
+    <label>姓名 <input id="fullName" name="fullName" type="text" value="旧姓名占位" /></label>
+    <label>邮箱 <input id="email" name="email" type="email" value="old@example.invalid" /></label>
+    <label>电话 <input id="phone" name="phone" type="tel" value="10000000000" /></label>
+    <label>城市 <input id="city" name="city" type="text" value="旧城" /></label>
+    <button type="submit">提交</button>
+  </form>
+  <script>
+    document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); window.__qaSubmitted = true; });
+  </script>
+</body>
+</html>

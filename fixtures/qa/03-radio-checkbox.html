@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>QA-03 Radio Checkbox</title>
+  <style>body{font-family:sans-serif;max-width:640px;margin:24px auto}fieldset{margin:16px 0}</style>
+</head>
+<body>
+  <h1>QA-03 单选多选</h1>
+  <form id="form">
+    <label>姓名 <input name="fullName" type="text" /></label>
+    <fieldset>
+      <legend>性别</legend>
+      <label><input type="radio" name="gender" value="male" /> 男</label>
+      <label><input type="radio" name="gender" value="female" /> 女</label>
+      <label><input type="radio" name="gender" value="other" /> 其他</label>
+    </fieldset>
+    <fieldset>
+      <legend>技能</legend>
+      <label><input type="checkbox" name="skills" value="js" /> JavaScript</label>
+      <label><input type="checkbox" name="skills" value="py" /> Python</label>
+    </fieldset>
+    <button type="submit">提交</button>
+  </form>
+  <script>
+    document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); window.__qaSubmitted = true; });
+  </script>
+</body>
+</html>

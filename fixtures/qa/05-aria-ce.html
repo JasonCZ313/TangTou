@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>QA-05 Contenteditable Aria</title>
+  <style>body{font-family:sans-serif;max-width:640px;margin:24px auto}.box{border:1px solid #ccc;min-height:80px;padding:8px}</style>
+</head>
+<body>
+  <h1>QA-05 aria 与 contenteditable</h1>
+  <form id="form">
+    <input aria-label="姓名" name="n1" type="text" />
+    <input placeholder="请输入邮箱" name="e1" type="email" />
+    <div class="box" contenteditable="true" aria-label="自我评价" id="ce"></div>
+    <button type="submit">提交</button>
+  </form>
+  <script>
+    document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); window.__qaSubmitted = true; });
+  </script>
+</body>
+</html>

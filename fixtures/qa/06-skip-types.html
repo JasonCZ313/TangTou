@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>QA-06 Hidden Heavy</title>
+</head>
+<body>
+  <h1>QA-06 大量应跳过控件</h1>
+  <form id="form">
+    <input type="hidden" name="h1" value="1" />
+    <input type="hidden" name="h2" value="2" />
+    <input type="submit" value="SubmitType" />
+    <input type="button" value="ButtonType" />
+    <input type="file" name="resume" />
+    <input type="password" name="pwd" />
+    <label style="display:none">隐藏姓名 <input name="ghost" type="text" /></label>
+    <label>可见姓名 <input name="fullName" type="text" /></label>
+    <button type="submit">提交</button>
+  </form>
+  <script>
+    document.getElementById('form').addEventListener('submit', (e) => { e.preventDefault(); window.__qaSubmitted = true; });
+  </script>
+</body>
+</html>
