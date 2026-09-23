@@ -1,0 +1,233 @@
+import type { FieldDescriptor } from '../../shared/types/fill';
+
+/** 扫描时跳过的 input type，避免误填密码或触发按钮类控件 */
+const SKIPPED_INPUT_TYPES = new Set([
+  'hidden',
+  'submit',
+  'button',
+  'image',
+  'file',
+  'password',
+]);
+
+/**
+ * 会话内 fieldId → DOM 元素映射。
+ * 扫描时写入，回填时按 fieldId 精确定位，不依赖脆弱的唯一 selector。
+ */
+const fieldElementById = new Map<string, Element>();
+
+/**
+ * 判断元素在页面上是否可见；无布局矩形则视为不可见并跳过。
+ */
+function isElementVisible(element: Element): boolean {
+  return element.getClientRects().length > 0;
+}
+
+/**
+ * 按优先级解析字段的人类可读标签：
+ * htmlFor 关联 label → 包裹 label → aria-label → placeholder → name。
+ */
+function resolveFieldLabel(element: Element): string {
+  if (element instanceof HTMLElement && element.id) {
+    const labelForElement = document.querySelector(
+      `label[for="${CSS.escape(element.id)}"]`,
+    );
+    if (labelForElement?.textContent?.trim()) {
+      return labelForElement.textContent.trim();
+    }
+  }
+
+  const wrappingLabel = element.closest('label');
+  if (wrappingLabel?.textContent?.trim()) {
+    return wrappingLabel.textContent.trim().replace(/\s+/g, ' ');
+  }
+
+  const ariaLabel = element.getAttribute('aria-label')?.trim();
+  if (ariaLabel) {
+    return ariaLabel;
+  }
+
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement
+  ) {
+    const placeholderText = element.placeholder?.trim();
+    if (placeholderText) {
+      return placeholderText;
+    }
+  }
+
+  const nameAttribute =
+    element.getAttribute('name')?.trim() ||
+    (element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+      ? element.name?.trim()
+      : undefined);
+  if (nameAttribute) {
+    return nameAttribute;
+  }
+
+  return element.tagName.toLowerCase();
+}
+
+/**
+ * 生成辅助定位提示（非唯一依赖）：优先 id、name，否则退回标签名与 type。
+ */
+function buildSelectorHint(element: Element): string {
+  if (element instanceof HTMLElement && element.id) {
+    return `#${CSS.escape(element.id)}`;
+  }
+
+  const nameAttribute = element.getAttribute('name');
+  if (nameAttribute) {
+    return `${element.tagName.toLowerCase()}[name="${CSS.escape(nameAttribute)}"]`;
+  }
+
+  const inputType =
+    element instanceof HTMLInputElement ? element.type : undefined;
+  if (inputType) {
+    return `${element.tagName.toLowerCase()}[type="${inputType}"]`;
+  }
+
+  return element.tagName.toLowerCase();
+}
+
+/**
+ * 读取控件当前值；select 取选中项，checkbox/radio 取 checked 状态，其余取 value/textContent。
+ */
+function readCurrentValue(element: Element): string | undefined {
+  if (element instanceof HTMLSelectElement) {
+    return element.value;
+  }
+  if (element instanceof HTMLInputElement) {
+    if (element.type === 'checkbox' || element.type === 'radio') {
+      return element.checked ? element.value || 'true' : '';
+    }
+    return element.value;
+  }
+  if (element instanceof HTMLTextAreaElement) {
+    return element.value;
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) {
+    return element.textContent ?? '';
+  }
+  return undefined;
+}
+
+/**
+ * 收集 select 下各 option 的展示文案，供模型做选项匹配。
+ */
+function collectSelectOptions(selectElement: HTMLSelectElement): string[] {
+  return Array.from(selectElement.options)
+    .map((optionElement) => optionElement.textContent?.trim() || optionElement.value)
+    .filter((optionText) => optionText.length > 0);
+}
+
+/**
+ * 将单个 DOM 元素转为 FieldDescriptor，并登记到会话内 fieldId 映射表。
+ */
+function describeField(element: Element): FieldDescriptor {
+  const fieldId = crypto.randomUUID();
+  fieldElementById.set(fieldId, element);
+
+  const tag = element.tagName.toLowerCase();
+  let type = tag;
+  if (element instanceof HTMLInputElement) {
+    type = element.type || 'text';
+  } else if (element instanceof HTMLElement && element.isContentEditable) {
+    type = 'contenteditable';
+  }
+
+  const nameAttribute =
+    element.getAttribute('name') ||
+    (element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+      ? element.name || undefined
+      : undefined);
+
+  const placeholder =
+    element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+      ? element.placeholder || undefined
+      : undefined;
+
+  const required =
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+      ? element.required
+      : undefined;
+
+  const descriptor: FieldDescriptor = {
+    fieldId,
+    tag,
+    type,
+    label: resolveFieldLabel(element),
+    selectorHint: buildSelectorHint(element),
+  };
+
+  if (nameAttribute) {
+    descriptor.name = nameAttribute;
+  }
+  if (placeholder) {
+    descriptor.placeholder = placeholder;
+  }
+  if (element instanceof HTMLSelectElement) {
+    descriptor.options = collectSelectOptions(element);
+  }
+  const currentValue = readCurrentValue(element);
+  if (currentValue !== undefined) {
+    descriptor.currentValue = currentValue;
+  }
+  if (required !== undefined) {
+    descriptor.required = required;
+  }
+
+  return descriptor;
+}
+
+/**
+ * 判断候选节点是否应纳入扫描结果（类型黑名单 + 可见性）。
+ */
+function shouldIncludeElement(element: Element): boolean {
+  if (element instanceof HTMLInputElement) {
+    if (SKIPPED_INPUT_TYPES.has(element.type.toLowerCase())) {
+      return false;
+    }
+  }
+  return isElementVisible(element);
+}
+
+/**
+ * 按 fieldId 取回扫描时登记的 DOM 元素；元素已从文档卸载时返回 undefined。
+ * 供 filler 模块在回填 / 撤销时精确定位控件。
+ */
+export function resolveFieldElement(fieldId: string): Element | undefined {
+  const element = fieldElementById.get(fieldId);
+  if (!element || !element.isConnected) {
+    return undefined;
+  }
+  return element;
+}
+
+/**
+ * 扫描 root（默认 document）下可见的表单控件，返回 FieldDescriptor 列表，
+ * 并刷新本会话的 fieldId → Element 映射供后续回填使用。
+ */
+export function scanFields(root: ParentNode = document): FieldDescriptor[] {
+  fieldElementById.clear();
+
+  const selector = 'input, textarea, select, [contenteditable="true"]';
+  const candidates = Array.from(root.querySelectorAll(selector));
+  const fields: FieldDescriptor[] = [];
+
+  for (const candidate of candidates) {
+    if (!shouldIncludeElement(candidate)) {
+      continue;
+    }
+    fields.push(describeField(candidate));
+  }
+
+  return fields;
+}
