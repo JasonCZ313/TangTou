@@ -10,23 +10,83 @@ interface HeuristicMatch {
 }
 
 /**
- * 将 label / name 拼成便于匹配的小写文本（去空白）。
- * 仅用于本地规则，不改变原始字段描述。
+ * 拼接 label / name 为原始匹配文本（保留分隔符，便于英文词界判断）。
  */
-function buildMatchCorpus(field: FieldDescriptor): string {
+function buildMatchText(field: FieldDescriptor): string {
   const labelText = field.label ?? '';
   const nameText = field.name ?? '';
-  return `${labelText} ${nameText}`.toLowerCase().replace(/\s+/g, '');
+  return `${labelText} ${nameText}`.trim();
 }
 
 /**
- * 判断语料是否命中任一关键词（中英子串）。
+ * 英文词界匹配：token 前后须为非小写字母，避免 hotel 误命中 tel 等子串。
  */
-function corpusIncludesAny(
-  corpus: string,
+function matchesEnglishToken(normalizedLowerText: string, token: string): boolean {
+  const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const boundaryPattern = new RegExp(`(^|[^a-z])${escapedToken}([^a-z]|$)`);
+  return boundaryPattern.test(normalizedLowerText);
+}
+
+/**
+ * 正则词界匹配（用于 e-mail、full name 等复合英文标签）。
+ */
+function matchesEnglishPattern(
+  normalizedLowerText: string,
+  pattern: RegExp,
+): boolean {
+  return pattern.test(normalizedLowerText);
+}
+
+/**
+ * 中文标签子串匹配（中文无字母黏连误报问题）。
+ */
+function includesAnyChineseKeyword(
+  rawText: string,
   keywords: readonly string[],
 ): boolean {
-  return keywords.some((keyword) => corpus.includes(keyword.toLowerCase()));
+  return keywords.some((keyword) => rawText.includes(keyword));
+}
+
+/** 判断语料是否命中邮箱类字段（中文 + email/e-mail 词界）。 */
+function corpusMatchesEmail(rawText: string, normalizedLowerText: string): boolean {
+  if (includesAnyChineseKeyword(rawText, ['邮箱'])) {
+    return true;
+  }
+  return (
+    matchesEnglishToken(normalizedLowerText, 'email') ||
+    matchesEnglishPattern(normalizedLowerText, /(^|[^a-z])e-?mail([^a-z]|$)/)
+  );
+}
+
+/** 判断语料是否命中手机/电话类字段（中文 + phone/mobile/tel 词界）。 */
+function corpusMatchesPhone(rawText: string, normalizedLowerText: string): boolean {
+  if (includesAnyChineseKeyword(rawText, ['手机', '电话'])) {
+    return true;
+  }
+  return (
+    matchesEnglishToken(normalizedLowerText, 'phone') ||
+    matchesEnglishToken(normalizedLowerText, 'mobile') ||
+    matchesEnglishToken(normalizedLowerText, 'tel')
+  );
+}
+
+/** 判断语料是否命中姓名字段（中文 + full name 英文变体，不用裸 name）。 */
+function corpusMatchesFullName(rawText: string, normalizedLowerText: string): boolean {
+  if (includesAnyChineseKeyword(rawText, ['姓名', '名字'])) {
+    return true;
+  }
+  return matchesEnglishPattern(
+    normalizedLowerText,
+    /(^|[^a-z])full[_\s.-]?name([^a-z]|$)/,
+  );
+}
+
+/** 判断语料是否命中城市字段（中文 + city 词界）。 */
+function corpusMatchesCity(rawText: string, normalizedLowerText: string): boolean {
+  if (includesAnyChineseKeyword(rawText, ['城市'])) {
+    return true;
+  }
+  return matchesEnglishToken(normalizedLowerText, 'city');
 }
 
 /**
@@ -38,19 +98,11 @@ function matchFieldToProfile(
   field: FieldDescriptor,
   profile: ProfileData,
 ): HeuristicMatch | null {
-  const corpus = buildMatchCorpus(field);
+  const rawText = buildMatchText(field);
+  const normalizedLowerText = rawText.toLowerCase();
   const { basic } = profile;
 
-  if (
-    corpusIncludesAny(corpus, [
-      '邮箱',
-      '电子邮箱',
-      '邮件',
-      'email',
-      'e-mail',
-      'mail',
-    ])
-  ) {
+  if (corpusMatchesEmail(rawText, normalizedLowerText)) {
     const emailValue = basic.email.trim();
     if (emailValue) {
       return { value: emailValue, reason: '本地启发式：邮箱' };
@@ -58,17 +110,7 @@ function matchFieldToProfile(
     return null;
   }
 
-  if (
-    corpusIncludesAny(corpus, [
-      '手机',
-      '电话',
-      '手机号',
-      '联系电话',
-      'phone',
-      'mobile',
-      'tel',
-    ])
-  ) {
+  if (corpusMatchesPhone(rawText, normalizedLowerText)) {
     const phoneValue = basic.phone.trim();
     if (phoneValue) {
       return { value: phoneValue, reason: '本地启发式：手机/电话' };
@@ -76,29 +118,7 @@ function matchFieldToProfile(
     return null;
   }
 
-  if (
-    corpusIncludesAny(corpus, [
-      '姓名',
-      '名字',
-      '全名',
-      'fullname',
-      'full_name',
-      'yourname',
-      'name',
-    ])
-  ) {
-    // 排除已被邮箱/电话规则覆盖的字段；此处再排除明显非姓名的 name 变体
-    if (
-      corpusIncludesAny(corpus, [
-        'username',
-        'company',
-        'school',
-        'file',
-        'user',
-      ])
-    ) {
-      return null;
-    }
+  if (corpusMatchesFullName(rawText, normalizedLowerText)) {
     const fullNameValue = basic.fullName.trim();
     if (fullNameValue) {
       return { value: fullNameValue, reason: '本地启发式：姓名' };
@@ -106,7 +126,7 @@ function matchFieldToProfile(
     return null;
   }
 
-  if (corpusIncludesAny(corpus, ['城市', '所在城市', 'city'])) {
+  if (corpusMatchesCity(rawText, normalizedLowerText)) {
     const cityValue = basic.city.trim();
     if (cityValue) {
       return { value: cityValue, reason: '本地启发式：城市' };

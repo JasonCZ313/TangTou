@@ -140,14 +140,20 @@ async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
 }
 
 /**
- * 合并本地启发式 items 与 LLM 计划：items 拼接，skipped 仅保留 LLM 侧结果。
+ * 合并本地启发式 items 与 LLM 计划：同一 fieldId 以启发式为准，LLM 重复项丢弃。
  */
 function mergeHeuristicAndLlmPlan(
   heuristicPlan: FillPlan,
   llmPlan: FillPlan,
 ): FillPlan {
+  const heuristicFieldIds = new Set(
+    heuristicPlan.items.map((item) => item.fieldId),
+  );
+  const llmItemsWithoutHeuristicOverlap = llmPlan.items.filter(
+    (item) => !heuristicFieldIds.has(item.fieldId),
+  );
   return {
-    items: [...heuristicPlan.items, ...llmPlan.items],
+    items: [...heuristicPlan.items, ...llmItemsWithoutHeuristicOverlap],
     skippedFieldIds: llmPlan.skippedFieldIds,
   };
 }
