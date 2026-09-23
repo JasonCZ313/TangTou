@@ -435,3 +435,4 @@ Content ↔ Background ↔ UI 均走类型守卫解析；未知消息忽略并�
 | 日期 | 说明 |
 |------|------|
 | 2026-09-23 | 初稿：混合 UI、预览/直填可切换、OpenAI 兼容、结构化+notes、最多 5 档案与复制新建；用户确认后落盘 |
+| 2026-09-23 | 文档：根 README / MIT LICENSE / `docs/acceptance-checklist.md`；状态保持「已批准」 |
