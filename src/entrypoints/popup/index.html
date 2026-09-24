@@ -3,19 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Resume Autofill</title>
+    <title>躺投 — 一键填写</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <main class="popup-page">
       <header class="popup-header">
-        <h1>Resume Autofill</h1>
-        <p class="popup-subtitle">选择档案后一键扫描并填写当前页</p>
+        <div class="brand-header">
+          <img
+            class="brand-logo is-sm"
+            src="/brand/logo-mark.png"
+            width="36"
+            height="36"
+            alt="躺投"
+          />
+          <div class="brand-copy">
+            <h1 class="brand-name">躺投</h1>
+            <p class="brand-tagline">躺着也能投 · 简历智能填写</p>
+          </div>
+        </div>
       </header>
 
       <section class="popup-section" aria-labelledby="profileHeading">
-        <h2 id="profileHeading" class="section-label">档案</h2>
-        <label class="field-label" for="profileSelect">选用档案</label>
+        <h2 id="profileHeading" class="section-label">选用档案</h2>
+        <label class="field-label" for="profileSelect">当前档案</label>
         <select id="profileSelect" class="profile-select">
           <option value="">加载中…</option>
         </select>

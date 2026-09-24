@@ -3,14 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Resume Autofill — 设置</title>
+    <title>躺投 — 设置</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <main class="options-page">
       <header class="page-header">
-        <h1>Resume Autofill 设置</h1>
-        <p class="page-subtitle">管理 API、填写模式与本机简历档案（最多 5 份）</p>
+        <div class="brand-header">
+          <img
+            class="brand-logo"
+            src="/brand/logo-mark.png"
+            width="44"
+            height="44"
+            alt="躺投"
+          />
+          <div class="brand-copy">
+            <h1 class="brand-name">躺投</h1>
+            <p class="brand-tagline">躺着也能投 · 设置与档案</p>
+          </div>
+        </div>
+        <p class="page-kicker">
+          管理 API、填写模式与本机简历档案（最多 5 份）。一次填全，长期复用。
+        </p>
       </header>
 
       <!-- 全局状态提示：操作成功/失败文案写在这里 -->
@@ -134,15 +148,18 @@
         </div>
         <form id="profileEditorForm">
           <p id="editorValidationHint" class="hint" role="status"></p>
-          <p class="hint">标 * 为硬必填；日期精确到日。灰色分区多为可选，少数单位才要。</p>
+          <p class="req-legend">
+            <span class="req-mark" aria-hidden="true">*</span>
+            珊瑚色星号为硬必填；分区标题为青绿大标题；字段说明为灰色正文。日期精确到日。
+          </p>
 
           <details class="editor-block" open>
             <summary>基本信息</summary>
             <div class="form-grid">
-              <label class="field"><span class="field-label">姓名 *</span><input data-path="basic.fullName" type="text" required /></label>
-              <label class="field"><span class="field-label">手机 *</span><input data-path="basic.phone" type="tel" required /></label>
-              <label class="field"><span class="field-label">邮箱 *</span><input data-path="basic.email" type="email" required /></label>
-              <label class="field"><span class="field-label">现居城市 *</span><input data-path="basic.currentCity" type="text" required /></label>
+              <label class="field"><span class="field-label">姓名 <span class="req" aria-label="必填">*</span></span><input data-path="basic.fullName" type="text" required /></label>
+              <label class="field"><span class="field-label">手机 <span class="req" aria-label="必填">*</span></span><input data-path="basic.phone" type="tel" required /></label>
+              <label class="field"><span class="field-label">邮箱 <span class="req" aria-label="必填">*</span></span><input data-path="basic.email" type="email" required /></label>
+              <label class="field"><span class="field-label">现居城市 <span class="req" aria-label="必填">*</span></span><input data-path="basic.currentCity" type="text" required /></label>
               <label class="field"><span class="field-label">英文名</span><input data-path="basic.englishName" type="text" /></label>
               <label class="field"><span class="field-label">曾用名</span><input data-path="basic.formerName" type="text" /></label>
               <label class="field"><span class="field-label">备用手机</span><input data-path="basic.alternatePhone" type="tel" /></label>
@@ -180,7 +197,7 @@
           <details class="editor-block" open>
             <summary>求职意向</summary>
             <div class="form-grid">
-              <label class="field"><span class="field-label">目标职位 *</span><input data-path="jobIntent.targetRole" type="text" required /></label>
+              <label class="field"><span class="field-label">目标职位 <span class="req" aria-label="必填">*</span></span><input data-path="jobIntent.targetRole" type="text" required /></label>
               <label class="field"><span class="field-label">期望城市</span><input data-path="jobIntent.expectedCities" type="text" placeholder="多个用顿号分隔" /></label>
               <label class="field"><span class="field-label">工作城市</span><input data-path="jobIntent.workCity" type="text" /></label>
               <label class="field"><span class="field-label">期望行业</span><input data-path="jobIntent.expectedIndustry" type="text" /></label>

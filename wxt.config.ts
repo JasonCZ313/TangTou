@@ -8,8 +8,9 @@ export default defineConfig({
   publicDir: '../public',
   modules: [],
   manifest: {
-    name: 'Resume Autofill',
-    description: '本机档案 + 用户自备 API Key，通用站点智能填写简历表单（不自动提交）。',
+    name: '躺投',
+    description:
+      '躺投：本机档案 + 用户自备 API Key，通用站点智能填写简历表单（不自动提交）。',
     permissions: ['storage', 'sidePanel', 'scripting'],
     host_permissions: ['http://*/*', 'https://*/*'],
     optional_host_permissions: [
@@ -24,7 +25,7 @@ export default defineConfig({
       128: 'icons/icon-128.png',
     },
     action: {
-      default_title: 'Resume Autofill',
+      default_title: '躺投 — 一键填写',
       // 与 icons 同源，避免加载后仍显示浏览器默认拼图图标
       default_icon: {
         16: 'icons/icon-16.png',

@@ -1,8 +1,8 @@
-# Resume Autofill
+# 躺投（TangTou）
 
 本机维护简历档案，自备 OpenAI 兼容 API Key，在任意网页扫描表单并由 AI 辅助映射填写。无自建服务器、不自动提交表单。
 
-> 本仓库历史远程为躺投（TangTou）：`http://git.jflare.com/CaoZ/TangTou.git`。产品工作名与扩展名为 **Resume Autofill**。
+> 远程：`http://git.jflare.com/CaoZ/TangTou.git`。产品名 **躺投**。
 
 ## 功能简介
 
@@ -150,4 +150,4 @@ npm run zip          # 打包 zip（便于分发）
 
 ## 许可证
 
-MIT © 2026 Resume Autofill Contributors。详见 [`LICENSE`](LICENSE)。
+MIT © 2026 躺投 Contributors。详见 [`LICENSE`](LICENSE)。

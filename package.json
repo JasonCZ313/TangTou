@@ -1,7 +1,8 @@
 {
-  "name": "resume-autofill",
+  "name": "tangtou",
   "private": true,
   "version": "0.1.0",
+  "description": "躺投：本机简历档案智能填写浏览器扩展",
   "type": "module",
   "scripts": {
     "dev": "wxt",

@@ -15,7 +15,16 @@ export function createBoundInput(
 
   const span = document.createElement('span');
   span.className = 'field-label';
-  span.textContent = required ? `${labelText} *` : labelText;
+  span.append(document.createTextNode(labelText));
+  // 必填星号用珊瑚强调色，与静态表单一致
+  if (required) {
+    span.append(document.createTextNode(' '));
+    const reqMark = document.createElement('span');
+    reqMark.className = 'req';
+    reqMark.setAttribute('aria-label', '必填');
+    reqMark.textContent = '*';
+    span.appendChild(reqMark);
+  }
 
   const input = document.createElement('input');
   input.type = inputType;
@@ -72,7 +81,15 @@ export function createBoundSelect(
 
   const span = document.createElement('span');
   span.className = 'field-label';
-  span.textContent = required ? `${labelText} *` : labelText;
+  span.append(document.createTextNode(labelText));
+  if (required) {
+    span.append(document.createTextNode(' '));
+    const reqMark = document.createElement('span');
+    reqMark.className = 'req';
+    reqMark.setAttribute('aria-label', '必填');
+    reqMark.textContent = '*';
+    span.appendChild(reqMark);
+  }
 
   const select = document.createElement('select');
   const blankOption = document.createElement('option');

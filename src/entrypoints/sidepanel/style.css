@@ -1,92 +1,40 @@
-/* 侧边栏：填写计划预览、编辑与确认，变量与 Popup / Options 视觉语言对齐 */
-
-:root {
-  --color-bg: #f6f7f9;
-  --color-surface: #ffffff;
-  --color-border: #d8dde6;
-  --color-text: #1a1f2c;
-  --color-muted: #5c6578;
-  --color-primary: #1f6feb;
-  --color-primary-hover: #1558c0;
-  --color-danger: #c62828;
-  --color-success: #1b7a3d;
-  --color-warn-bg: #fff8e6;
-  --radius: 8px;
-}
-
-* {
-  box-sizing: border-box;
-}
+/* 侧边栏：填写预览，继承躺投品牌令牌 */
+@import "../../shared/ui/brand.css";
 
 body {
-  margin: 0;
-  min-width: 280px;
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  min-width: 300px;
   font-size: 13px;
-  line-height: 1.45;
 }
 
 .sidepanel-page {
-  padding: 14px 14px 20px;
+  padding: 16px 16px 22px;
 }
 
-.sidepanel-header h1 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 650;
-}
-
-.sidepanel-subtitle {
-  margin: 4px 0 0;
-  color: var(--color-muted);
-  font-size: 12px;
+.sidepanel-header {
+  margin-bottom: 2px;
 }
 
 .sidepanel-section {
   margin-top: 14px;
-  padding: 12px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-}
-
-.section-label {
-  margin: 0 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-muted);
+  padding: 14px;
 }
 
 .field-label {
   display: block;
-  margin-bottom: 4px;
-  font-size: 12px;
-  color: var(--color-muted);
-}
-
-.profile-select {
-  display: block;
-  width: 100%;
-  padding: 7px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: #fff;
-  color: var(--color-text);
-  font: inherit;
+  margin-bottom: 6px;
 }
 
 .mapping-section {
-  padding-bottom: 10px;
+  padding-bottom: 12px;
 }
 
 .table-scroll {
   overflow-x: auto;
   max-height: min(55vh, 480px);
   overflow-y: auto;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border: 1.5px solid var(--tt-border);
+  border-radius: var(--tt-radius-sm);
+  background: var(--tt-surface-soft);
 }
 
 .mapping-table {
@@ -97,18 +45,18 @@ body {
 
 .mapping-table th,
 .mapping-table td {
-  padding: 8px 10px;
+  padding: 9px 10px;
   text-align: left;
   vertical-align: middle;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--tt-border);
 }
 
 .mapping-table th {
   position: sticky;
   top: 0;
-  background: #eef1f5;
-  color: var(--color-muted);
-  font-weight: 600;
+  background: var(--tt-primary-soft);
+  color: var(--tt-primary);
+  font-weight: 700;
   z-index: 1;
 }
 
@@ -117,120 +65,37 @@ body {
 }
 
 .mapping-table .empty-row td {
-  color: var(--color-muted);
+  color: var(--tt-muted);
   text-align: center;
-  padding: 16px 10px;
+  padding: 18px 10px;
 }
 
 .field-label-cell {
   max-width: 120px;
   word-break: break-word;
-  color: var(--color-text);
-}
-
-.value-input {
-  display: block;
-  width: 100%;
-  min-width: 100px;
-  padding: 6px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: #fff;
-  color: var(--color-text);
-  font: inherit;
-}
-
-.value-input:focus {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
-  outline-offset: 1px;
-  border-color: var(--color-primary);
+  color: var(--tt-text);
+  font-weight: 600;
 }
 
 .confidence-cell {
   white-space: nowrap;
-  color: var(--color-muted);
+  color: var(--tt-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .skipped-summary {
-  margin: 8px 0 0;
+  margin: 10px 0 0;
   font-size: 12px;
-  color: var(--color-muted);
+  color: var(--tt-muted);
 }
 
 .sidepanel-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  margin-top: 12px;
-}
-
-.btn {
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font: inherit;
-  font-weight: 560;
-  cursor: pointer;
-}
-
-.btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+  margin-top: 14px;
 }
 
 .btn-primary {
   grid-column: 1 / -1;
-  background: var(--color-primary);
-  color: #fff;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-}
-
-.btn-secondary {
-  background: var(--color-surface);
-  border-color: var(--color-border);
-  color: var(--color-text);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  border-color: #b8c0ce;
-  background: #f0f2f5;
-}
-
-.btn-ghost {
-  background: transparent;
-  border-color: var(--color-border);
-  color: var(--color-muted);
-}
-
-.btn-ghost:hover:not(:disabled) {
-  color: var(--color-text);
-  background: #eef0f3;
-}
-
-.status-message {
-  min-height: 1.35em;
-  margin: 12px 0 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  color: var(--color-muted);
-  word-break: break-word;
-}
-
-.status-message.is-info {
-  background: var(--color-warn-bg);
-  color: #7a5b00;
-}
-
-.status-message.is-success {
-  background: #e8f6ec;
-  color: var(--color-success);
-}
-
-.status-message.is-error {
-  background: #fdecea;
-  color: var(--color-danger);
 }
