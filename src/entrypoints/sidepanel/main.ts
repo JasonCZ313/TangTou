@@ -12,12 +12,17 @@ import {
 } from '../../shared/storage/profileStore';
 import { getSettings, saveSettings } from '../../shared/storage/settingsStore';
 import {
+  formatTokenUsageBrief,
+  getTokenUsageStats,
+} from '../../shared/storage/usageStore';
+import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
 import type { FillMode, Profile } from '../../shared/types/profile';
+import type { LlmTokenUsage, TokenUsageStats } from '../../shared/types/usage';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
@@ -97,6 +102,9 @@ const rescanButton = document.getElementById(
 const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
+const tokenUsageLine = document.getElementById(
+  'tokenUsageLine',
+) as HTMLParagraphElement;
 
 const EMPTY_MAPPING_HINT =
   '尚未生成预览。日常请用右上角 Popup「扫描并填写」；也可在此「扫描本页」。';
@@ -109,6 +117,31 @@ function showStatus(message: string, kind: StatusKind = 'info'): void {
 
 function showError(message: string): void {
   showStatus(message, 'error');
+}
+
+/**
+ * 刷新用量行：优先显示本次，否则显示累计摘要。
+ */
+function renderUsageLine(
+  stats: TokenUsageStats,
+  lastCallUsage?: LlmTokenUsage | null,
+): void {
+  if (lastCallUsage) {
+    tokenUsageLine.textContent = `本次 Token：${formatTokenUsageBrief(lastCallUsage)} · 累计 ${stats.totalTokens}（${stats.callCount} 次）`;
+    return;
+  }
+  if (stats.callCount === 0) {
+    tokenUsageLine.textContent = 'Token：尚无 LLM 调用记录';
+    return;
+  }
+  tokenUsageLine.textContent = `Token 累计 ${stats.totalTokens}（${stats.callCount} 次）· 详情见设置页`;
+}
+
+async function refreshUsageLine(
+  lastCallUsage?: LlmTokenUsage | null,
+): Promise<void> {
+  const stats = await getTokenUsageStats();
+  renderUsageLine(stats, lastCallUsage);
 }
 
 /**
@@ -340,6 +373,7 @@ async function loadState(): Promise<void> {
     response.profiles,
     response.settings.activeProfileId,
   );
+  renderUsageLine(response.tokenUsage);
 }
 
 /**
@@ -497,6 +531,7 @@ async function runRescanFlow(profileId: string): Promise<void> {
     `已生成预览：${planResponse.plan.items.length} 项可填，可改值后确认写入`,
     'success',
   );
+  await refreshUsageLine(planResponse.usage ?? null);
 }
 
 async function withBusy(action: () => Promise<void>): Promise<void> {
@@ -611,6 +646,7 @@ function bindEvents(): void {
           `已加载预览：${currentSession.plan.items.length} 项可填`,
           'info',
         );
+        await refreshUsageLine();
       }
     })();
   });

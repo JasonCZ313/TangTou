@@ -37,7 +37,13 @@ import {
   normalizeProfileData,
   validateProfileData,
 } from '../../shared/storage/normalize';
+import {
+  formatTokenUsageBrief,
+  getTokenUsageStats,
+  resetTokenUsageStats,
+} from '../../shared/storage/usageStore';
 import type { FillMode, Profile, ProfileData, RegionSelection } from '../../shared/types/profile';
+import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import { fillStaticSelectsByCatalog } from './editorWidgets';
 import { appendListItem, renderAllDynamicLists } from './editorLists';
@@ -162,6 +168,12 @@ const apiKeyInput = document.getElementById('apiKeyInput') as HTMLInputElement;
 const modelInput = document.getElementById('modelInput') as HTMLInputElement;
 const testApiButton = document.getElementById(
   'testApiButton',
+) as HTMLButtonElement;
+const tokenUsageSummary = document.getElementById(
+  'tokenUsageSummary',
+) as HTMLParagraphElement;
+const resetTokenUsageButton = document.getElementById(
+  'resetTokenUsageButton',
 ) as HTMLButtonElement;
 const fillModePreview = document.getElementById(
   'fillModePreview',
@@ -442,14 +454,38 @@ function applyRegionCommit(
   writePathObject(data, binding.regionPath, selection);
 }
 
+/**
+ * 把 Token 统计渲染到 API 区用量面板。
+ */
+function renderTokenUsageSummary(stats: TokenUsageStats): void {
+  if (stats.callCount === 0) {
+    tokenUsageSummary.textContent =
+      '尚无 LLM 填写调用记录。扫描并生成填写计划且走模型时，会按接口返回的 usage 累加（部分兼容接口可能不返回用量）。';
+    return;
+  }
+  const lastText = stats.lastCall
+    ? `上次 ${formatTokenUsageBrief(stats.lastCall)}${
+        stats.lastCallAt
+          ? `（${new Date(stats.lastCallAt).toLocaleString('zh-CN')}）`
+          : ''
+      }`
+    : '上次无明细';
+  tokenUsageSummary.textContent = [
+    `累计调用 ${stats.callCount} 次`,
+    `合计 Token ${stats.totalTokens}（提示 ${stats.totalPromptTokens} · 补全 ${stats.totalCompletionTokens}）`,
+    lastText,
+  ].join(' · ');
+}
+
 async function bootstrapOptionsPage(): Promise<void> {
   try {
     ensureStaticCatalogsReady();
     setupEditorToc();
 
-    const [settings, profiles] = await Promise.all([
+    const [settings, profiles, tokenUsage] = await Promise.all([
       getSettings(),
       listProfiles(),
+      getTokenUsageStats(),
     ]);
     cachedProfiles = profiles;
     activeProfileId = settings.activeProfileId;
@@ -459,6 +495,7 @@ async function bootstrapOptionsPage(): Promise<void> {
     modelInput.value = settings.model;
     fillModePreview.checked = settings.fillMode === 'preview';
     fillModeDirect.checked = settings.fillMode === 'direct';
+    renderTokenUsageSummary(tokenUsage);
 
     renderProfileList();
     renderCloneSourceOptions();
@@ -962,16 +999,16 @@ function collectStaticFieldsIntoDraft(data: ProfileData): void {
   }
 
   // 地区 Cascader：用展示框文案兜底写入字符串字段
-  const regionLabels = profileEditorForm.querySelectorAll<HTMLLabelElement>(
+  const regionFields = profileEditorForm.querySelectorAll<HTMLElement>(
     '[data-region-bound]',
   );
-  for (const regionLabel of regionLabels) {
-    const regionKey = regionLabel.dataset.regionBound ?? '';
+  for (const regionField of regionFields) {
+    const regionKey = regionField.dataset.regionBound ?? '';
     const binding = REGION_FIELD_BINDINGS[regionKey];
     if (!binding) {
       continue;
     }
-    const displayInput = regionLabel.querySelector<HTMLInputElement>(
+    const displayInput = regionField.querySelector<HTMLInputElement>(
       '.region-cascader-display',
     );
     if (!displayInput) {
@@ -1159,6 +1196,17 @@ function bindEventListeners(): void {
   });
   testApiButton.addEventListener('click', () => {
     handleTestApiConnection();
+  });
+  resetTokenUsageButton.addEventListener('click', () => {
+    void (async () => {
+      try {
+        const empty = await resetTokenUsageStats();
+        renderTokenUsageSummary(empty);
+        showStatus('Token 统计已清零', 'success');
+      } catch (error) {
+        showStatus(mapErrorMessage(error), 'error');
+      }
+    })();
   });
   fillModePreview.addEventListener('change', () => {
     void handleFillModeChange();

@@ -4,6 +4,9 @@
  */
 import { setActiveProfileId } from '../../shared/storage/profileStore';
 import {
+  formatTokenUsageBrief,
+} from '../../shared/storage/usageStore';
+import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
@@ -215,7 +218,12 @@ async function runFillFlow(profileId: string): Promise<void> {
     await chrome.storage.session.set({ pendingFillSession });
     // 必须在 Popup 内直接 open：经 Background 会丢失「用户手势」导致失败
     await openSidePanelFromPopup();
-    showStatus('已打开侧边助手，请核对后写入', 'success');
+    const usageTip =
+      fillPlanResponseUsageText(planResponse.usage);
+    showStatus(
+      `已打开侧边助手，请核对后写入${usageTip}`,
+      'success',
+    );
     return;
   }
 
@@ -227,10 +235,23 @@ async function runFillFlow(profileId: string): Promise<void> {
   if (applyResponse.type !== 'APPLY_FILL_RESULT') {
     throw new Error('写入页面失败');
   }
+  const usageTip = fillPlanResponseUsageText(planResponse.usage);
   showStatus(
-    `已填写 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped}`,
+    `已填写 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped}${usageTip}`,
     'success',
   );
+}
+
+/**
+ * 把 FILL_PLAN 带回的 usage 格式成状态后缀。
+ */
+function fillPlanResponseUsageText(
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null | undefined,
+): string {
+  if (!usage) {
+    return '';
+  }
+  return ` · Token ${formatTokenUsageBrief(usage)}`;
 }
 
 /**

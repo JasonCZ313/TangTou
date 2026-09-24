@@ -138,11 +138,11 @@ function buildRegionSelection(
 }
 
 /**
- * 创建省市区三级选择器（label.field 根节点）。
+ * 创建省市区三级选择器（div.field 根节点，避免 label 吞点击导致选完又自动打开）。
  */
 export function createRegionCascader(
   config: RegionCascaderOptions,
-): HTMLLabelElement {
+): HTMLDivElement {
   const {
     labelText,
     initialText,
@@ -153,8 +153,9 @@ export function createRegionCascader(
     multiAppend = false,
   } = config;
 
-  const label = document.createElement('label');
-  label.className = 'field region-field';
+  // 用 div 而非 label：面板内点选项时，label 会连带激活只读输入并再次 openPanel
+  const root = document.createElement('div');
+  root.className = 'field region-field';
 
   const titleSpan = document.createElement('span');
   titleSpan.className = 'field-label';
@@ -243,7 +244,7 @@ export function createRegionCascader(
 
   panel.append(panelHeader, searchInput, list, statusLine);
   wrap.append(triggerRow, panel);
-  label.append(titleSpan, wrap);
+  root.append(titleSpan, wrap);
 
   /** 当前选中的结构化结果（单选模式） */
   let currentSelection: RegionSelection | null =
@@ -257,6 +258,8 @@ export function createRegionCascader(
   /** 当前级展示的节点列表 */
   let levelNodes: RegionNode[] = [];
   let allProvinces: RegionNode[] = [];
+  /** 选完关闭后短暂忽略再次打开，防止同一次点击穿透 */
+  let ignoreOpenUntilMs = 0;
 
   /**
    * 更新清空按钮可见性。
@@ -266,16 +269,28 @@ export function createRegionCascader(
   }
 
   /**
-   * 关闭面板并复位搜索。
+   * 关闭面板并复位搜索与下钻路径。
    */
   function closePanel(): void {
     wrap.dataset.open = 'false';
     panel.hidden = true;
     searchInput.value = '';
+    pathProvince = null;
+    pathCity = null;
+    levelNodes = [];
+    // 约一帧多一点，挡住选完后穿透到「选择」/展示框的二次打开
+    ignoreOpenUntilMs = Date.now() + 400;
   }
 
   /**
-   * 提交最终选择：写入展示与回调。
+   * 是否允许打开面板（选完后的短时锁）。
+   */
+  function canOpenPanel(): boolean {
+    return Date.now() >= ignoreOpenUntilMs;
+  }
+
+  /**
+   * 提交最终选择：写入展示、回调，并关闭面板。
    */
   function commitSelection(selection: RegionSelection): void {
     if (multiAppend) {
@@ -323,12 +338,20 @@ export function createRegionCascader(
       listItem.setAttribute('role', 'option');
       listItem.textContent = node.name;
       listItem.tabIndex = 0;
-      listItem.addEventListener('click', () => {
+      // mousedown 阻止默认，避免焦点跑到别处；click 再提交
+      listItem.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      listItem.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         void handleNodePick(node);
       });
       listItem.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
+          event.stopPropagation();
           void handleNodePick(node);
         }
       });
@@ -372,12 +395,11 @@ export function createRegionCascader(
   }
 
   /**
-   * 处理节点点击：有下级则下钻，无下级则确认。
+   * 处理节点点击：有下级则下钻，无下级则确认并关闭。
    */
   async function handleNodePick(node: RegionNode): Promise<void> {
     const children = node.children ?? [];
     if (!pathProvince) {
-      // 选省
       if (children.length === 0) {
         commitSelection(buildRegionSelection(node, null, null));
         return;
@@ -386,7 +408,6 @@ export function createRegionCascader(
       return;
     }
     if (!pathCity) {
-      // 选市
       if (children.length === 0) {
         commitSelection(buildRegionSelection(pathProvince, node, null));
         return;
@@ -394,7 +415,7 @@ export function createRegionCascader(
       enterLevel(children, pathProvince, node);
       return;
     }
-    // 选区：区级无下级或有下级都确认当前区
+    // 选到区：写入并关闭
     commitSelection(buildRegionSelection(pathProvince, pathCity, node));
   }
 
@@ -415,6 +436,9 @@ export function createRegionCascader(
    * 打开面板并确保数据已加载。
    */
   async function openPanel(): Promise<void> {
+    if (!canOpenPanel()) {
+      return;
+    }
     wrap.dataset.open = 'true';
     panel.hidden = false;
     statusLine.hidden = false;
@@ -444,9 +468,11 @@ export function createRegionCascader(
 
   displayInput.addEventListener('click', (event) => {
     event.preventDefault();
-    if (wrap.dataset.open !== 'true') {
-      void openPanel();
+    event.stopPropagation();
+    if (wrap.dataset.open === 'true') {
+      return;
     }
+    void openPanel();
   });
 
   clearButton.addEventListener('click', (event) => {
@@ -461,11 +487,13 @@ export function createRegionCascader(
 
   backButton.addEventListener('click', (event) => {
     event.preventDefault();
+    event.stopPropagation();
     goBack();
   });
 
   closeButton.addEventListener('click', (event) => {
     event.preventDefault();
+    event.stopPropagation();
     closePanel();
   });
 
@@ -473,7 +501,7 @@ export function createRegionCascader(
     renderLevelList(searchInput.value);
   });
 
-  // 点击外部关闭
+  // 点击面板外关闭
   document.addEventListener('mousedown', (event) => {
     if (wrap.dataset.open !== 'true') {
       return;
@@ -484,32 +512,32 @@ export function createRegionCascader(
     }
   });
 
-  // 对外：通过 dataset 与 input 同步展示值
   displayInput.addEventListener('change', () => {
-    label.dataset.regionDisplay = displayInput.value;
+    root.dataset.regionDisplay = displayInput.value;
   });
 
   /**
    * 程序化设置展示文案（切换档案时用）。
    */
-  (label as HTMLLabelElement & {
+  (root as HTMLDivElement & {
     setRegionDisplay?: (text: string, region?: RegionSelection | null) => void;
   }).setRegionDisplay = (text: string, region?: RegionSelection | null) => {
     displayInput.value = region?.text?.trim() || text.trim() || '';
     currentSelection =
       region && region.text.trim() ? { ...region } : null;
     syncClearVisibility();
-    label.dataset.regionDisplay = displayInput.value;
+    root.dataset.regionDisplay = displayInput.value;
   };
 
-  return label;
+  root.dataset.regionDisplay = displayInput.value;
+  return root;
 }
 
 /**
- * 读取标签上绑定的地区展示文案。
+ * 读取地区控件上的展示文案。
  */
-export function readRegionDisplay(label: HTMLLabelElement): string {
-  const input = label.querySelector<HTMLInputElement>(
+export function readRegionDisplay(fieldRoot: HTMLElement): string {
+  const input = fieldRoot.querySelector<HTMLInputElement>(
     '.region-cascader-display',
   );
   return input?.value.trim() ?? '';
@@ -580,18 +608,18 @@ export function syncRegionBoundDisplays(
     binding: RegionFieldBinding,
   ) => { text: string; region: RegionSelection | null },
 ): void {
-  const labels = [
-    ...rootElement.querySelectorAll<HTMLLabelElement>('[data-region-bound]'),
+  const fieldRoots = [
+    ...rootElement.querySelectorAll<HTMLElement>('[data-region-bound]'),
   ];
-  for (const label of labels) {
-    const regionKey = label.dataset.regionBound ?? '';
+  for (const fieldRoot of fieldRoots) {
+    const regionKey = fieldRoot.dataset.regionBound ?? '';
     const binding = bindings[regionKey];
     if (!binding) {
       continue;
     }
     const current = readCurrent(binding);
     const setter = (
-      label as HTMLLabelElement & {
+      fieldRoot as HTMLElement & {
         setRegionDisplay?: (
           text: string,
           region?: RegionSelection | null,
@@ -613,7 +641,7 @@ export function createBoundRegionField(
   initialRegion: RegionSelection | null | undefined,
   onChange: (selection: RegionSelection | null, displayText: string) => void,
   required: boolean = false,
-): HTMLLabelElement {
+): HTMLDivElement {
   return createRegionCascader({
     labelText,
     initialText,

@@ -1,4 +1,6 @@
 import type { FillMappingItem, FillPlan } from '../types/fill';
+import { parseUsageFromPayload } from '../storage/usageStore';
+import type { LlmTokenUsage } from '../types/usage';
 
 /** Chat Completions 请求体中的单条消息 */
 interface ChatMessage {
@@ -152,13 +154,13 @@ async function postChatCompletions(args: {
 }
 
 /**
- * 调用 OpenAI 兼容 Chat Completions，解析为 FillPlan。
+ * 调用 OpenAI 兼容 Chat Completions，解析为 FillPlan，并尽量带回 usage。
  * apiKey 仅在此函数参数中出现，调用方必须是 background。
  * 若服务端拒绝 response_format，则去掉该字段自动重试一次。
  */
 export async function requestFillPlan(
   options: RequestFillPlanOptions,
-): Promise<FillPlan> {
+): Promise<{ plan: FillPlan; usage: LlmTokenUsage | null }> {
   const baseUrl = options.apiBaseUrl.replace(/\/$/, '');
   const endpointUrl = `${baseUrl}/chat/completions`;
   const controller = new AbortController();
@@ -210,6 +212,7 @@ export async function requestFillPlan(
 
     const payload = (await response.json()) as {
       choices?: Array<{ message?: { content?: unknown } }>;
+      usage?: unknown;
     };
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== 'string') {
@@ -226,11 +229,12 @@ export async function requestFillPlan(
     ) {
       throw new Error('LLM_INVALID_SHAPE');
     }
-    // 过滤畸形 item，并对 confidence 做 0..1 夹紧后再返回
-    return normalizeFillPlan({
+    const plan = normalizeFillPlan({
       items: parsed.items,
       skippedFieldIds: parsed.skippedFieldIds,
     });
+    const usage = parseUsageFromPayload(payload);
+    return { plan, usage };
   } finally {
     clearTimeout(timer);
   }

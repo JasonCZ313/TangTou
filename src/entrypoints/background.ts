@@ -7,6 +7,11 @@ import {
 } from '../shared/llm/openaiCompatible';
 import { listProfiles, getProfile } from '../shared/storage/profileStore';
 import { getSettings } from '../shared/storage/settingsStore';
+import {
+  getTokenUsageStats,
+  recordTokenUsage,
+  resetTokenUsageStats,
+} from '../shared/storage/usageStore';
 import type { FillPlan } from '../shared/types/fill';
 import type { ExtensionMessage } from '../shared/types/messages';
 import { sendToActiveTab } from '../shared/messaging/send';
@@ -103,15 +108,17 @@ async function handleGetState(
       message: '不允许从网页上下文读取密钥',
     };
   }
-  const [settings, profiles] = await Promise.all([
+  const [settings, profiles, tokenUsage] = await Promise.all([
     getSettings(),
     listProfiles(),
+    getTokenUsageStats(),
   ]);
   return {
     type: 'GET_STATE_RESULT',
     requestId,
     settings,
     profiles,
+    tokenUsage,
   };
 }
 
@@ -254,7 +261,7 @@ async function handleBuildFillPlan(
   }
 
   const { system, user } = buildFillPrompt(profile.data, remainingFields);
-  const llmPlan = await requestFillPlan({
+  const { plan: llmPlan, usage } = await requestFillPlan({
     apiBaseUrl: settings.apiBaseUrl,
     apiKey: settings.apiKey,
     model: settings.model,
@@ -262,10 +269,16 @@ async function handleBuildFillPlan(
     user,
   });
 
+  // 有 usage 则累加到本机统计（部分兼容接口不返回 usage）
+  if (usage) {
+    await recordTokenUsage(usage);
+  }
+
   return {
     type: 'FILL_PLAN_RESULT',
     requestId: message.requestId,
     plan: mergeHeuristicAndLlmPlan(partialPlan, llmPlan),
+    usage: usage ?? null,
   };
 }
 
@@ -304,6 +317,20 @@ async function handleOpenSidePanel(
 }
 
 /**
+ * 清空本机累计 Token 用量。
+ */
+async function handleResetTokenUsage(
+  requestId: string,
+): Promise<ExtensionMessage> {
+  const tokenUsage = await resetTokenUsageStats();
+  return {
+    type: 'RESET_TOKEN_USAGE_RESULT',
+    requestId,
+    tokenUsage,
+  };
+}
+
+/**
  * 将 SCAN_FIELDS / APPLY_FILL_PLAN / UNDO_LAST_FILL 转发到活动标签页 content script。
  * 供 Popup 等无法直接 tabs.sendMessage 时经 background 中转（也可直接用 shared sendToActiveTab）。
  */
@@ -329,6 +356,8 @@ async function dispatchMessage(
       return handleBuildFillPlan(message);
     case 'OPEN_SIDE_PANEL':
       return handleOpenSidePanel(message.requestId, sender.tab?.id);
+    case 'RESET_TOKEN_USAGE':
+      return handleResetTokenUsage(message.requestId);
     case 'SCAN_FIELDS':
     case 'APPLY_FILL_PLAN':
     case 'UNDO_LAST_FILL':

@@ -266,6 +266,37 @@ body {
   font-size: 13px;
 }
 
+.tip-banner {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--tt-primary-soft);
+  border: 1px solid var(--tt-border);
+  color: var(--tt-text-secondary);
+  line-height: 1.45;
+}
+
+.usage-panel {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--tt-surface-soft);
+  border: 1.5px dashed var(--tt-border-strong);
+}
+
+.usage-heading {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--tt-primary);
+}
+
+.usage-summary {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tt-text-secondary);
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

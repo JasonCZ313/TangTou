@@ -24,6 +24,7 @@
         </div>
         <p class="page-kicker">
           管理 API、填写模式与本机简历档案（最多 5 份）。一次填全，长期复用。
+          <strong>档案填得越完整，扫描映射越准、漏填越少。</strong>
         </p>
       </header>
 
@@ -33,6 +34,10 @@
       <!-- 分区 1：OpenAI 兼容 API 配置 -->
       <section class="panel" id="apiSection" aria-labelledby="apiHeading">
         <h2 id="apiHeading">API 设置</h2>
+        <p class="hint tip-banner">
+          提示：教育/经历/项目等尽量填全；必填项齐全后再用 AI 填写，效果最好。Token
+          费用由你的 API 服务商结算，下方仅统计本机调用返回的用量。
+        </p>
         <form id="apiForm" class="form-grid">
           <label class="field">
             <span class="field-label">API Base URL</span>
@@ -73,6 +78,15 @@
             </button>
           </div>
         </form>
+
+        <!-- Token 用量：主查看入口在 Options，侧栏/Popup 只显示最近一次摘要 -->
+        <div class="usage-panel" aria-labelledby="usageHeading">
+          <h3 id="usageHeading" class="usage-heading">Token 消耗（本机统计）</h3>
+          <p id="tokenUsageSummary" class="usage-summary">加载中…</p>
+          <button type="button" id="resetTokenUsageButton" class="btn btn-ghost btn-sm">
+            清零统计
+          </button>
+        </div>
       </section>
 
       <!-- 分区 2：填写模式（预览 / 直接） -->
@@ -153,6 +167,9 @@
           </nav>
           <form id="profileEditorForm" class="editor-form">
           <p id="editorValidationHint" class="hint" role="status"></p>
+          <p class="hint tip-banner">
+            填写越全，扫描时匹配越准：硬必填先补齐，教育/实习/项目与求职意向尽量写细，有助于少漏填、少改预览。
+          </p>
           <p class="req-legend">
             <span class="req-mark" aria-hidden="true">*</span>
             珊瑚色星号为硬必填；分区标题为青绿大标题；字段说明为灰色正文。日期精确到日。
