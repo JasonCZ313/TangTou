@@ -3,10 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>躺投 — 填写预览</title>
+    <title>躺投 — 侧边助手</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
+    <!--
+      侧边助手：
+      - 设置/建档案：在本侧栏完成（不跳扩展管理弹窗）
+      - 填写预览：扫描后在此核对；日常扫描仍用右上角 Popup
+    -->
     <main class="sidepanel-page">
       <header class="sidepanel-header">
         <div class="brand-header">
@@ -19,17 +24,105 @@
           />
           <div class="brand-copy">
             <h1 class="brand-name">躺投</h1>
-            <p class="brand-tagline">填写预览 · 核对后再写入</p>
+            <p class="brand-tagline">侧边助手 · 设置与填写预览</p>
           </div>
         </div>
       </header>
 
+      <!-- 设置区：默认可折叠；从 Popup「打开设置」进入时自动展开 -->
+      <details id="settingsDetails" class="sidepanel-section settings-details">
+        <summary class="settings-summary">设置与新建档案</summary>
+        <div class="settings-body">
+          <form id="apiSettingsForm" class="settings-form" autocomplete="off">
+            <label class="field">
+              <span class="field-label">API Base URL</span>
+              <input
+                id="apiBaseUrlInput"
+                type="url"
+                placeholder="https://api.openai.com/v1"
+                required
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">API Key</span>
+              <input
+                id="apiKeyInput"
+                type="password"
+                placeholder="仅保存在本机"
+                autocomplete="off"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">模型</span>
+              <input id="modelInput" type="text" placeholder="gpt-4o-mini" />
+            </label>
+            <fieldset class="fill-mode-fieldset">
+              <legend class="field-label">填写模式</legend>
+              <label class="radio-row">
+                <input
+                  type="radio"
+                  name="fillMode"
+                  id="fillModePreview"
+                  value="preview"
+                  checked
+                />
+                <span>预览后写入（推荐）</span>
+              </label>
+              <label class="radio-row">
+                <input
+                  type="radio"
+                  name="fillMode"
+                  id="fillModeDirect"
+                  value="direct"
+                />
+                <span>直接填写</span>
+              </label>
+            </fieldset>
+            <div class="settings-form-actions">
+              <button type="submit" class="btn btn-primary" id="saveSettingsButton">
+                保存设置
+              </button>
+              <button type="button" class="btn btn-secondary" id="testApiButton">
+                测试连接
+              </button>
+            </div>
+          </form>
+
+          <form id="createProfileForm" class="settings-form create-profile-form">
+            <label class="field">
+              <span class="field-label">新建档案名称</span>
+              <input
+                id="newProfileNameInput"
+                type="text"
+                placeholder="例如：校招主投"
+                maxlength="40"
+                required
+              />
+            </label>
+            <button type="submit" class="btn btn-secondary" id="createProfileButton">
+              创建档案
+            </button>
+            <p id="profileLimitTip" class="hint-text" hidden>
+              已达上限 5 份档案，请先在完整编辑页删除后再建。
+            </p>
+          </form>
+
+          <button type="button" id="openFullEditorButton" class="btn btn-ghost full-editor-btn">
+            编辑完整简历档案（新标签页）
+          </button>
+        </div>
+      </details>
+
       <section class="sidepanel-section" aria-labelledby="profileHeading">
-        <h2 id="profileHeading" class="section-label">档案</h2>
+        <h2 id="profileHeading" class="section-label">本页填写</h2>
         <label class="field-label" for="profileSelect">选用档案</label>
         <select id="profileSelect" class="profile-select">
           <option value="">加载中…</option>
         </select>
+        <label class="checkbox-row" for="setDefaultCheckbox">
+          <input type="checkbox" id="setDefaultCheckbox" />
+          <span>设为默认档案</span>
+        </label>
       </section>
 
       <section class="sidepanel-section mapping-section" aria-labelledby="mappingHeading">
@@ -45,7 +138,9 @@
             </thead>
             <tbody id="mappingTableBody">
               <tr class="empty-row">
-                <td colspan="3">暂无预览计划，请先在 Popup 扫描或点击「重新扫描」</td>
+                <td colspan="3">
+                  尚未生成预览。日常请用右上角 Popup「扫描并填写」；也可在此「扫描本页」。
+                </td>
               </tr>
             </tbody>
           </table>
@@ -53,15 +148,15 @@
         <p id="skippedSummary" class="skipped-summary" hidden></p>
       </section>
 
-      <section class="sidepanel-actions" aria-label="预览操作">
-        <button type="button" id="confirmButton" class="btn btn-primary">
+      <section class="sidepanel-actions" aria-label="助手操作">
+        <button type="button" id="confirmButton" class="btn btn-primary action-confirm">
           确认写入
         </button>
-        <button type="button" id="undoButton" class="btn btn-ghost">
-          撤销本轮
+        <button type="button" id="rescanButton" class="btn btn-secondary action-scan">
+          扫描本页
         </button>
-        <button type="button" id="rescanButton" class="btn btn-secondary">
-          重新扫描
+        <button type="button" id="undoButton" class="btn btn-ghost action-undo">
+          撤销本轮
         </button>
       </section>
 

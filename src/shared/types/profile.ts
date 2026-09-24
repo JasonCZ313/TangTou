@@ -10,13 +10,43 @@ export interface AppSettings {
   activeProfileId: string | null;
 }
 
+/**
+ * 省市区三级选择结果。
+ * text 供展示与 LLM；code/name 用于回显与回跳。
+ */
+export interface RegionSelection {
+  provinceCode: string;
+  provinceName: string;
+  cityCode: string;
+  cityName: string;
+  districtCode: string;
+  districtName: string;
+  /** 展示文案，如「广东省 / 深圳市 / 南山区」 */
+  text: string;
+}
+
+/** 创建空白地区选择 */
+export function createEmptyRegionSelection(): RegionSelection {
+  return {
+    provinceCode: '',
+    provinceName: '',
+    cityCode: '',
+    cityName: '',
+    districtCode: '',
+    districtName: '',
+    text: '',
+  };
+}
+
 /** 基本信息（联系与身份） */
 export interface BasicInfo {
   fullName: string;
   phone: string;
   email: string;
-  /** 现居城市（硬必填） */
+  /** 现居城市展示文案（硬必填） */
   currentCity: string;
+  /** 现居城市结构化 */
+  currentCityRegion?: RegionSelection;
   /** @deprecated 兼容旧字段，归一化时并入 currentCity */
   city?: string;
   englishName?: string;
@@ -26,18 +56,27 @@ export interface BasicInfo {
   gender?: string;
   birthday?: string;
   age?: string;
+  /** 国籍（硬必填） */
   nationality?: string;
   ethnicity?: string;
+  /** 籍贯展示文案（硬必填） */
   nativePlace?: string;
+  nativePlaceRegion?: RegionSelection;
   birthPlace?: string;
+  birthPlaceRegion?: RegionSelection;
   hukouLocation?: string;
+  hukouLocationRegion?: RegionSelection;
   hukouType?: string;
   currentAddress?: string;
   postalCode?: string;
+  /** 证件类型（硬必填） */
   idType?: string;
+  /** 证件号码（硬必填） */
   idNumber?: string;
+  /** 政治面貌（硬必填） */
   politicalStatus?: string;
   partyJoinDate?: string;
+  /** 婚姻状况（硬必填） */
   maritalStatus?: string;
   fertilityStatus?: string;
   healthStatus?: string;
@@ -55,7 +94,10 @@ export interface BasicInfo {
 /** 求职意向 */
 export interface JobIntent {
   targetRole: string;
+  /** 期望城市展示文案（多个用顿号分隔） */
   expectedCities?: string;
+  /** 期望城市结构化列表（与文案对应） */
+  expectedCitiesRegions?: RegionSelection[];
   expectedIndustry?: string;
   jobType?: string;
   jobStatus?: string;
@@ -65,12 +107,27 @@ export interface JobIntent {
   /** 兼容旧字段 */
   expectedSalary?: string;
   availableDate?: string;
+  /** 工作城市展示文案 */
   workCity?: string;
+  /** 工作城市结构化 */
+  workCityRegion?: RegionSelection;
   acceptTravel?: string;
   acceptRelocation?: string;
   acceptOvertime?: string;
   yearsOfExperience?: string;
   selfIntroShort?: string;
+}
+
+/** 双学位时的第二学位信息 */
+export interface SecondDegreeInfo {
+  school: string;
+  major: string;
+  degreeLevel: string;
+  academicDegree?: string;
+  college?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
 }
 
 /** 单条教育经历 */
@@ -91,13 +148,18 @@ export interface EducationItem {
   isHighest?: boolean;
   isFirstDegree?: boolean;
   durationYears?: string;
+  /** 就读城市展示文案 */
   city?: string;
+  /** 就读城市结构化 */
+  cityRegion?: RegionSelection;
   gpa?: string;
   rank?: string;
   courses?: string;
   campusRole?: string;
   thesis?: string;
   description?: string;
+  /** 学位为双学位时填写 */
+  secondDegree?: SecondDegreeInfo;
 }
 
 /** 单条实习/工作经历 */
@@ -108,7 +170,10 @@ export interface ExperienceItem {
   endDate: string;
   isCurrent?: boolean;
   department?: string;
+  /** 工作城市展示文案 */
   city?: string;
+  /** 工作城市结构化 */
+  cityRegion?: RegionSelection;
   employmentType?: string;
   companyType?: string;
   industry?: string;
@@ -116,7 +181,14 @@ export interface ExperienceItem {
   refereeName?: string;
   refereePhone?: string;
   leaveReason?: string;
+  /** 总述（兼容旧字段） */
   description: string;
+  /** 工作职责（条目/要点） */
+  responsibilities?: string;
+  /** 工作内容（日常做了什么） */
+  workContent?: string;
+  /** 业绩/成果（量化优先） */
+  achievements?: string;
 }
 
 /** 单条项目经历 */
@@ -129,7 +201,12 @@ export interface ProjectItem {
   link?: string;
   techStack?: string;
   teamSize?: string;
+  /** 总述 */
   description: string;
+  /** 项目内容 */
+  content?: string;
+  /** 项目价值/成果 */
+  value?: string;
 }
 
 /** 校园/社团/志愿 */
@@ -139,6 +216,14 @@ export interface CampusActivityItem {
   startDate?: string;
   endDate?: string;
   description?: string;
+}
+
+/** 单条技能（结构化，禁止逗号拼接） */
+export interface SkillItem {
+  name: string;
+  level?: string;
+  years?: string;
+  category?: string;
 }
 
 /** 语言能力 */
@@ -156,8 +241,10 @@ export interface CertificateItem {
   level?: string;
   issuer?: string;
   date?: string;
+  expireDate?: string;
   number?: string;
   major?: string;
+  description?: string;
 }
 
 /** 奖项 */
@@ -165,6 +252,7 @@ export interface AwardItem {
   name: string;
   level?: string;
   date?: string;
+  issuer?: string;
   description?: string;
 }
 
@@ -215,6 +303,8 @@ export interface SpecialOrgInfo {
   reportLetterTitle?: string;
   studentOrigin?: string;
   directedTraining?: string;
+  grassrootsService?: string;
+  civilServiceExamHistory?: string;
 }
 
 /** 外企/工作许可 */
@@ -223,6 +313,52 @@ export interface WorkAuthInfo {
   currentWorkAuth?: string;
   willingToRelocate?: string;
   linkedinUrl?: string;
+  englishResumeUrl?: string;
+  passportNationality?: string;
+}
+
+/**
+ * 多行业网申补充字段（全部可选，按目标行业填写）。
+ * 值均为字符串，便于映射到任意站点表单。
+ */
+export interface IndustryExtras {
+  // —— 银行/金融 ——
+  acceptCounterWork?: string;
+  acceptSuburbTransfer?: string;
+  riskComplianceAck?: string;
+  relativeInFinance?: string;
+  securitiesFundCert?: string;
+  amlTraining?: string;
+  // —— 医疗/医护 ——
+  medicalLicense?: string;
+  residencyTraining?: string;
+  departmentIntent?: string;
+  acceptNightShift?: string;
+  infectiousDiseaseNote?: string;
+  // —— 教师/教育 ——
+  teacherCertStage?: string;
+  teacherCertSubject?: string;
+  mandarinLevel?: string;
+  teacherExamStatus?: string;
+  // —— 法律 ——
+  judicialExam?: string;
+  lawPracticeArea?: string;
+  lawFirmCourtIntern?: string;
+  // —— 互联网/产品技术 ——
+  openSourceContrib?: string;
+  techBlogUrl?: string;
+  // —— 制造/物流/蓝领 ——
+  driverLicenseType?: string;
+  specialOperationCert?: string;
+  acceptShiftWork?: string;
+  acceptOnsiteTravel?: string;
+  // —— 军工/保密 ——
+  politicalReviewWilling?: string;
+  classifiedWorkNote?: string;
+  // —— 实习专项 ——
+  weeklyOnsiteDays?: string;
+  internToFullTime?: string;
+  internDurationMonths?: string;
 }
 
 /** 自定义问答素材 */
@@ -250,7 +386,7 @@ export interface ProfileData {
   experience: ExperienceItem[];
   projects: ProjectItem[];
   campusActivities: CampusActivityItem[];
-  skills: string[];
+  skills: SkillItem[];
   computerLevel?: string;
   officeSkillLevel?: string;
   languages: LanguageItem[];
@@ -259,9 +395,12 @@ export interface ProfileData {
   publications: PublicationItem[];
   trainings: TrainingItem[];
   familyMembers: FamilyMemberItem[];
-  emergencyContact: EmergencyContact;
+  /** @deprecated 兼容旧单对象，归一化迁入 emergencyContacts */
+  emergencyContact?: EmergencyContact;
+  emergencyContacts: EmergencyContact[];
   specialOrg: SpecialOrgInfo;
   workAuth: WorkAuthInfo;
+  industryExtras: IndustryExtras;
   essays: EssayBank;
   attachmentNotes: AttachmentNotes;
   /** 自由补充说明 */

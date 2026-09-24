@@ -37,4 +37,15 @@ export default defineConfig({
       default_path: 'sidepanel.html',
     },
   },
+  /**
+   * WXT 生成 options_ui.page 后补上 open_in_tab，
+   * 避免 Edge 把 Options 盖在扩展管理页上的小弹窗。
+   */
+  hooks: {
+    'build:manifestGenerated'(_wxt, manifest) {
+      if (manifest.options_ui) {
+        manifest.options_ui.open_in_tab = true;
+      }
+    },
+  },
 });

@@ -213,11 +213,9 @@ async function runFillFlow(profileId: string): Promise<void> {
       fields: scannedFields,
     };
     await chrome.storage.session.set({ pendingFillSession });
-    await requestBackground({
-      type: 'OPEN_SIDE_PANEL',
-      requestId: createRequestId(),
-    });
-    showStatus('已生成预览，请在侧边栏确认写入', 'success');
+    // 必须在 Popup 内直接 open：经 Background 会丢失「用户手势」导致失败
+    await openSidePanelFromPopup();
+    showStatus('已打开侧边助手，请核对后写入', 'success');
     return;
   }
 
@@ -250,21 +248,37 @@ async function runUndoFlow(): Promise<void> {
 }
 
 /**
- * 打开与当前标签关联的 Side Panel（不生成新 plan）。
+ * 在 Popup 内直接打开当前标签的 Side Panel。
+ * 不可经 Background 转发：chrome.sidePanel.open 要求保留用户点击手势。
  */
-async function openSidePanel(): Promise<void> {
-  await requestBackground({
-    type: 'OPEN_SIDE_PANEL',
-    requestId: createRequestId(),
+async function openSidePanelFromPopup(): Promise<void> {
+  const tabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
   });
-  showStatus('已打开侧边栏', 'success');
+  const tabId = tabs[0]?.id;
+  if (tabId === undefined) {
+    throw new Error('无法确定当前标签页');
+  }
+  await chrome.sidePanel.open({ tabId });
 }
 
 /**
- * 打开扩展 Options 设置页。
+ * 打开与当前标签关联的 Side Panel（不生成新 plan）。
  */
-function openOptionsPage(): void {
-  chrome.runtime.openOptionsPage();
+async function openSidePanel(): Promise<void> {
+  await openSidePanelFromPopup();
+  showStatus('已打开侧边助手', 'success');
+}
+
+/**
+ * 打开侧边助手并展开设置区（API / 建档案）。
+ * 先标记 session（不 await），再立刻 open，避免丢失用户手势。
+ */
+async function openSettingsInSidePanel(): Promise<void> {
+  void chrome.storage.session.set({ sidePanelFocusSettings: true });
+  await openSidePanelFromPopup();
+  showStatus('已打开侧边助手设置区', 'success');
 }
 
 /**
@@ -333,13 +347,32 @@ function bindEvents(): void {
   });
 
   openSidePanelButton.addEventListener('click', () => {
-    void withBusy(async () => {
-      await openSidePanel();
-    });
+    // 不经 withBusy 前置逻辑拖延：尽快响应点击手势
+    void (async () => {
+      try {
+        await openSidePanel();
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : '无法打开侧边助手';
+        showError(message);
+      }
+    })();
   });
 
   openOptionsButton.addEventListener('click', () => {
-    openOptionsPage();
+    void (async () => {
+      try {
+        await openSettingsInSidePanel();
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : '无法打开设置';
+        showError(message);
+      }
+    })();
   });
 
   undoButton.addEventListener('click', () => {
@@ -361,7 +394,7 @@ async function bootstrapPopup(): Promise<void> {
     if (profiles.length === 0) {
       showStatus('暂无档案，请点击「打开设置」创建', 'info');
     } else {
-      showStatus('就绪：选择档案后点击「扫描并填写」', 'info');
+      showStatus('就绪：扫描后请在侧边助手核对预览', 'info');
     }
   } catch (error: unknown) {
     const message =

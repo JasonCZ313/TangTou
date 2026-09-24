@@ -1,30 +1,24 @@
 /**
- * Options 页主逻辑：API / 填写模式 / 超全档案 CRUD / 导入导出。
- * 在扩展页上下文中直接调用 storage API，不经 Background。
+ * Options 页主逻辑：API / 填写模式 / 超全档案 CRUD / 导入导出 / 侧栏目录。
  */
 import {
-  ACADEMIC_DEGREE_OPTIONS,
-  AWARD_LEVEL_OPTIONS,
   COMPUTER_LEVEL_OPTIONS,
-  DEGREE_LEVEL_OPTIONS,
-  EMPLOYMENT_TYPE_OPTIONS,
+  DRIVER_LICENSE_OPTIONS,
   ETHNICITY_OPTIONS,
-  FAMILY_RELATION_OPTIONS,
   FERTILITY_STATUS_OPTIONS,
   GENDER_OPTIONS,
   HEALTH_STATUS_OPTIONS,
   HUKOU_TYPE_OPTIONS,
   ID_TYPE_OPTIONS,
+  INDUSTRY_OPTIONS,
   JOB_STATUS_OPTIONS,
   JOB_TYPE_OPTIONS,
-  LANGUAGE_CERT_OPTIONS,
-  LANGUAGE_PROFICIENCY_OPTIONS,
+  MANDARIN_LEVEL_OPTIONS,
   MARITAL_STATUS_OPTIONS,
   MILITARY_STATUS_OPTIONS,
+  NATIONALITY_OPTIONS,
   OFFICE_SKILL_OPTIONS,
   POLITICAL_STATUS_OPTIONS,
-  PUBLICATION_KIND_OPTIONS,
-  STUDY_MODE_OPTIONS,
   YES_NO_OPTIONS,
   type CatalogOption,
 } from '../../shared/catalogs/enums';
@@ -43,35 +37,21 @@ import {
   normalizeProfileData,
   validateProfileData,
 } from '../../shared/storage/normalize';
-import type {
-  AwardItem,
-  CampusActivityItem,
-  CertificateItem,
-  EducationItem,
-  ExperienceItem,
-  FamilyMemberItem,
-  FillMode,
-  LanguageItem,
-  Profile,
-  ProfileData,
-  ProjectItem,
-  PublicationItem,
-  TrainingItem,
-} from '../../shared/types/profile';
+import type { FillMode, Profile, ProfileData, RegionSelection } from '../../shared/types/profile';
 import type { ExtensionMessage } from '../../shared/types/messages';
+import { fillStaticSelectsByCatalog } from './editorWidgets';
+import { appendListItem, renderAllDynamicLists } from './editorLists';
+import { upgradeStaticCatalogSelects } from './searchableSelect';
 import {
-  createBoundCheckbox,
-  createBoundInput,
-  createBoundSelect,
-  createBoundTextarea,
-  createListItemCard,
-  fillStaticSelectsByCatalog,
-} from './editorWidgets';
+  syncRegionBoundDisplays,
+  upgradeStaticRegionFields,
+  type RegionFieldBinding,
+} from './regionCascader';
 
 /** 状态提示的视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
 
-/** 导出文件的 JSON 结构（version 约定为 1） */
+/** 导出文件的 JSON 结构 */
 interface ExportPayload {
   version: number;
   profiles: Profile[];
@@ -84,10 +64,35 @@ interface ExportPayload {
   };
 }
 
-/** 静态表单 data-catalog 与枚举表映射 */
+/** 侧栏目录项：锚点 id → 显示名 */
+const TOC_SECTIONS: Array<{ id: string; label: string }> = [
+  { id: 'section-basic', label: '基本信息' },
+  { id: 'section-jobIntent', label: '求职意向' },
+  { id: 'section-education', label: '教育经历' },
+  { id: 'section-experience', label: '实习工作' },
+  { id: 'section-projects', label: '项目经历' },
+  { id: 'section-campus', label: '校园社团' },
+  { id: 'section-skills', label: '技能计算机' },
+  { id: 'section-language', label: '语言能力' },
+  { id: 'section-certificate', label: '证书' },
+  { id: 'section-award', label: '奖项' },
+  { id: 'section-publication', label: '论文专利' },
+  { id: 'section-training', label: '培训' },
+  { id: 'section-family', label: '家庭成员' },
+  { id: 'section-emergency', label: '紧急联系人' },
+  { id: 'section-specialOrg', label: '体制银行' },
+  { id: 'section-workAuth', label: '外企工签' },
+  { id: 'section-industry', label: '行业补充' },
+  { id: 'section-essays', label: '问答素材' },
+  { id: 'section-attachment', label: '附件备注' },
+  { id: 'section-notes', label: '自由补充' },
+];
+
+/** 静态表单 data-catalog 映射 */
 const STATIC_CATALOG_MAP: Record<string, CatalogOption[]> = {
   gender: GENDER_OPTIONS,
   ethnicity: ETHNICITY_OPTIONS,
+  nationality: NATIONALITY_OPTIONS,
   hukouType: HUKOU_TYPE_OPTIONS,
   idType: ID_TYPE_OPTIONS,
   political: POLITICAL_STATUS_OPTIONS,
@@ -100,21 +105,52 @@ const STATIC_CATALOG_MAP: Record<string, CatalogOption[]> = {
   yesNo: YES_NO_OPTIONS,
   computer: COMPUTER_LEVEL_OPTIONS,
   office: OFFICE_SKILL_OPTIONS,
+  industry: INDUSTRY_OPTIONS,
+  mandarin: MANDARIN_LEVEL_OPTIONS,
+  driver: DRIVER_LICENSE_OPTIONS,
 };
 
-/** 当前内存中的档案列表缓存，供列表与下拉渲染 */
+/** 静态地区字段：字符串 path ↔ 结构化 path */
+const REGION_FIELD_BINDINGS: Record<string, RegionFieldBinding> = {
+  currentCity: {
+    textPath: 'basic.currentCity',
+    regionPath: 'basic.currentCityRegion',
+    required: true,
+  },
+  nativePlace: {
+    textPath: 'basic.nativePlace',
+    regionPath: 'basic.nativePlaceRegion',
+    required: true,
+  },
+  birthPlace: {
+    textPath: 'basic.birthPlace',
+    regionPath: 'basic.birthPlaceRegion',
+  },
+  hukouLocation: {
+    textPath: 'basic.hukouLocation',
+    regionPath: 'basic.hukouLocationRegion',
+  },
+  workCity: {
+    textPath: 'jobIntent.workCity',
+    regionPath: 'jobIntent.workCityRegion',
+  },
+  expectedCities: {
+    textPath: 'jobIntent.expectedCities',
+    regionPath: 'jobIntent.expectedCitiesRegions',
+    multiAppend: true,
+  },
+};
+
 let cachedProfiles: Profile[] = [];
-
-/** 当前正在编辑的档案 id；无编辑时为 null */
 let editingProfileId: string | null = null;
-
-/** 编辑区内存草稿，保存时再写入 storage */
 let draftProfileData: ProfileData | null = null;
-
-/** 当前默认档案 id */
 let activeProfileId: string | null = null;
+/** 静态 select 是否已升级为可搜索下拉（只执行一次） */
+let staticCatalogsUpgraded = false;
+/** 静态地区控件是否已升级为 Cascader（只执行一次） */
+let staticRegionsUpgraded = false;
+let tocObserver: IntersectionObserver | null = null;
 
-// —— DOM 引用 ——
 const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
@@ -167,6 +203,9 @@ const profileEditorForm = document.getElementById(
 const editorValidationHint = document.getElementById(
   'editorValidationHint',
 ) as HTMLParagraphElement;
+const editorTocList = document.getElementById(
+  'editorTocList',
+) as HTMLUListElement;
 const educationListElement = document.getElementById(
   'educationList',
 ) as HTMLDivElement;
@@ -179,15 +218,16 @@ const projectsListElement = document.getElementById(
 const campusListElement = document.getElementById(
   'campusList',
 ) as HTMLDivElement;
+const skillsListElement = document.getElementById(
+  'skillsList',
+) as HTMLDivElement;
 const languageListElement = document.getElementById(
   'languageList',
 ) as HTMLDivElement;
 const certificateListElement = document.getElementById(
   'certificateList',
 ) as HTMLDivElement;
-const awardListElement = document.getElementById(
-  'awardList',
-) as HTMLDivElement;
+const awardListElement = document.getElementById('awardList') as HTMLDivElement;
 const publicationListElement = document.getElementById(
   'publicationList',
 ) as HTMLDivElement;
@@ -197,9 +237,9 @@ const trainingListElement = document.getElementById(
 const familyListElement = document.getElementById(
   'familyList',
 ) as HTMLDivElement;
-const skillsTextarea = document.getElementById(
-  'skillsTextarea',
-) as HTMLTextAreaElement;
+const emergencyListElement = document.getElementById(
+  'emergencyList',
+) as HTMLDivElement;
 const notesTextarea = document.getElementById(
   'notesTextarea',
 ) as HTMLTextAreaElement;
@@ -213,18 +253,12 @@ const importFileInput = document.getElementById(
   'importFileInput',
 ) as HTMLInputElement;
 
-/**
- * 在页面顶部展示中文状态文案，并按类型切换样式。
- */
 function showStatus(message: string, kind: StatusKind = 'info'): void {
   statusMessageElement.textContent = message;
   statusMessageElement.classList.remove('is-success', 'is-error', 'is-info');
   statusMessageElement.classList.add(`is-${kind}`);
 }
 
-/**
- * 将 storage / API 抛出的错误码映射为中文提示。
- */
 function mapErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message === 'PROFILE_LIMIT_REACHED') {
@@ -242,9 +276,6 @@ function mapErrorMessage(error: unknown): string {
   return message || '操作失败';
 }
 
-/**
- * 将 ISO 时间格式化为本地可读短字符串。
- */
 function formatUpdatedAt(isoText: string): string {
   const dateValue = new Date(isoText);
   if (Number.isNaN(dateValue.getTime())) {
@@ -259,19 +290,162 @@ function formatUpdatedAt(isoText: string): string {
   });
 }
 
-/**
- * 生成消息 requestId，供 TEST_API 等消息配对使用。
- */
 function createRequestId(): string {
   return crypto.randomUUID();
 }
 
 /**
- * 页面加载：读取 settings + profiles，填充枚举下拉并渲染全部区域。
+ * 构建侧栏目录，点击滚到分区垂直居中。
  */
+function setupEditorToc(): void {
+  editorTocList.replaceChildren();
+  for (const section of TOC_SECTIONS) {
+    const listItem = document.createElement('li');
+    const linkButton = document.createElement('button');
+    linkButton.type = 'button';
+    linkButton.className = 'editor-toc-link';
+    linkButton.dataset.sectionId = section.id;
+    linkButton.textContent = section.label;
+    linkButton.addEventListener('click', () => {
+      const target = document.getElementById(section.id);
+      if (!target) {
+        return;
+      }
+      // 展开折叠分区后再滚动
+      if (target instanceof HTMLDetailsElement) {
+        target.open = true;
+      }
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setActiveTocLink(section.id);
+    });
+    listItem.appendChild(linkButton);
+    editorTocList.appendChild(listItem);
+  }
+
+  if (tocObserver) {
+    tocObserver.disconnect();
+  }
+  tocObserver = new IntersectionObserver(
+    (entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((left, right) => right.intersectionRatio - left.intersectionRatio);
+      if (visible[0]?.target?.id) {
+        setActiveTocLink(visible[0].target.id);
+      }
+    },
+    { root: null, rootMargin: '-35% 0px -45% 0px', threshold: [0.1, 0.4, 0.7] },
+  );
+  for (const section of TOC_SECTIONS) {
+    const element = document.getElementById(section.id);
+    if (element) {
+      tocObserver.observe(element);
+    }
+  }
+}
+
+/**
+ * 高亮当前目录项。
+ */
+function setActiveTocLink(sectionId: string): void {
+  const links = editorTocList.querySelectorAll<HTMLButtonElement>(
+    '.editor-toc-link',
+  );
+  for (const link of links) {
+    link.classList.toggle('is-active', link.dataset.sectionId === sectionId);
+  }
+}
+
+/**
+ * 确保静态枚举已填充并升级为可搜索下拉；地区字段升级为 Cascader。
+ */
+function ensureStaticCatalogsReady(): void {
+  fillStaticSelectsByCatalog(profileEditorForm, STATIC_CATALOG_MAP);
+  if (!staticCatalogsUpgraded) {
+    upgradeStaticCatalogSelects(
+      profileEditorForm,
+      STATIC_CATALOG_MAP,
+      (pathText, value) => {
+        if (!draftProfileData) {
+          return;
+        }
+        writePathValue(draftProfileData, pathText, value);
+      },
+    );
+    staticCatalogsUpgraded = true;
+  }
+  if (!staticRegionsUpgraded) {
+    upgradeStaticRegionFields(
+      profileEditorForm,
+      REGION_FIELD_BINDINGS,
+      (binding, selection, displayText) => {
+        if (!draftProfileData) {
+          return;
+        }
+        applyRegionCommit(draftProfileData, binding, selection, displayText);
+        updateValidationHint(draftProfileData);
+      },
+      (binding) => readRegionInitialFromDraft(binding),
+    );
+    staticRegionsUpgraded = true;
+  }
+}
+
+/**
+ * 从草稿读取某地区字段的初始文案与结构化值。
+ */
+function readRegionInitialFromDraft(
+  binding: RegionFieldBinding,
+): { text: string; region: RegionSelection | null } {
+  if (!draftProfileData) {
+    return { text: '', region: null };
+  }
+  const text = readPathValue(draftProfileData, binding.textPath);
+  const regionRaw = readPathObject(draftProfileData, binding.regionPath);
+  if (binding.multiAppend) {
+    // 多选：展示用字符串；结构化为数组，控件自身不回填单次 selection
+    return { text, region: null };
+  }
+  if (regionRaw && typeof regionRaw === 'object' && !Array.isArray(regionRaw)) {
+    const region = regionRaw as RegionSelection;
+    if (region.text?.trim()) {
+      return { text: region.text, region };
+    }
+  }
+  return { text, region: null };
+}
+
+/**
+ * 将 Cascader 提交结果写入草稿（字符串 + 结构化）。
+ */
+function applyRegionCommit(
+  data: ProfileData,
+  binding: RegionFieldBinding,
+  selection: RegionSelection | null,
+  displayText: string,
+): void {
+  writePathValue(data, binding.textPath, displayText);
+  if (binding.multiAppend) {
+    const listPath = binding.regionPath;
+    if (!selection) {
+      writePathObject(data, listPath, []);
+      return;
+    }
+    const existing = readPathObject(data, listPath);
+    const list: RegionSelection[] = Array.isArray(existing)
+      ? [...(existing as RegionSelection[])]
+      : [];
+    list.push(selection);
+    writePathObject(data, listPath, list);
+    return;
+  }
+  writePathObject(data, binding.regionPath, selection);
+}
+
 async function bootstrapOptionsPage(): Promise<void> {
   try {
-    fillStaticSelectsByCatalog(profileEditorForm, STATIC_CATALOG_MAP);
+    ensureStaticCatalogsReady();
+    setupEditorToc();
 
     const [settings, profiles] = await Promise.all([
       getSettings(),
@@ -294,9 +468,6 @@ async function bootstrapOptionsPage(): Promise<void> {
   }
 }
 
-/**
- * 按当前档案数量启用/禁用新建相关控件，并切换满员中文提示。
- */
 function syncCreateControlsWithLimit(): void {
   const isAtProfileLimit = cachedProfiles.length >= MAX_PROFILES;
   createProfileButton.disabled = isAtProfileLimit;
@@ -305,9 +476,6 @@ function syncCreateControlsWithLimit(): void {
   profileLimitTip.classList.toggle('hidden', !isAtProfileLimit);
 }
 
-/**
- * 刷新档案列表卡片（名称、更新时间、操作按钮）。
- */
 function renderProfileList(): void {
   profileListElement.replaceChildren();
   profileCountHint.textContent = `已保存 ${cachedProfiles.length} / ${MAX_PROFILES} 份`;
@@ -387,9 +555,6 @@ function renderProfileList(): void {
   }
 }
 
-/**
- * 刷新「新建」表单中的复制来源下拉（空白 + 各档案）。
- */
 function renderCloneSourceOptions(): void {
   const previousValue = cloneSourceSelect.value;
   cloneSourceSelect.replaceChildren();
@@ -412,9 +577,6 @@ function renderCloneSourceOptions(): void {
   cloneSourceSelect.value = stillExists ? previousValue : '';
 }
 
-/**
- * 从 storage 重新拉取档案与 activeProfileId，并刷新列表相关 UI。
- */
 async function refreshProfilesFromStorage(): Promise<void> {
   const [profiles, settings] = await Promise.all([
     listProfiles(),
@@ -426,9 +588,6 @@ async function refreshProfilesFromStorage(): Promise<void> {
   renderCloneSourceOptions();
 }
 
-/**
- * 保存 API 三项设置（Base URL / Key / 模型）。
- */
 async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   try {
@@ -443,9 +602,6 @@ async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
   }
 }
 
-/**
- * 发送 TEST_API 消息；后台未实现或无有效响应时显示「后台未就绪」。
- */
 function handleTestApiConnection(): void {
   const requestId = createRequestId();
   const message: ExtensionMessage = { type: 'TEST_API', requestId };
@@ -454,20 +610,15 @@ function handleTestApiConnection(): void {
     chrome.runtime.sendMessage(
       message,
       (response: ExtensionMessage | undefined) => {
-        if (chrome.runtime.lastError) {
-          showStatus('后台未就绪', 'error');
-          return;
-        }
-        if (!response) {
+        if (chrome.runtime.lastError || !response) {
           showStatus('后台未就绪', 'error');
           return;
         }
         if (response.type === 'TEST_API_RESULT') {
-          if (response.ok) {
-            showStatus(response.detail || '连接成功', 'success');
-          } else {
-            showStatus(response.detail || '连接失败', 'error');
-          }
+          showStatus(
+            response.detail || (response.ok ? '连接成功' : '连接失败'),
+            response.ok ? 'success' : 'error',
+          );
           return;
         }
         if (response.type === 'ERROR') {
@@ -482,9 +633,6 @@ function handleTestApiConnection(): void {
   }
 }
 
-/**
- * 切换填写模式并立即持久化。
- */
 async function handleFillModeChange(): Promise<void> {
   const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
   try {
@@ -498,19 +646,13 @@ async function handleFillModeChange(): Promise<void> {
   }
 }
 
-/**
- * 创建空白档案，或从下拉选定的档案深拷贝 data。
- */
 async function handleCreateProfile(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   const name = newProfileNameInput.value.trim();
   const cloneFromId = cloneSourceSelect.value || undefined;
 
   try {
-    const created = await createProfile({
-      name,
-      cloneFromId,
-    });
+    const created = await createProfile({ name, cloneFromId });
     newProfileNameInput.value = '';
     cloneSourceSelect.value = '';
     await refreshProfilesFromStorage();
@@ -520,9 +662,6 @@ async function handleCreateProfile(event: SubmitEvent): Promise<void> {
   }
 }
 
-/**
- * 将指定档案设为全局默认。
- */
 async function handleSetActive(profileId: string): Promise<void> {
   try {
     await setActiveProfileId(profileId);
@@ -533,9 +672,6 @@ async function handleSetActive(profileId: string): Promise<void> {
   }
 }
 
-/**
- * 弹出改名对话框并调用 renameProfile。
- */
 async function handleRename(profile: Profile): Promise<void> {
   const nextName = window.prompt('请输入新名称', profile.name);
   if (nextName === null) {
@@ -558,9 +694,6 @@ async function handleRename(profile: Profile): Promise<void> {
   }
 }
 
-/**
- * 确认后删除档案；若正在编辑该档案则关闭编辑区。
- */
 async function handleDelete(profile: Profile): Promise<void> {
   const confirmed = window.confirm(
     `确定删除档案「${profile.name}」？此操作不可恢复。`,
@@ -580,21 +713,16 @@ async function handleDelete(profile: Profile): Promise<void> {
   }
 }
 
-/**
- * 打开编辑区：深拷贝档案 data 到草稿并填充表单。
- */
 function openEditor(profile: Profile): void {
   editingProfileId = profile.id;
   draftProfileData = structuredClone(profile.data);
   editingProfileName.textContent = `正在编辑：${profile.name}`;
   editorSection.classList.remove('hidden');
+  ensureStaticCatalogsReady();
   fillEditorForm(draftProfileData);
   editorSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-/**
- * 关闭编辑区并清空草稿。
- */
 function closeEditor(): void {
   editingProfileId = null;
   draftProfileData = null;
@@ -603,42 +731,103 @@ function closeEditor(): void {
 }
 
 /**
- * 将 ProfileData 填入静态字段（input/select/textarea）与全部动态列表。
+ * 刷新动态列表的统一回调。
  */
+function refreshDynamicLists(): void {
+  if (!draftProfileData) {
+    return;
+  }
+  renderAllDynamicLists(
+    draftProfileData,
+    {
+      education: educationListElement,
+      experience: experienceListElement,
+      projects: projectsListElement,
+      campus: campusListElement,
+      skills: skillsListElement,
+      language: languageListElement,
+      certificate: certificateListElement,
+      award: awardListElement,
+      publication: publicationListElement,
+      training: trainingListElement,
+      family: familyListElement,
+      emergency: emergencyListElement,
+    },
+    refreshDynamicLists,
+  );
+  updateValidationHint(draftProfileData);
+}
+
 function fillEditorForm(data: ProfileData): void {
   const pathFields = profileEditorForm.querySelectorAll<
     HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
   >('[data-path]');
   for (const fieldElement of pathFields) {
     const pathText = fieldElement.dataset.path ?? '';
+    // 已升级为可搜索的字段通过 label[data-path-bound] 管理，跳过原生 select
+    if (fieldElement.tagName === 'SELECT' && fieldElement.dataset.catalog) {
+      // 升级后 select 已被替换；若仍存在则填值
+      fieldElement.value = readPathValue(data, pathText);
+      continue;
+    }
     fieldElement.value = readPathValue(data, pathText);
   }
 
-  skillsTextarea.value = data.skills.join('\n');
+  // 同步已升级的可搜索输入展示值
+  const boundFields = profileEditorForm.querySelectorAll<HTMLLabelElement>(
+    '[data-path-bound]',
+  );
+  for (const boundLabel of boundFields) {
+    // 地区控件另有 data-region-bound，此处跳过避免被 catalog 逻辑清空
+    if (boundLabel.dataset.regionBound) {
+      continue;
+    }
+    const pathText = boundLabel.dataset.pathBound ?? '';
+    const input = boundLabel.querySelector<HTMLInputElement>(
+      '.searchable-select-input',
+    );
+    if (!input) {
+      continue;
+    }
+    const value = readPathValue(data, pathText);
+    const catalogKey = boundLabel.dataset.catalogBound ?? '';
+    const options = STATIC_CATALOG_MAP[catalogKey] ?? [];
+    const matched = options.find(
+      (item) => item.code === value || item.labelZh === value,
+    );
+    input.value = matched?.labelZh ?? value;
+    input.dataset.code = matched?.code ?? value;
+  }
+
+  // 同步地区 Cascader 展示
+  syncRegionBoundDisplays(
+    profileEditorForm,
+    REGION_FIELD_BINDINGS,
+    (binding) => {
+      const text = readPathValue(data, binding.textPath);
+      if (binding.multiAppend) {
+        return { text, region: null };
+      }
+      const regionRaw = readPathObject(data, binding.regionPath);
+      if (
+        regionRaw &&
+        typeof regionRaw === 'object' &&
+        !Array.isArray(regionRaw)
+      ) {
+        const region = regionRaw as RegionSelection;
+        if (region.text?.trim()) {
+          return { text: region.text, region };
+        }
+      }
+      return { text, region: null };
+    },
+  );
+
   notesTextarea.value = data.notes;
-  renderAllDynamicLists(data);
+  refreshDynamicLists();
   updateValidationHint(data);
 }
 
-/**
- * 刷新编辑区全部动态列表（教育/经历/项目等）。
- */
-function renderAllDynamicLists(data: ProfileData): void {
-  renderEducationRows(data.education);
-  renderExperienceRows(data.experience);
-  renderProjectRows(data.projects);
-  renderCampusRows(data.campusActivities);
-  renderLanguageRows(data.languages);
-  renderCertificateRows(data.certificates);
-  renderAwardRows(data.awards);
-  renderPublicationRows(data.publications);
-  renderTrainingRows(data.trainings);
-  renderFamilyRows(data.familyMembers);
-}
-
-/**
- * 按点分路径读取嵌套字符串字段（如 basic.fullName、computerLevel）。
- */
 function readPathValue(data: ProfileData, pathText: string): string {
   if (!pathText) {
     return '';
@@ -659,8 +848,27 @@ function readPathValue(data: ProfileData, pathText: string): string {
 }
 
 /**
- * 按点分路径写入嵌套字符串字段；支持顶层字段（如 computerLevel）。
+ * 按点分路径读取任意对象/数组值（用于 RegionSelection）。
  */
+function readPathObject(data: ProfileData, pathText: string): unknown {
+  if (!pathText) {
+    return undefined;
+  }
+  const pathParts = pathText.split('.');
+  let current: unknown = data;
+  for (const pathPart of pathParts) {
+    if (
+      current === null ||
+      current === undefined ||
+      typeof current !== 'object'
+    ) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[pathPart];
+  }
+  return current;
+}
+
 function writePathValue(
   data: ProfileData,
   pathText: string,
@@ -682,9 +890,11 @@ function writePathValue(
   >;
   for (let index = 0; index < pathParts.length - 1; index += 1) {
     const pathPart = pathParts[index];
-    const nextValue = current[pathPart];
+    let nextValue = current[pathPart];
     if (nextValue === null || typeof nextValue !== 'object') {
-      return;
+      // 自动创建缺失的中间对象（如 industryExtras）
+      nextValue = {};
+      current[pathPart] = nextValue;
     }
     current = nextValue as Record<string, unknown>;
   }
@@ -692,776 +902,37 @@ function writePathValue(
 }
 
 /**
- * 在卡片内创建网格容器，便于动态字段排版。
+ * 按点分路径写入对象/数组（地区结构化字段）。
  */
-function createCardGrid(): HTMLDivElement {
-  const grid = document.createElement('div');
-  grid.className = 'form-grid';
-  return grid;
-}
-
-/**
- * 渲染教育经历动态行（含学历枚举、在读/最高学历勾选）。
- */
-function renderEducationRows(items: EducationItem[]): void {
-  educationListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`教育经历 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.education.splice(itemIndex, 1);
-      renderEducationRows(draftProfileData.education);
-      updateValidationHint(draftProfileData);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput(
-        '学校',
-        item.school,
-        (value) => {
-          item.school = value;
-        },
-        'text',
-        true,
-      ),
-      createBoundSelect(
-        '学历层次',
-        item.degreeLevel || item.degree || '',
-        DEGREE_LEVEL_OPTIONS,
-        (value) => {
-          item.degreeLevel = value;
-          item.degree = value;
-        },
-        true,
-      ),
-      createBoundInput('专业', item.major, (value) => {
-        item.major = value;
-      }),
-      createBoundInput(
-        '入学日期',
-        item.startDate,
-        (value) => {
-          item.startDate = value;
-        },
-        'date',
-        true,
-      ),
-      createBoundInput(
-        '毕业日期',
-        item.endDate,
-        (value) => {
-          item.endDate = value;
-        },
-        'date',
-      ),
-      createBoundCheckbox('在读', Boolean(item.isCurrent), (checked) => {
-        item.isCurrent = checked;
-      }),
-      createBoundCheckbox('最高学历', Boolean(item.isHighest), (checked) => {
-        item.isHighest = checked;
-      }),
-      createBoundCheckbox('第一学历', Boolean(item.isFirstDegree), (checked) => {
-        item.isFirstDegree = checked;
-      }),
-      createBoundSelect(
-        '学习形式',
-        item.studyMode ?? '',
-        STUDY_MODE_OPTIONS,
-        (value) => {
-          item.studyMode = value;
-        },
-      ),
-      createBoundSelect(
-        '学位',
-        item.academicDegree ?? '',
-        ACADEMIC_DEGREE_OPTIONS,
-        (value) => {
-          item.academicDegree = value;
-        },
-      ),
-      createBoundInput('学院', item.college ?? '', (value) => {
-        item.college = value;
-      }),
-      createBoundInput('学制(年)', item.durationYears ?? '', (value) => {
-        item.durationYears = value;
-      }),
-      createBoundInput('就读城市', item.city ?? '', (value) => {
-        item.city = value;
-      }),
-      createBoundInput('GPA', item.gpa ?? '', (value) => {
-        item.gpa = value;
-      }),
-      createBoundInput('排名', item.rank ?? '', (value) => {
-        item.rank = value;
-      }),
-      createBoundInput('教育类型备注', item.educationType ?? '', (value) => {
-        item.educationType = value;
-      }),
-      createBoundTextarea('主修课程', item.courses ?? '', (value) => {
-        item.courses = value;
-      }),
-      createBoundTextarea('论文/课题', item.thesis ?? '', (value) => {
-        item.thesis = value;
-      }),
-      createBoundTextarea('说明', item.description ?? '', (value) => {
-        item.description = value;
-      }),
-    );
-    card.appendChild(grid);
-    educationListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染实习/工作经历动态行。
- */
-function renderExperienceRows(items: ExperienceItem[]): void {
-  experienceListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`工作/实习 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.experience.splice(itemIndex, 1);
-      renderExperienceRows(draftProfileData.experience);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('公司/单位', item.company, (value) => {
-        item.company = value;
-      }),
-      createBoundInput('职位', item.title, (value) => {
-        item.title = value;
-      }),
-      createBoundInput(
-        '开始日期',
-        item.startDate,
-        (value) => {
-          item.startDate = value;
-        },
-        'date',
-      ),
-      createBoundInput(
-        '结束日期',
-        item.endDate,
-        (value) => {
-          item.endDate = value;
-        },
-        'date',
-      ),
-      createBoundCheckbox('至今在职', Boolean(item.isCurrent), (checked) => {
-        item.isCurrent = checked;
-      }),
-      createBoundSelect(
-        '雇佣类型',
-        item.employmentType ?? '',
-        EMPLOYMENT_TYPE_OPTIONS,
-        (value) => {
-          item.employmentType = value;
-        },
-      ),
-      createBoundInput('部门', item.department ?? '', (value) => {
-        item.department = value;
-      }),
-      createBoundInput('城市', item.city ?? '', (value) => {
-        item.city = value;
-      }),
-      createBoundInput('公司性质', item.companyType ?? '', (value) => {
-        item.companyType = value;
-      }),
-      createBoundInput('行业', item.industry ?? '', (value) => {
-        item.industry = value;
-      }),
-      createBoundInput('下属人数', item.subordinateCount ?? '', (value) => {
-        item.subordinateCount = value;
-      }),
-      createBoundInput('证明人', item.refereeName ?? '', (value) => {
-        item.refereeName = value;
-      }),
-      createBoundInput(
-        '证明人电话',
-        item.refereePhone ?? '',
-        (value) => {
-          item.refereePhone = value;
-        },
-        'tel',
-      ),
-      createBoundInput('离职原因', item.leaveReason ?? '', (value) => {
-        item.leaveReason = value;
-      }),
-      createBoundTextarea('职责描述', item.description, (value) => {
-        item.description = value;
-      }),
-    );
-    card.appendChild(grid);
-    experienceListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染项目经历动态行。
- */
-function renderProjectRows(items: ProjectItem[]): void {
-  projectsListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`项目 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.projects.splice(itemIndex, 1);
-      renderProjectRows(draftProfileData.projects);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('项目名称', item.name, (value) => {
-        item.name = value;
-      }),
-      createBoundInput('角色', item.role ?? '', (value) => {
-        item.role = value;
-      }),
-      createBoundInput(
-        '开始日期',
-        item.startDate ?? '',
-        (value) => {
-          item.startDate = value;
-        },
-        'date',
-      ),
-      createBoundInput(
-        '结束日期',
-        item.endDate ?? '',
-        (value) => {
-          item.endDate = value;
-        },
-        'date',
-      ),
-      createBoundCheckbox('进行中', Boolean(item.isCurrent), (checked) => {
-        item.isCurrent = checked;
-      }),
-      createBoundInput(
-        '链接',
-        item.link ?? '',
-        (value) => {
-          item.link = value;
-        },
-        'url',
-      ),
-      createBoundInput('技术栈', item.techStack ?? '', (value) => {
-        item.techStack = value;
-      }),
-      createBoundInput('团队规模', item.teamSize ?? '', (value) => {
-        item.teamSize = value;
-      }),
-      createBoundTextarea('项目描述', item.description, (value) => {
-        item.description = value;
-      }),
-    );
-    card.appendChild(grid);
-    projectsListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染校园/社团/志愿动态行。
- */
-function renderCampusRows(items: CampusActivityItem[]): void {
-  campusListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`校园经历 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.campusActivities.splice(itemIndex, 1);
-      renderCampusRows(draftProfileData.campusActivities);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('组织/社团', item.organization, (value) => {
-        item.organization = value;
-      }),
-      createBoundInput('职务', item.role, (value) => {
-        item.role = value;
-      }),
-      createBoundInput(
-        '开始日期',
-        item.startDate ?? '',
-        (value) => {
-          item.startDate = value;
-        },
-        'date',
-      ),
-      createBoundInput(
-        '结束日期',
-        item.endDate ?? '',
-        (value) => {
-          item.endDate = value;
-        },
-        'date',
-      ),
-      createBoundTextarea('说明', item.description ?? '', (value) => {
-        item.description = value;
-      }),
-    );
-    card.appendChild(grid);
-    campusListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染语言能力动态行。
- */
-function renderLanguageRows(items: LanguageItem[]): void {
-  languageListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`语言 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.languages.splice(itemIndex, 1);
-      renderLanguageRows(draftProfileData.languages);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('语种', item.language, (value) => {
-        item.language = value;
-      }),
-      createBoundSelect(
-        '熟练度',
-        item.proficiency,
-        LANGUAGE_PROFICIENCY_OPTIONS,
-        (value) => {
-          item.proficiency = value;
-        },
-      ),
-      createBoundSelect(
-        '证书',
-        item.certificate ?? '',
-        LANGUAGE_CERT_OPTIONS,
-        (value) => {
-          item.certificate = value;
-        },
-      ),
-      createBoundInput('成绩', item.score ?? '', (value) => {
-        item.score = value;
-      }),
-      createBoundInput(
-        '获证日期',
-        item.obtainedDate ?? '',
-        (value) => {
-          item.obtainedDate = value;
-        },
-        'date',
-      ),
-    );
-    card.appendChild(grid);
-    languageListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染证书动态行。
- */
-function renderCertificateRows(items: CertificateItem[]): void {
-  certificateListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`证书 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.certificates.splice(itemIndex, 1);
-      renderCertificateRows(draftProfileData.certificates);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('证书名称', item.name, (value) => {
-        item.name = value;
-      }),
-      createBoundInput('等级', item.level ?? '', (value) => {
-        item.level = value;
-      }),
-      createBoundInput('颁发机构', item.issuer ?? '', (value) => {
-        item.issuer = value;
-      }),
-      createBoundInput(
-        '获证日期',
-        item.date ?? '',
-        (value) => {
-          item.date = value;
-        },
-        'date',
-      ),
-      createBoundInput('证书编号', item.number ?? '', (value) => {
-        item.number = value;
-      }),
-      createBoundInput('相关专业', item.major ?? '', (value) => {
-        item.major = value;
-      }),
-    );
-    card.appendChild(grid);
-    certificateListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染奖项动态行。
- */
-function renderAwardRows(items: AwardItem[]): void {
-  awardListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`奖项 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.awards.splice(itemIndex, 1);
-      renderAwardRows(draftProfileData.awards);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('奖项名称', item.name, (value) => {
-        item.name = value;
-      }),
-      createBoundSelect(
-        '级别',
-        item.level ?? '',
-        AWARD_LEVEL_OPTIONS,
-        (value) => {
-          item.level = value;
-        },
-      ),
-      createBoundInput(
-        '获奖日期',
-        item.date ?? '',
-        (value) => {
-          item.date = value;
-        },
-        'date',
-      ),
-      createBoundTextarea('说明', item.description ?? '', (value) => {
-        item.description = value;
-      }),
-    );
-    card.appendChild(grid);
-    awardListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染论文/专利/著作动态行。
- */
-function renderPublicationRows(items: PublicationItem[]): void {
-  publicationListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`成果 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.publications.splice(itemIndex, 1);
-      renderPublicationRows(draftProfileData.publications);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundSelect(
-        '类型',
-        item.kind,
-        PUBLICATION_KIND_OPTIONS,
-        (value) => {
-          item.kind = value;
-        },
-      ),
-      createBoundInput('标题', item.title, (value) => {
-        item.title = value;
-      }),
-      createBoundInput('期刊/专利号', item.venueOrNumber ?? '', (value) => {
-        item.venueOrNumber = value;
-      }),
-      createBoundInput(
-        '日期',
-        item.date ?? '',
-        (value) => {
-          item.date = value;
-        },
-        'date',
-      ),
-      createBoundInput('作者排序', item.authorOrder ?? '', (value) => {
-        item.authorOrder = value;
-      }),
-      createBoundInput(
-        '链接',
-        item.link ?? '',
-        (value) => {
-          item.link = value;
-        },
-        'url',
-      ),
-    );
-    card.appendChild(grid);
-    publicationListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染培训经历动态行。
- */
-function renderTrainingRows(items: TrainingItem[]): void {
-  trainingListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`培训 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.trainings.splice(itemIndex, 1);
-      renderTrainingRows(draftProfileData.trainings);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundInput('培训机构', item.organization, (value) => {
-        item.organization = value;
-      }),
-      createBoundInput('课程', item.course, (value) => {
-        item.course = value;
-      }),
-      createBoundInput(
-        '开始日期',
-        item.startDate ?? '',
-        (value) => {
-          item.startDate = value;
-        },
-        'date',
-      ),
-      createBoundInput(
-        '结束日期',
-        item.endDate ?? '',
-        (value) => {
-          item.endDate = value;
-        },
-        'date',
-      ),
-      createBoundInput('结业证书', item.certificate ?? '', (value) => {
-        item.certificate = value;
-      }),
-    );
-    card.appendChild(grid);
-    trainingListElement.appendChild(card);
-  });
-}
-
-/**
- * 渲染家庭成员动态行。
- */
-function renderFamilyRows(items: FamilyMemberItem[]): void {
-  familyListElement.replaceChildren();
-  items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`家庭成员 ${itemIndex + 1}`, () => {
-      if (!draftProfileData) {
-        return;
-      }
-      draftProfileData.familyMembers.splice(itemIndex, 1);
-      renderFamilyRows(draftProfileData.familyMembers);
-    });
-
-    const grid = createCardGrid();
-    grid.append(
-      createBoundSelect(
-        '关系',
-        item.relationship,
-        FAMILY_RELATION_OPTIONS,
-        (value) => {
-          item.relationship = value;
-        },
-      ),
-      createBoundInput('姓名', item.name, (value) => {
-        item.name = value;
-      }),
-      createBoundInput('年龄', item.age ?? '', (value) => {
-        item.age = value;
-      }),
-      createBoundSelect(
-        '政治面貌',
-        item.politicalStatus ?? '',
-        POLITICAL_STATUS_OPTIONS,
-        (value) => {
-          item.politicalStatus = value;
-        },
-      ),
-      createBoundInput('工作单位', item.employer ?? '', (value) => {
-        item.employer = value;
-      }),
-      createBoundInput('职务', item.title ?? '', (value) => {
-        item.title = value;
-      }),
-      createBoundInput(
-        '电话',
-        item.phone ?? '',
-        (value) => {
-          item.phone = value;
-        },
-        'tel',
-      ),
-    );
-    card.appendChild(grid);
-    familyListElement.appendChild(card);
-  });
-}
-
-/**
- * 创建空白教育经历条目。
- */
-function createEmptyEducationItem(): EducationItem {
-  return {
-    school: '',
-    degreeLevel: '',
-    major: '',
-    startDate: '',
-    endDate: '',
-    isCurrent: false,
-    isHighest: false,
-    isFirstDegree: false,
-    description: '',
-  };
-}
-
-/**
- * 创建空白工作/实习条目。
- */
-function createEmptyExperienceItem(): ExperienceItem {
-  return {
-    company: '',
-    title: '',
-    startDate: '',
-    endDate: '',
-    isCurrent: false,
-    description: '',
-  };
-}
-
-/**
- * 创建空白项目条目。
- */
-function createEmptyProjectItem(): ProjectItem {
-  return {
-    name: '',
-    role: '',
-    startDate: '',
-    endDate: '',
-    description: '',
-    link: '',
-  };
-}
-
-/**
- * 向草稿追加一条对应类型的空白列表项。
- */
-function handleAddListItem(listKind: string): void {
-  if (!draftProfileData) {
+function writePathObject(
+  data: ProfileData,
+  pathText: string,
+  value: unknown,
+): void {
+  const pathParts = pathText.split('.').filter((part) => part.length > 0);
+  if (pathParts.length === 0) {
     return;
   }
-
-  switch (listKind) {
-    case 'education':
-      draftProfileData.education.push(createEmptyEducationItem());
-      renderEducationRows(draftProfileData.education);
-      break;
-    case 'experience':
-      draftProfileData.experience.push(createEmptyExperienceItem());
-      renderExperienceRows(draftProfileData.experience);
-      break;
-    case 'projects':
-      draftProfileData.projects.push(createEmptyProjectItem());
-      renderProjectRows(draftProfileData.projects);
-      break;
-    case 'campus':
-      draftProfileData.campusActivities.push({
-        organization: '',
-        role: '',
-        startDate: '',
-        endDate: '',
-        description: '',
-      });
-      renderCampusRows(draftProfileData.campusActivities);
-      break;
-    case 'language':
-      draftProfileData.languages.push({
-        language: '',
-        proficiency: '',
-        certificate: '',
-        score: '',
-        obtainedDate: '',
-      });
-      renderLanguageRows(draftProfileData.languages);
-      break;
-    case 'certificate':
-      draftProfileData.certificates.push({
-        name: '',
-        level: '',
-        issuer: '',
-        date: '',
-        number: '',
-        major: '',
-      });
-      renderCertificateRows(draftProfileData.certificates);
-      break;
-    case 'award':
-      draftProfileData.awards.push({
-        name: '',
-        level: '',
-        date: '',
-        description: '',
-      });
-      renderAwardRows(draftProfileData.awards);
-      break;
-    case 'publication':
-      draftProfileData.publications.push({
-        kind: '',
-        title: '',
-        venueOrNumber: '',
-        date: '',
-        authorOrder: '',
-        link: '',
-      });
-      renderPublicationRows(draftProfileData.publications);
-      break;
-    case 'training':
-      draftProfileData.trainings.push({
-        organization: '',
-        course: '',
-        startDate: '',
-        endDate: '',
-        certificate: '',
-      });
-      renderTrainingRows(draftProfileData.trainings);
-      break;
-    case 'family':
-      draftProfileData.familyMembers.push({
-        relationship: '',
-        name: '',
-        age: '',
-        politicalStatus: '',
-        employer: '',
-        title: '',
-        phone: '',
-      });
-      renderFamilyRows(draftProfileData.familyMembers);
-      break;
-    default:
-      break;
+  if (pathParts.length === 1) {
+    (data as unknown as Record<string, unknown>)[pathParts[0]] = value;
+    return;
   }
-
-  updateValidationHint(draftProfileData);
+  let current: Record<string, unknown> = data as unknown as Record<
+    string,
+    unknown
+  >;
+  for (let index = 0; index < pathParts.length - 1; index += 1) {
+    const pathPart = pathParts[index];
+    let nextValue = current[pathPart];
+    if (nextValue === null || typeof nextValue !== 'object') {
+      nextValue = {};
+      current[pathPart] = nextValue;
+    }
+    current = nextValue as Record<string, unknown>;
+  }
+  current[pathParts[pathParts.length - 1]] = value;
 }
 
-/**
- * 从静态表单收集 path 字段到草稿（不含动态列表，列表已直接改对象）。
- */
 function collectStaticFieldsIntoDraft(data: ProfileData): void {
   const pathFields = profileEditorForm.querySelectorAll<
     HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
@@ -1471,16 +942,47 @@ function collectStaticFieldsIntoDraft(data: ProfileData): void {
     writePathValue(data, pathText, fieldElement.value.trim());
   }
 
-  data.skills = skillsTextarea.value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  // 可搜索控件值已通过 onChange 写入；再扫一遍 data-code 兜底
+  const boundFields = profileEditorForm.querySelectorAll<HTMLLabelElement>(
+    '[data-path-bound]',
+  );
+  for (const boundLabel of boundFields) {
+    if (boundLabel.dataset.regionBound) {
+      continue;
+    }
+    const pathText = boundLabel.dataset.pathBound ?? '';
+    const input = boundLabel.querySelector<HTMLInputElement>(
+      '.searchable-select-input',
+    );
+    if (!input) {
+      continue;
+    }
+    const codeOrText = (input.dataset.code || input.value).trim();
+    writePathValue(data, pathText, codeOrText);
+  }
+
+  // 地区 Cascader：用展示框文案兜底写入字符串字段
+  const regionLabels = profileEditorForm.querySelectorAll<HTMLLabelElement>(
+    '[data-region-bound]',
+  );
+  for (const regionLabel of regionLabels) {
+    const regionKey = regionLabel.dataset.regionBound ?? '';
+    const binding = REGION_FIELD_BINDINGS[regionKey];
+    if (!binding) {
+      continue;
+    }
+    const displayInput = regionLabel.querySelector<HTMLInputElement>(
+      '.region-cascader-display',
+    );
+    if (!displayInput) {
+      continue;
+    }
+    writePathValue(data, binding.textPath, displayInput.value.trim());
+  }
+
   data.notes = notesTextarea.value;
 }
 
-/**
- * 根据校验结果更新编辑区顶部提示文案。
- */
 function updateValidationHint(data: ProfileData): void {
   const result = validateProfileData(data);
   const hintParts: string[] = [];
@@ -1493,9 +995,6 @@ function updateValidationHint(data: ProfileData): void {
   editorValidationHint.textContent = hintParts.join(' —— ');
 }
 
-/**
- * 从编辑表单收集草稿，校验硬必填后调用 updateProfileData 持久化。
- */
 async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   if (!editingProfileId || !draftProfileData) {
@@ -1508,10 +1007,7 @@ async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
 
   const validation = validateProfileData(draftProfileData);
   if (!validation.ok) {
-    showStatus(
-      `无法保存：${validation.missingRequired.join('；')}`,
-      'error',
-    );
+    showStatus(`无法保存：${validation.missingRequired.join('；')}`, 'error');
     return;
   }
 
@@ -1534,9 +1030,6 @@ async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
   }
 }
 
-/**
- * 导出全部档案与设置；强制将 apiKey 置为空字符串。
- */
 async function handleExport(): Promise<void> {
   try {
     const [profiles, settings] = await Promise.all([
@@ -1553,7 +1046,7 @@ async function handleExport(): Promise<void> {
     const objectUrl = URL.createObjectURL(blob);
     const downloadLink = document.createElement('a');
     downloadLink.href = objectUrl;
-    downloadLink.download = `resume-autofill-export-${formatExportStamp()}.json`;
+    downloadLink.download = `tangtou-export-${formatExportStamp()}.json`;
     downloadLink.click();
     URL.revokeObjectURL(objectUrl);
     showStatus('已导出（不含 API Key）', 'success');
@@ -1562,39 +1055,12 @@ async function handleExport(): Promise<void> {
   }
 }
 
-/**
- * 生成导出文件名用的时间戳片段。
- */
 function formatExportStamp(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
-/**
- * 生成新档案 id（导入批次在内存组装时使用）。
- */
-function createImportedProfileId(): string {
-  return crypto.randomUUID();
-}
-
-/**
- * 当前时间的 ISO 字符串，用于导入档案的 createdAt / updatedAt。
- */
-function createImportedTimestamp(): string {
-  return new Date().toISOString();
-}
-
-/**
- * 将导入的残缺 data 规范化为超全 ProfileData。
- */
-function normalizeImportedProfileData(rawData: unknown): ProfileData {
-  return normalizeProfileData(rawData);
-}
-
-/**
- * 导入 JSON：先校验并在内存组装全部待写入档案，再一次性原子追加。
- */
 async function handleImportFileChange(): Promise<void> {
   const fileList = importFileInput.files;
   const selectedFile = fileList?.[0];
@@ -1617,26 +1083,23 @@ async function handleImportFileChange(): Promise<void> {
 
     const profilesToAppend: Profile[] = [];
     let skippedCount = 0;
+    const timestamp = new Date().toISOString();
 
     for (const importedProfile of parsed.profiles) {
       if (!importedProfile || typeof importedProfile !== 'object') {
         skippedCount += 1;
         continue;
       }
-
       const profileName =
         typeof importedProfile.name === 'string' && importedProfile.name.trim()
           ? importedProfile.name.trim()
           : '导入档案';
-      const timestamp = createImportedTimestamp();
-      const normalizedData = normalizeImportedProfileData(importedProfile.data);
-
       profilesToAppend.push({
-        id: createImportedProfileId(),
+        id: crypto.randomUUID(),
         name: profileName,
         createdAt: timestamp,
         updatedAt: timestamp,
-        data: normalizedData,
+        data: normalizeProfileData(importedProfile.data),
       });
     }
 
@@ -1677,15 +1140,12 @@ async function handleImportFileChange(): Promise<void> {
     }
 
     await bootstrapOptionsPage();
-    const importedCount = profilesToAppend.length;
-    if (skippedCount > 0) {
-      showStatus(
-        `已导入 ${importedCount} 份档案（跳过 ${skippedCount} 项无效条目）`,
-        'success',
-      );
-    } else {
-      showStatus(`已导入 ${importedCount} 份档案`, 'success');
-    }
+    showStatus(
+      skippedCount > 0
+        ? `已导入 ${profilesToAppend.length} 份档案（跳过 ${skippedCount} 项）`
+        : `已导入 ${profilesToAppend.length} 份档案`,
+      'success',
+    );
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   } finally {
@@ -1693,7 +1153,6 @@ async function handleImportFileChange(): Promise<void> {
   }
 }
 
-/** 绑定全部交互事件，并在 DOM 就绪后启动页面。 */
 function bindEventListeners(): void {
   apiForm.addEventListener('submit', (event) => {
     void handleSaveApiSettings(event);
@@ -1729,8 +1188,9 @@ function bindEventListeners(): void {
       return;
     }
     const addListKind = target.dataset.addList;
-    if (addListKind) {
-      handleAddListItem(addListKind);
+    if (addListKind && draftProfileData) {
+      appendListItem(draftProfileData, addListKind);
+      refreshDynamicLists();
     }
   });
 }

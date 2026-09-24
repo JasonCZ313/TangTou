@@ -146,20 +146,25 @@
           <h2 id="editorHeading">编辑档案</h2>
           <p id="editingProfileName" class="editing-name"></p>
         </div>
-        <form id="profileEditorForm">
+        <div class="editor-layout">
+          <nav class="editor-toc" aria-label="档案分区目录">
+            <p class="editor-toc-title">目录</p>
+            <ul id="editorTocList" class="editor-toc-list"></ul>
+          </nav>
+          <form id="profileEditorForm" class="editor-form">
           <p id="editorValidationHint" class="hint" role="status"></p>
           <p class="req-legend">
             <span class="req-mark" aria-hidden="true">*</span>
             珊瑚色星号为硬必填；分区标题为青绿大标题；字段说明为灰色正文。日期精确到日。
           </p>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-basic">
             <summary>基本信息</summary>
             <div class="form-grid">
               <label class="field"><span class="field-label">姓名 <span class="req" aria-label="必填">*</span></span><input data-path="basic.fullName" type="text" required /></label>
               <label class="field"><span class="field-label">手机 <span class="req" aria-label="必填">*</span></span><input data-path="basic.phone" type="tel" required /></label>
               <label class="field"><span class="field-label">邮箱 <span class="req" aria-label="必填">*</span></span><input data-path="basic.email" type="email" required /></label>
-              <label class="field"><span class="field-label">现居城市 <span class="req" aria-label="必填">*</span></span><input data-path="basic.currentCity" type="text" required /></label>
+              <label class="field"><span class="field-label">现居城市 <span class="req" aria-label="必填">*</span></span><input data-path="basic.currentCity" data-region="currentCity" type="text" required /></label>
               <label class="field"><span class="field-label">英文名</span><input data-path="basic.englishName" type="text" /></label>
               <label class="field"><span class="field-label">曾用名</span><input data-path="basic.formerName" type="text" /></label>
               <label class="field"><span class="field-label">备用手机</span><input data-path="basic.alternatePhone" type="tel" /></label>
@@ -167,19 +172,19 @@
               <label class="field"><span class="field-label">性别</span><select data-path="basic.gender" data-catalog="gender"></select></label>
               <label class="field"><span class="field-label">出生日期</span><input data-path="basic.birthday" type="date" /></label>
               <label class="field"><span class="field-label">年龄</span><input data-path="basic.age" type="text" placeholder="可留空自动不算" /></label>
-              <label class="field"><span class="field-label">国籍</span><input data-path="basic.nationality" type="text" placeholder="如：中国" /></label>
+              <label class="field"><span class="field-label">国籍 <span class="req" aria-label="必填">*</span></span><select data-path="basic.nationality" data-catalog="nationality" required></select></label>
               <label class="field"><span class="field-label">民族</span><select data-path="basic.ethnicity" data-catalog="ethnicity"></select></label>
-              <label class="field"><span class="field-label">籍贯</span><input data-path="basic.nativePlace" type="text" /></label>
-              <label class="field"><span class="field-label">出生地</span><input data-path="basic.birthPlace" type="text" /></label>
-              <label class="field"><span class="field-label">户口所在地</span><input data-path="basic.hukouLocation" type="text" /></label>
+              <label class="field"><span class="field-label">籍贯 <span class="req" aria-label="必填">*</span></span><input data-path="basic.nativePlace" data-region="nativePlace" type="text" required /></label>
+              <label class="field"><span class="field-label">出生地</span><input data-path="basic.birthPlace" data-region="birthPlace" type="text" /></label>
+              <label class="field"><span class="field-label">户口所在地</span><input data-path="basic.hukouLocation" data-region="hukouLocation" type="text" /></label>
               <label class="field"><span class="field-label">户口性质</span><select data-path="basic.hukouType" data-catalog="hukouType"></select></label>
               <label class="field field-span-2"><span class="field-label">现居详细地址</span><input data-path="basic.currentAddress" type="text" /></label>
               <label class="field"><span class="field-label">邮编</span><input data-path="basic.postalCode" type="text" /></label>
-              <label class="field"><span class="field-label">证件类型</span><select data-path="basic.idType" data-catalog="idType"></select></label>
-              <label class="field"><span class="field-label">证件号码</span><input data-path="basic.idNumber" type="text" /></label>
-              <label class="field"><span class="field-label">政治面貌</span><select data-path="basic.politicalStatus" data-catalog="political"></select></label>
+              <label class="field"><span class="field-label">证件类型 <span class="req" aria-label="必填">*</span></span><select data-path="basic.idType" data-catalog="idType" required></select></label>
+              <label class="field"><span class="field-label">证件号码 <span class="req" aria-label="必填">*</span></span><input data-path="basic.idNumber" type="text" required /></label>
+              <label class="field"><span class="field-label">政治面貌 <span class="req" aria-label="必填">*</span></span><select data-path="basic.politicalStatus" data-catalog="political" required></select></label>
               <label class="field"><span class="field-label">入党/团时间</span><input data-path="basic.partyJoinDate" type="date" /></label>
-              <label class="field"><span class="field-label">婚姻状况</span><select data-path="basic.maritalStatus" data-catalog="marital"></select></label>
+              <label class="field"><span class="field-label">婚姻状况 <span class="req" aria-label="必填">*</span></span><select data-path="basic.maritalStatus" data-catalog="marital" required></select></label>
               <label class="field"><span class="field-label">生育状况</span><select data-path="basic.fertilityStatus" data-catalog="fertility"></select></label>
               <label class="field"><span class="field-label">健康状况</span><select data-path="basic.healthStatus" data-catalog="health"></select></label>
               <label class="field"><span class="field-label">身高(cm)</span><input data-path="basic.heightCm" type="text" /></label>
@@ -194,13 +199,13 @@
             </div>
           </details>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-jobIntent">
             <summary>求职意向</summary>
             <div class="form-grid">
               <label class="field"><span class="field-label">目标职位 <span class="req" aria-label="必填">*</span></span><input data-path="jobIntent.targetRole" type="text" required /></label>
-              <label class="field"><span class="field-label">期望城市</span><input data-path="jobIntent.expectedCities" type="text" placeholder="多个用顿号分隔" /></label>
-              <label class="field"><span class="field-label">工作城市</span><input data-path="jobIntent.workCity" type="text" /></label>
-              <label class="field"><span class="field-label">期望行业</span><input data-path="jobIntent.expectedIndustry" type="text" /></label>
+              <label class="field"><span class="field-label">期望城市</span><input data-path="jobIntent.expectedCities" data-region="expectedCities" type="text" placeholder="可多次添加，顿号分隔" /></label>
+              <label class="field"><span class="field-label">工作城市</span><input data-path="jobIntent.workCity" data-region="workCity" type="text" /></label>
+              <label class="field"><span class="field-label">期望行业</span><select data-path="jobIntent.expectedIndustry" data-catalog="industry"></select></label>
               <label class="field"><span class="field-label">工作性质</span><select data-path="jobIntent.jobType" data-catalog="jobType"></select></label>
               <label class="field"><span class="field-label">求职状态</span><select data-path="jobIntent.jobStatus" data-catalog="jobStatus"></select></label>
               <label class="field"><span class="field-label">期望月薪下限</span><input data-path="jobIntent.salaryMin" type="text" /></label>
@@ -214,88 +219,83 @@
             </div>
           </details>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-education">
             <summary>教育经历（至少一条完整）</summary>
             <div id="educationList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="education">添加教育经历</button>
           </details>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-experience">
             <summary>实习 / 工作经历</summary>
             <div id="experienceList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="experience">添加工作/实习</button>
           </details>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-projects">
             <summary>项目经历</summary>
             <div id="projectsList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="projects">添加项目</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-campus">
             <summary>校园 / 社团 / 志愿（可选）</summary>
             <div id="campusList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="campus">添加校园经历</button>
           </details>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-skills">
             <summary>技能与计算机</summary>
             <div class="form-grid">
               <label class="field"><span class="field-label">计算机水平</span><select data-path="computerLevel" data-catalog="computer"></select></label>
               <label class="field"><span class="field-label">办公软件</span><select data-path="officeSkillLevel" data-catalog="office"></select></label>
-              <label class="field field-span-2">
-                <span class="field-label">技能（每行一项）</span>
-                <textarea id="skillsTextarea" rows="4" placeholder="TypeScript&#10;React"></textarea>
-              </label>
             </div>
+            <div id="skillsList" class="item-list"></div>
+            <button type="button" class="btn btn-ghost" data-add-list="skills">添加技能</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-language">
             <summary>语言能力（可选）</summary>
             <div id="languageList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="language">添加语言</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-certificate">
             <summary>证书 / 资格（可选）</summary>
             <div id="certificateList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="certificate">添加证书</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-award">
             <summary>奖项荣誉（可选）</summary>
             <div id="awardList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="award">添加奖项</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-publication">
             <summary>论文 / 专利 / 著作（可选）</summary>
             <div id="publicationList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="publication">添加条目</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-training">
             <summary>培训经历（可选）</summary>
             <div id="trainingList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="training">添加培训</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-family">
             <summary>家庭成员（可选，银行/事业单位常见）</summary>
             <div id="familyList" class="item-list"></div>
             <button type="button" class="btn btn-ghost" data-add-list="family">添加家庭成员</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-emergency">
             <summary>紧急联系人（可选）</summary>
-            <div class="form-grid">
-              <label class="field"><span class="field-label">姓名</span><input data-path="emergencyContact.name" type="text" /></label>
-              <label class="field"><span class="field-label">关系</span><input data-path="emergencyContact.relationship" type="text" /></label>
-              <label class="field"><span class="field-label">电话</span><input data-path="emergencyContact.phone" type="tel" /></label>
-            </div>
+            <div id="emergencyList" class="item-list"></div>
+            <button type="button" class="btn btn-ghost" data-add-list="emergency">添加紧急联系人</button>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-specialOrg">
             <summary>体制 / 银行特殊项（可选）</summary>
             <div class="form-grid">
               <label class="field"><span class="field-label">有无本单位亲属</span><select data-path="specialOrg.hasRelativeInOrg" data-catalog="yesNo"></select></label>
@@ -306,20 +306,60 @@
               <label class="field"><span class="field-label">报到证抬头</span><input data-path="specialOrg.reportLetterTitle" type="text" /></label>
               <label class="field"><span class="field-label">生源地</span><input data-path="specialOrg.studentOrigin" type="text" /></label>
               <label class="field"><span class="field-label">委培/定向</span><input data-path="specialOrg.directedTraining" type="text" /></label>
+              <label class="field field-span-2"><span class="field-label">基层服务经历</span><input data-path="specialOrg.grassrootsService" type="text" /></label>
+              <label class="field field-span-2"><span class="field-label">公务员/事业编报考史</span><input data-path="specialOrg.civilServiceExamHistory" type="text" /></label>
             </div>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-workAuth">
             <summary>外企 / 工作许可（可选）</summary>
             <div class="form-grid">
               <label class="field"><span class="field-label">是否需要工作签证</span><select data-path="workAuth.needsVisa" data-catalog="yesNo"></select></label>
               <label class="field"><span class="field-label">当前工作许可</span><input data-path="workAuth.currentWorkAuth" type="text" /></label>
               <label class="field"><span class="field-label">愿否搬迁</span><select data-path="workAuth.willingToRelocate" data-catalog="yesNo"></select></label>
               <label class="field"><span class="field-label">LinkedIn（外企）</span><input data-path="workAuth.linkedinUrl" type="url" /></label>
+              <label class="field"><span class="field-label">英文简历链接</span><input data-path="workAuth.englishResumeUrl" type="url" /></label>
+              <label class="field"><span class="field-label">护照国籍</span><input data-path="workAuth.passportNationality" type="text" /></label>
             </div>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-industry">
+            <summary>行业补充（可选，按目标行业填写）</summary>
+            <p class="hint">银行/医疗/教师/法律/互联网/制造/军工/实习等专项字段；不填不影响保存。</p>
+            <div class="form-grid">
+              <label class="field"><span class="field-label">接受柜面工作</span><select data-path="industryExtras.acceptCounterWork" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">接受调剂郊县</span><select data-path="industryExtras.acceptSuburbTransfer" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">风险合规承诺</span><select data-path="industryExtras.riskComplianceAck" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">亲友金融从业</span><select data-path="industryExtras.relativeInFinance" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">证券/基金从业资格</span><input data-path="industryExtras.securitiesFundCert" type="text" /></label>
+              <label class="field"><span class="field-label">反洗钱培训</span><input data-path="industryExtras.amlTraining" type="text" /></label>
+              <label class="field"><span class="field-label">执业资格证</span><input data-path="industryExtras.medicalLicense" type="text" /></label>
+              <label class="field"><span class="field-label">规培情况</span><input data-path="industryExtras.residencyTraining" type="text" /></label>
+              <label class="field"><span class="field-label">意向科室</span><input data-path="industryExtras.departmentIntent" type="text" /></label>
+              <label class="field"><span class="field-label">接受夜班</span><select data-path="industryExtras.acceptNightShift" data-catalog="yesNo"></select></label>
+              <label class="field field-span-2"><span class="field-label">传染病史声明</span><input data-path="industryExtras.infectiousDiseaseNote" type="text" /></label>
+              <label class="field"><span class="field-label">教资学段</span><input data-path="industryExtras.teacherCertStage" type="text" /></label>
+              <label class="field"><span class="field-label">教资学科</span><input data-path="industryExtras.teacherCertSubject" type="text" /></label>
+              <label class="field"><span class="field-label">普通话等级</span><select data-path="industryExtras.mandarinLevel" data-catalog="mandarin"></select></label>
+              <label class="field"><span class="field-label">教资笔面试状态</span><input data-path="industryExtras.teacherExamStatus" type="text" /></label>
+              <label class="field"><span class="field-label">法考情况</span><input data-path="industryExtras.judicialExam" type="text" /></label>
+              <label class="field"><span class="field-label">执业方向</span><input data-path="industryExtras.lawPracticeArea" type="text" /></label>
+              <label class="field field-span-2"><span class="field-label">律所/法院实习</span><input data-path="industryExtras.lawFirmCourtIntern" type="text" /></label>
+              <label class="field field-span-2"><span class="field-label">开源贡献</span><input data-path="industryExtras.openSourceContrib" type="text" /></label>
+              <label class="field"><span class="field-label">技术博客</span><input data-path="industryExtras.techBlogUrl" type="url" /></label>
+              <label class="field"><span class="field-label">驾照准驾</span><select data-path="industryExtras.driverLicenseType" data-catalog="driver"></select></label>
+              <label class="field"><span class="field-label">特种作业证</span><input data-path="industryExtras.specialOperationCert" type="text" /></label>
+              <label class="field"><span class="field-label">接受倒班</span><select data-path="industryExtras.acceptShiftWork" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">接受出差驻场</span><select data-path="industryExtras.acceptOnsiteTravel" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">政审意愿</span><select data-path="industryExtras.politicalReviewWilling" data-catalog="yesNo"></select></label>
+              <label class="field field-span-2"><span class="field-label">涉密经历声明</span><input data-path="industryExtras.classifiedWorkNote" type="text" /></label>
+              <label class="field"><span class="field-label">周到岗天数</span><input data-path="industryExtras.weeklyOnsiteDays" type="text" /></label>
+              <label class="field"><span class="field-label">实习是否可转正</span><select data-path="industryExtras.internToFullTime" data-catalog="yesNo"></select></label>
+              <label class="field"><span class="field-label">实习时长(月)</span><input data-path="industryExtras.internDurationMonths" type="text" /></label>
+            </div>
+          </details>
+
+          <details class="editor-block" id="section-essays">
             <summary>自定义问答素材（可选）</summary>
             <div class="form-grid">
               <label class="field field-span-2"><span class="field-label">自我评价</span><textarea data-path="essays.selfEvaluation" rows="3"></textarea></label>
@@ -331,7 +371,7 @@
             </div>
           </details>
 
-          <details class="editor-block">
+          <details class="editor-block" id="section-attachment">
             <summary>附件备注（不存文件，可选）</summary>
             <div class="form-grid">
               <label class="field field-span-2"><span class="field-label">简历文件备注</span><input data-path="attachmentNotes.resumeFileNote" type="text" /></label>
@@ -340,7 +380,7 @@
             </div>
           </details>
 
-          <details class="editor-block" open>
+          <details class="editor-block" open id="section-notes">
             <summary>自由补充</summary>
             <label class="field">
               <span class="field-label">其他备注（供模型参考）</span>
@@ -352,7 +392,8 @@
             <button type="submit" class="btn btn-primary">保存档案</button>
             <button type="button" id="closeEditorButton" class="btn btn-secondary">关闭编辑</button>
           </div>
-        </form>
+          </form>
+        </div>
       </section>
 
       <!-- 分区 6：导入 / 导出（导出剔除 apiKey） -->

@@ -1,14 +1,15 @@
-/* Popup：紧凑操作面板，继承躺投品牌令牌 */
+/* Popup：加宽快捷条，主操作清晰；预览在侧边助手 */
 @import "../../shared/ui/brand.css";
 
 body {
-  min-width: 320px;
-  max-width: 380px;
+  /* 比旧版 320–380 更长，仍符合扩展弹层习惯 */
+  min-width: 400px;
+  max-width: 440px;
   font-size: 13px;
 }
 
 .popup-page {
-  padding: 16px 16px 18px;
+  padding: 18px 18px 20px;
 }
 
 .popup-header {
@@ -17,7 +18,7 @@ body {
 
 .popup-section {
   margin-top: 14px;
-  padding: 14px;
+  padding: 14px 16px;
 }
 
 .field-label {
@@ -43,17 +44,24 @@ body {
   accent-color: var(--tt-primary);
 }
 
+/* 纵向主次：主按钮 → 双列次按钮 → 撤销 */
 .popup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.popup-action-primary {
+  width: 100%;
+}
+
+.popup-action-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  margin-top: 14px;
 }
 
-.btn-primary {
-  grid-column: 1 / -1;
-}
-
-.btn-ghost {
-  grid-column: 1 / -1;
+.popup-action-undo {
+  width: 100%;
 }

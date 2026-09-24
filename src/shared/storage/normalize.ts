@@ -1,9 +1,38 @@
 import { createEmptyProfileData } from './defaults';
 import type {
   EducationItem,
+  EmergencyContact,
+  ExperienceItem,
   ProfileData,
   ProfileValidationResult,
+  ProjectItem,
+  RegionSelection,
+  SkillItem,
 } from '../types/profile';
+
+/**
+ * 判断对象是否为可用的 RegionSelection（至少有展示文案）。
+ */
+function isUsableRegionSelection(value: unknown): value is RegionSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const region = value as RegionSelection;
+  return typeof region.text === 'string' && region.text.trim().length > 0;
+}
+
+/**
+ * 有结构化地区时用 text 回填字符串字段；否则保留原字符串。
+ */
+function syncRegionTextField(
+  textValue: string | undefined,
+  regionValue: RegionSelection | undefined,
+): string {
+  if (isUsableRegionSelection(regionValue)) {
+    return regionValue.text.trim();
+  }
+  return typeof textValue === 'string' ? textValue : '';
+}
 
 /**
  * 深度合并：以 base 为骨架，source 覆盖同名键；数组整段替换（若 source 提供）。
@@ -39,7 +68,76 @@ export function deepMergeRecord(
 }
 
 /**
- * 将任意残缺 data 归一化为完整 ProfileData，并迁移旧字段（city→currentCity、degree→degreeLevel）。
+ * 将旧 skills: string[] 或混合数组归一化为 SkillItem[]。
+ */
+function normalizeSkills(rawSkills: unknown): SkillItem[] {
+  if (!Array.isArray(rawSkills)) {
+    return [];
+  }
+  const result: SkillItem[] = [];
+  for (const entry of rawSkills) {
+    if (typeof entry === 'string') {
+      const name = entry.trim();
+      if (name) {
+        result.push({ name });
+      }
+      continue;
+    }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      const name =
+        typeof record.name === 'string' ? record.name.trim() : '';
+      if (!name) {
+        continue;
+      }
+      result.push({
+        name,
+        level: typeof record.level === 'string' ? record.level : '',
+        years: typeof record.years === 'string' ? record.years : '',
+        category: typeof record.category === 'string' ? record.category : '',
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * 将旧 emergencyContact 单对象迁入 emergencyContacts 数组。
+ */
+function normalizeEmergencyContacts(
+  rawData: Record<string, unknown>,
+  mergedContacts: unknown,
+): EmergencyContact[] {
+  if (Array.isArray(mergedContacts) && mergedContacts.length > 0) {
+    return mergedContacts
+      .filter(
+        (item): item is EmergencyContact =>
+          Boolean(item) && typeof item === 'object',
+      )
+      .map((item) => ({
+        name: item.name ?? '',
+        relationship: item.relationship ?? '',
+        phone: item.phone ?? '',
+      }));
+  }
+  const legacy = rawData.emergencyContact;
+  if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
+    const contact = legacy as EmergencyContact;
+    if (contact.name || contact.phone || contact.relationship) {
+      return [
+        {
+          name: contact.name ?? '',
+          relationship: contact.relationship ?? '',
+          phone: contact.phone ?? '',
+        },
+      ];
+    }
+  }
+  return [];
+}
+
+/**
+ * 将任意残缺 data 归一化为完整 ProfileData，并迁移旧字段。
  */
 export function normalizeProfileData(rawData: unknown): ProfileData {
   const emptyProfileData = createEmptyProfileData();
@@ -47,9 +145,10 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     return emptyProfileData;
   }
 
+  const sourceRecord = rawData as Record<string, unknown>;
   const merged = deepMergeRecord(
     emptyProfileData as unknown as Record<string, unknown>,
-    rawData as Record<string, unknown>,
+    sourceRecord,
   ) as unknown as ProfileData;
 
   // 旧版 basic.city → currentCity
@@ -57,9 +156,58 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     merged.basic.currentCity = merged.basic.city;
   }
 
-  // 旧版 education.degree → degreeLevel
+  // 地区结构化 → 字符串主字段（喂 LLM / 校验）
+  merged.basic.currentCity = syncRegionTextField(
+    merged.basic.currentCity,
+    merged.basic.currentCityRegion,
+  );
+  merged.basic.nativePlace = syncRegionTextField(
+    merged.basic.nativePlace,
+    merged.basic.nativePlaceRegion,
+  );
+  merged.basic.birthPlace = syncRegionTextField(
+    merged.basic.birthPlace,
+    merged.basic.birthPlaceRegion,
+  );
+  merged.basic.hukouLocation = syncRegionTextField(
+    merged.basic.hukouLocation,
+    merged.basic.hukouLocationRegion,
+  );
+
+  merged.jobIntent = merged.jobIntent ?? { targetRole: '' };
+  merged.jobIntent.workCity = syncRegionTextField(
+    merged.jobIntent.workCity,
+    merged.jobIntent.workCityRegion,
+  );
+  // 期望城市：有结构化列表时用顿号拼接回填
+  if (
+    Array.isArray(merged.jobIntent.expectedCitiesRegions) &&
+    merged.jobIntent.expectedCitiesRegions.length > 0
+  ) {
+    const texts = merged.jobIntent.expectedCitiesRegions
+      .filter(isUsableRegionSelection)
+      .map((region) => region.text.trim());
+    if (texts.length > 0) {
+      merged.jobIntent.expectedCities = texts.join('、');
+    }
+  }
+
+  // 旧版 education.degree → degreeLevel；补全第二学位骨架
   merged.education = (merged.education ?? []).map((item: EducationItem) => {
     const degreeLevel = item.degreeLevel || item.degree || '';
+    const secondDegree =
+      item.secondDegree && typeof item.secondDegree === 'object'
+        ? {
+            school: item.secondDegree.school ?? '',
+            major: item.secondDegree.major ?? '',
+            degreeLevel: item.secondDegree.degreeLevel ?? '',
+            academicDegree: item.secondDegree.academicDegree ?? '',
+            college: item.secondDegree.college ?? '',
+            startDate: item.secondDegree.startDate ?? '',
+            endDate: item.secondDegree.endDate ?? '',
+            description: item.secondDegree.description ?? '',
+          }
+        : undefined;
     return {
       ...item,
       degreeLevel,
@@ -67,16 +215,51 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
       major: item.major ?? '',
       startDate: item.startDate ?? '',
       endDate: item.endDate ?? '',
+      city: syncRegionTextField(item.city, item.cityRegion),
+      secondDegree,
     };
   });
 
-  // 保证数组字段存在
-  merged.experience = Array.isArray(merged.experience) ? merged.experience : [];
-  merged.projects = Array.isArray(merged.projects) ? merged.projects : [];
+  // 经历：补齐职责/内容/业绩字段
+  merged.experience = (Array.isArray(merged.experience) ? merged.experience : []).map(
+    (item: ExperienceItem) => ({
+      ...item,
+      company: item.company ?? '',
+      title: item.title ?? '',
+      startDate: item.startDate ?? '',
+      endDate: item.endDate ?? '',
+      description: item.description ?? '',
+      responsibilities: item.responsibilities ?? '',
+      workContent: item.workContent ?? '',
+      achievements: item.achievements ?? '',
+      industry: item.industry ?? '',
+      city: syncRegionTextField(item.city, item.cityRegion),
+    }),
+  );
+
+  // 项目：旧 description 可回填 content
+  merged.projects = (Array.isArray(merged.projects) ? merged.projects : []).map(
+    (item: ProjectItem) => {
+      const content =
+        item.content?.trim() ||
+        (item.description?.trim() ? item.description : '') ||
+        '';
+      return {
+        ...item,
+        name: item.name ?? '',
+        description: item.description ?? '',
+        content,
+        value: item.value ?? '',
+      };
+    },
+  );
+
   merged.campusActivities = Array.isArray(merged.campusActivities)
     ? merged.campusActivities
     : [];
-  merged.skills = Array.isArray(merged.skills) ? merged.skills : [];
+  merged.skills = normalizeSkills(
+    sourceRecord.skills !== undefined ? sourceRecord.skills : merged.skills,
+  );
   merged.languages = Array.isArray(merged.languages) ? merged.languages : [];
   merged.certificates = Array.isArray(merged.certificates)
     ? merged.certificates
@@ -90,19 +273,27 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     ? merged.familyMembers
     : [];
   merged.notes = typeof merged.notes === 'string' ? merged.notes : '';
-  merged.emergencyContact = merged.emergencyContact ?? {
-    name: '',
-    relationship: '',
-    phone: '',
-  };
+  merged.emergencyContacts = normalizeEmergencyContacts(
+    sourceRecord,
+    merged.emergencyContacts,
+  );
   merged.specialOrg = merged.specialOrg ?? {};
   merged.workAuth = merged.workAuth ?? {};
+  merged.industryExtras = merged.industryExtras ?? {};
   merged.essays = merged.essays ?? {};
   merged.attachmentNotes = merged.attachmentNotes ?? {};
   merged.jobIntent = merged.jobIntent ?? { targetRole: '' };
   merged.basic = merged.basic ?? emptyProfileData.basic;
 
   return merged;
+}
+
+/**
+ * 判断学位是否为双学位（兼容 code 与中文标签）。
+ */
+export function isDualAcademicDegree(academicDegree: string | undefined): boolean {
+  const value = (academicDegree || '').trim();
+  return value === 'dual' || value === '双学位';
 }
 
 /**
@@ -126,14 +317,30 @@ export function validateProfileData(
   if (!profileData.basic.currentCity.trim()) {
     missingRequired.push('现居城市');
   }
+  if (!profileData.basic.nationality?.trim()) {
+    missingRequired.push('国籍');
+  }
+  if (!profileData.basic.nativePlace?.trim()) {
+    missingRequired.push('籍贯');
+  }
+  if (!profileData.basic.idType?.trim()) {
+    missingRequired.push('证件类型');
+  }
+  if (!profileData.basic.idNumber?.trim()) {
+    missingRequired.push('证件号码');
+  }
+  if (!profileData.basic.politicalStatus?.trim()) {
+    missingRequired.push('政治面貌');
+  }
+  if (!profileData.basic.maritalStatus?.trim()) {
+    missingRequired.push('婚姻状况');
+  }
   if (!profileData.jobIntent.targetRole.trim()) {
     missingRequired.push('目标职位');
   }
 
   const hasCompleteEducation = profileData.education.some((item) => {
-    const hasDegree = Boolean(
-      (item.degreeLevel || item.degree || '').trim(),
-    );
+    const hasDegree = Boolean((item.degreeLevel || item.degree || '').trim());
     const hasEndOrCurrent =
       Boolean(item.endDate?.trim()) || Boolean(item.isCurrent);
     return (
@@ -148,6 +355,19 @@ export function validateProfileData(
       '至少一条完整教育经历（学校、学历层次、入学日期、毕业日期或在读）',
     );
   }
+
+  // 双学位：第二学位学校+专业必填
+  profileData.education.forEach((item, index) => {
+    if (!isDualAcademicDegree(item.academicDegree)) {
+      return;
+    }
+    const second = item.secondDegree;
+    if (!second?.school?.trim() || !second?.major?.trim()) {
+      missingRequired.push(
+        `教育经历 ${index + 1}：双学位须填写第二学位的学校与专业`,
+      );
+    }
+  });
 
   if (!profileData.basic.gender?.trim()) {
     softWarnings.push('建议填写性别');
@@ -166,6 +386,9 @@ export function validateProfileData(
   }
   if (!profileData.jobIntent.availableDate?.trim()) {
     softWarnings.push('建议填写到岗日期');
+  }
+  if (profileData.experience.length === 0) {
+    softWarnings.push('建议至少添加一条实习或工作经历');
   }
 
   return {

@@ -1,20 +1,29 @@
 /**
- * Side Panel 主逻辑：读取预览会话、编辑映射表、确认写入 / 撤销 / 重新扫描。
- * 经 Background 编排 BUILD_FILL_PLAN；APPLY/UNDO/SCAN 经 Background 转发到活动标签。
+ * Side Panel（侧边助手）：
+ * - 设置与新建档案在本侧栏完成（避免跳到扩展管理弹窗）
+ * - 完整简历编辑用新标签打开 Options
+ * - 日常扫描仍以右上角 Popup 为主；本页可核对预览 / 扫描 / 写入
  */
+import { MAX_PROFILES } from '../../shared/storage/defaults';
+import {
+  createProfile,
+  listProfiles,
+  setActiveProfileId,
+} from '../../shared/storage/profileStore';
+import { getSettings, saveSettings } from '../../shared/storage/settingsStore';
 import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
-import type { Profile } from '../../shared/types/profile';
+import type { FillMode, Profile } from '../../shared/types/profile';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
 
 /**
- * Popup 预览模式写入的会话载荷：plan + 扫描字段（供展示 label）。
+ * Popup / 本页扫描写入的会话载荷。
  * 存于 chrome.storage.session，键名 pendingFillSession。
  */
 interface PendingFillSession {
@@ -22,18 +31,56 @@ interface PendingFillSession {
   fields: FieldDescriptor[];
 }
 
-/** 内存中的档案列表，供下拉渲染 */
+/** Popup「打开设置」写入，侧栏启动时展开设置区 */
+const FOCUS_SETTINGS_SESSION_KEY = 'sidePanelFocusSettings';
+
 let cachedProfiles: Profile[] = [];
-
-/** 当前待确认会话（含可编辑 plan）；无预览时为 null */
+let cachedActiveProfileId: string | null = null;
 let currentSession: PendingFillSession | null = null;
-
-/** 是否正在执行异步流程，用于禁用按钮防重复点击 */
 let isBusy = false;
+
+const settingsDetails = document.getElementById(
+  'settingsDetails',
+) as HTMLDetailsElement;
+const apiSettingsForm = document.getElementById(
+  'apiSettingsForm',
+) as HTMLFormElement;
+const apiBaseUrlInput = document.getElementById(
+  'apiBaseUrlInput',
+) as HTMLInputElement;
+const apiKeyInput = document.getElementById('apiKeyInput') as HTMLInputElement;
+const modelInput = document.getElementById('modelInput') as HTMLInputElement;
+const fillModePreview = document.getElementById(
+  'fillModePreview',
+) as HTMLInputElement;
+const fillModeDirect = document.getElementById(
+  'fillModeDirect',
+) as HTMLInputElement;
+const testApiButton = document.getElementById(
+  'testApiButton',
+) as HTMLButtonElement;
+const createProfileForm = document.getElementById(
+  'createProfileForm',
+) as HTMLFormElement;
+const newProfileNameInput = document.getElementById(
+  'newProfileNameInput',
+) as HTMLInputElement;
+const createProfileButton = document.getElementById(
+  'createProfileButton',
+) as HTMLButtonElement;
+const profileLimitTip = document.getElementById(
+  'profileLimitTip',
+) as HTMLParagraphElement;
+const openFullEditorButton = document.getElementById(
+  'openFullEditorButton',
+) as HTMLButtonElement;
 
 const profileSelect = document.getElementById(
   'profileSelect',
 ) as HTMLSelectElement;
+const setDefaultCheckbox = document.getElementById(
+  'setDefaultCheckbox',
+) as HTMLInputElement;
 const mappingTableBody = document.getElementById(
   'mappingTableBody',
 ) as HTMLTableSectionElement;
@@ -51,52 +98,83 @@ const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
 
-/**
- * 在状态区展示文案；kind 控制成功/错误/提示配色。
- */
+const EMPTY_MAPPING_HINT =
+  '尚未生成预览。日常请用右上角 Popup「扫描并填写」；也可在此「扫描本页」。';
+
 function showStatus(message: string, kind: StatusKind = 'info'): void {
   statusMessageElement.textContent = message;
   statusMessageElement.classList.remove('is-info', 'is-success', 'is-error');
   statusMessageElement.classList.add(`is-${kind}`);
 }
 
-/**
- * 展示错误文案（红色状态区）。
- */
 function showError(message: string): void {
   showStatus(message, 'error');
 }
 
 /**
- * 根据 isBusy、档案与是否有 plan items，同步按钮禁用状态。
+ * 有预览时「确认写入」为 primary；无预览时「扫描本页」升为 primary。
  */
+function syncActionButtonHierarchy(): void {
+  const hasPlanItems =
+    currentSession !== null && currentSession.plan.items.length > 0;
+  if (hasPlanItems) {
+    confirmButton.className = 'btn btn-primary action-confirm';
+    rescanButton.className = 'btn btn-secondary action-scan';
+  } else {
+    confirmButton.className = 'btn btn-secondary action-confirm';
+    rescanButton.className = 'btn btn-primary action-scan';
+  }
+}
+
 function syncBusyUi(): void {
   const hasProfiles = cachedProfiles.length > 0;
   const selectedProfileId = profileSelect.value;
   const hasPlanItems =
     currentSession !== null && currentSession.plan.items.length > 0;
+  const atLimit = cachedProfiles.length >= MAX_PROFILES;
 
   confirmButton.disabled = isBusy || !hasPlanItems;
   undoButton.disabled = isBusy;
   rescanButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
   profileSelect.disabled = isBusy;
+  setDefaultCheckbox.disabled = isBusy || !selectedProfileId;
+  createProfileButton.disabled = isBusy || atLimit;
+  profileLimitTip.hidden = !atLimit;
+  testApiButton.disabled = isBusy;
+  openFullEditorButton.disabled = isBusy;
+  syncActionButtonHierarchy();
 }
 
 /**
- * 将档案列表渲染到下拉；优先选中 preferredProfileId，否则第一项。
+ * 将设置表单填入当前 AppSettings。
  */
+function fillSettingsForm(settings: {
+  apiBaseUrl: string;
+  apiKey: string;
+  model: string;
+  fillMode: FillMode;
+}): void {
+  apiBaseUrlInput.value = settings.apiBaseUrl;
+  apiKeyInput.value = settings.apiKey;
+  modelInput.value = settings.model;
+  fillModePreview.checked = settings.fillMode === 'preview';
+  fillModeDirect.checked = settings.fillMode === 'direct';
+}
+
 function renderProfileOptions(
   profiles: Profile[],
   preferredProfileId: string | null,
 ): void {
   cachedProfiles = profiles;
+  cachedActiveProfileId = preferredProfileId;
   profileSelect.replaceChildren();
 
   if (profiles.length === 0) {
     const emptyOption = document.createElement('option');
     emptyOption.value = '';
-    emptyOption.textContent = '暂无档案，请先打开设置创建';
+    emptyOption.textContent = '暂无档案，请先在上方创建';
     profileSelect.appendChild(emptyOption);
+    setDefaultCheckbox.checked = false;
     syncBusyUi();
     return;
   }
@@ -114,12 +192,16 @@ function renderProfileOptions(
       ? preferredProfileId
       : profiles[0].id;
   profileSelect.value = selectedId;
+  setDefaultCheckbox.checked = selectedId === preferredProfileId;
   syncBusyUi();
 }
 
-/**
- * 按 fieldId 从 fields 取 label；找不到则回退 fieldId。
- */
+function syncDefaultCheckboxFromSelection(): void {
+  const selectedProfileId = profileSelect.value;
+  setDefaultCheckbox.checked =
+    Boolean(selectedProfileId) && selectedProfileId === cachedActiveProfileId;
+}
+
 function resolveFieldLabel(
   fieldId: string,
   fields: FieldDescriptor[],
@@ -127,23 +209,14 @@ function resolveFieldLabel(
   const matchedField = fields.find(
     (fieldItem) => fieldItem.fieldId === fieldId,
   );
-  if (matchedField?.label) {
-    return matchedField.label;
-  }
-  return fieldId;
+  return matchedField?.label || fieldId;
 }
 
-/**
- * 将 0..1 置信度格式化为百分比文案（如 92%）。
- */
 function formatConfidencePercent(confidence: number): string {
   const clamped = Math.max(0, Math.min(1, confidence));
   return `${Math.round(clamped * 100)}%`;
 }
 
-/**
- * 用当前会话渲染可编辑映射表；无会话时显示空态。
- */
 function renderMappingTable(): void {
   mappingTableBody.replaceChildren();
 
@@ -152,8 +225,7 @@ function renderMappingTable(): void {
     emptyRow.className = 'empty-row';
     const emptyCell = document.createElement('td');
     emptyCell.colSpan = 3;
-    emptyCell.textContent =
-      '暂无预览计划，请先在 Popup 扫描或点击「重新扫描」';
+    emptyCell.textContent = EMPTY_MAPPING_HINT;
     emptyRow.appendChild(emptyCell);
     mappingTableBody.appendChild(emptyRow);
     skippedSummaryElement.hidden = true;
@@ -163,7 +235,6 @@ function renderMappingTable(): void {
   }
 
   const { plan, fields } = currentSession;
-
   for (const mappingItem of plan.items) {
     const tableRow = document.createElement('tr');
     tableRow.dataset.fieldId = mappingItem.fieldId;
@@ -190,9 +261,7 @@ function renderMappingTable(): void {
       mappingItem.confidence,
     );
 
-    tableRow.appendChild(labelCell);
-    tableRow.appendChild(valueCell);
-    tableRow.appendChild(confidenceCell);
+    tableRow.append(labelCell, valueCell, confidenceCell);
     mappingTableBody.appendChild(tableRow);
   }
 
@@ -204,13 +273,9 @@ function renderMappingTable(): void {
     skippedSummaryElement.hidden = true;
     skippedSummaryElement.textContent = '';
   }
-
   syncBusyUi();
 }
 
-/**
- * 向 Background 发消息；若响应为 ERROR 则抛出带中文 message 的 Error。
- */
 async function requestBackground(
   message: ExtensionMessage,
 ): Promise<ExtensionMessage> {
@@ -221,9 +286,6 @@ async function requestBackground(
   return response;
 }
 
-/**
- * 从 chrome.storage.session 读取 pendingFillSession；无效则返回 null。
- */
 async function loadPendingSession(): Promise<PendingFillSession | null> {
   const storageSnapshot = await chrome.storage.session.get('pendingFillSession');
   const rawSession = storageSnapshot.pendingFillSession as
@@ -232,45 +294,30 @@ async function loadPendingSession(): Promise<PendingFillSession | null> {
   if (!rawSession || !rawSession.plan || !Array.isArray(rawSession.plan.items)) {
     return null;
   }
-  if (!Array.isArray(rawSession.fields)) {
-    return {
-      plan: rawSession.plan,
-      fields: [],
-    };
-  }
   return {
     plan: rawSession.plan,
-    fields: rawSession.fields,
+    fields: Array.isArray(rawSession.fields) ? rawSession.fields : [],
   };
 }
 
-/**
- * 清除 session 中的 pendingFillSession，并清空内存会话。
- */
 async function clearPendingSession(): Promise<void> {
   await chrome.storage.session.remove('pendingFillSession');
   currentSession = null;
 }
 
-/**
- * 从表格输入框收集用户编辑后的 FillPlan（保留原 confidence / skipped）。
- */
 function collectEditedFillPlan(): FillPlan {
   if (!currentSession) {
     return { items: [], skippedFieldIds: [] };
   }
-
   const editedItems = currentSession.plan.items.map((mappingItem) => {
     const valueInput = mappingTableBody.querySelector(
       `input.value-input[data-field-id="${CSS.escape(mappingItem.fieldId)}"]`,
     ) as HTMLInputElement | null;
-    const editedValue = valueInput ? valueInput.value : mappingItem.value;
     return {
       ...mappingItem,
-      value: editedValue,
+      value: valueInput ? valueInput.value : mappingItem.value,
     };
   });
-
   return {
     items: editedItems,
     skippedFieldIds: [...currentSession.plan.skippedFieldIds],
@@ -278,7 +325,7 @@ function collectEditedFillPlan(): FillPlan {
 }
 
 /**
- * 从 Background 拉取 settings + profiles，刷新档案下拉。
+ * 拉取 settings + profiles，刷新设置表单与档案下拉。
  */
 async function loadState(): Promise<void> {
   const response = await requestBackground({
@@ -288,6 +335,7 @@ async function loadState(): Promise<void> {
   if (response.type !== 'GET_STATE_RESULT') {
     throw new Error('无法读取扩展状态');
   }
+  fillSettingsForm(response.settings);
   renderProfileOptions(
     response.profiles,
     response.settings.activeProfileId,
@@ -295,14 +343,96 @@ async function loadState(): Promise<void> {
 }
 
 /**
- * 确认写入：收集编辑后的 FillPlan → APPLY_FILL_PLAN → 清除 pending session。
+ * 若 Popup 请求聚焦设置，则展开设置区并清除标记。
  */
+async function maybeFocusSettingsFromPopup(): Promise<void> {
+  const snapshot = await chrome.storage.session.get(FOCUS_SETTINGS_SESSION_KEY);
+  if (snapshot[FOCUS_SETTINGS_SESSION_KEY]) {
+    settingsDetails.open = true;
+    await chrome.storage.session.remove(FOCUS_SETTINGS_SESSION_KEY);
+    settingsDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (cachedProfiles.length === 0) {
+    // 无档案时默认展开，方便首次创建
+    settingsDetails.open = true;
+  }
+}
+
+/**
+ * 保存 API / 填写模式到本机。
+ */
+async function handleSaveSettings(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
+  await saveSettings({
+    apiBaseUrl: apiBaseUrlInput.value.trim(),
+    apiKey: apiKeyInput.value.trim(),
+    model: modelInput.value.trim() || 'gpt-4o-mini',
+    fillMode,
+  });
+  showStatus('设置已保存到本机', 'success');
+}
+
+/**
+ * 经 Background 测试 API 连通性（先保存当前表单值再测）。
+ */
+async function handleTestApi(): Promise<void> {
+  const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
+  await saveSettings({
+    apiBaseUrl: apiBaseUrlInput.value.trim(),
+    apiKey: apiKeyInput.value.trim(),
+    model: modelInput.value.trim() || 'gpt-4o-mini',
+    fillMode,
+  });
+  showStatus('正在测试连接…', 'info');
+  const response = await requestBackground({
+    type: 'TEST_API',
+    requestId: createRequestId(),
+  });
+  if (response.type !== 'TEST_API_RESULT') {
+    throw new Error('测试连接失败');
+  }
+  showStatus(
+    response.ok ? `连接成功：${response.detail}` : `连接失败：${response.detail}`,
+    response.ok ? 'success' : 'error',
+  );
+}
+
+/**
+ * 在侧栏直接新建档案（不打开 Options）。
+ */
+async function handleCreateProfile(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const name = newProfileNameInput.value.trim();
+  if (!name) {
+    showError('请填写档案名称');
+    return;
+  }
+  if (cachedProfiles.length >= MAX_PROFILES) {
+    showError(`最多 ${MAX_PROFILES} 份档案`);
+    return;
+  }
+  const created = await createProfile({ name });
+  newProfileNameInput.value = '';
+  const profiles = await listProfiles();
+  const settings = await getSettings();
+  renderProfileOptions(profiles, settings.activeProfileId ?? created.id);
+  profileSelect.value = created.id;
+  showStatus(`已创建档案「${created.name}」，可点下方按钮编辑完整简历`, 'success');
+}
+
+/**
+ * 完整简历编辑器：新标签打开 Options（不盖在扩展管理页上）。
+ */
+function openFullOptionsEditor(): void {
+  const optionsUrl = chrome.runtime.getURL('/options.html');
+  void chrome.tabs.create({ url: optionsUrl });
+}
+
 async function runConfirmWrite(): Promise<void> {
   if (!currentSession || currentSession.plan.items.length === 0) {
     showError('没有可写入的映射项');
     return;
   }
-
   const editedPlan = collectEditedFillPlan();
   const applyResponse = await requestBackground({
     type: 'APPLY_FILL_PLAN',
@@ -312,7 +442,6 @@ async function runConfirmWrite(): Promise<void> {
   if (applyResponse.type !== 'APPLY_FILL_RESULT') {
     throw new Error('写入页面失败');
   }
-
   await clearPendingSession();
   renderMappingTable();
   showStatus(
@@ -321,9 +450,6 @@ async function runConfirmWrite(): Promise<void> {
   );
 }
 
-/**
- * 撤销当前页上一轮填写（经 Background 转发 UNDO_LAST_FILL）。
- */
 async function runUndoFlow(): Promise<void> {
   const undoResponse = await requestBackground({
     type: 'UNDO_LAST_FILL',
@@ -335,12 +461,8 @@ async function runUndoFlow(): Promise<void> {
   showStatus(`已撤销 ${undoResponse.restored} 项`, 'success');
 }
 
-/**
- * 重新扫描：SCAN_FIELDS → BUILD_FILL_PLAN → 刷新表格并写回 session。
- */
 async function runRescanFlow(profileId: string): Promise<void> {
-  showStatus('正在重新扫描并生成填写计划…', 'info');
-
+  showStatus('正在扫描本页并生成填写计划…', 'info');
   const scanResponse = await requestBackground({
     type: 'SCAN_FIELDS',
     requestId: createRequestId(),
@@ -355,7 +477,6 @@ async function runRescanFlow(profileId: string): Promise<void> {
     showStatus('当前页未扫描到可填字段', 'info');
     return;
   }
-
   const planResponse = await requestBackground({
     type: 'BUILD_FILL_PLAN',
     requestId: createRequestId(),
@@ -365,7 +486,6 @@ async function runRescanFlow(profileId: string): Promise<void> {
   if (planResponse.type !== 'FILL_PLAN_RESULT') {
     throw new Error('生成填写计划失败');
   }
-
   const pendingFillSession: PendingFillSession = {
     plan: planResponse.plan,
     fields: scannedFields,
@@ -374,14 +494,11 @@ async function runRescanFlow(profileId: string): Promise<void> {
   currentSession = pendingFillSession;
   renderMappingTable();
   showStatus(
-    `已刷新预览：${planResponse.plan.items.length} 项可填`,
+    `已生成预览：${planResponse.plan.items.length} 项可填，可改值后确认写入`,
     'success',
   );
 }
 
-/**
- * 包装异步操作：进入 busy、捕获错误并展示中文提示。
- */
 async function withBusy(action: () => Promise<void>): Promise<void> {
   if (isBusy) {
     return;
@@ -402,12 +519,51 @@ async function withBusy(action: () => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * 绑定 UI 事件。
- */
 function bindEvents(): void {
   profileSelect.addEventListener('change', () => {
+    syncDefaultCheckboxFromSelection();
     syncBusyUi();
+  });
+
+  setDefaultCheckbox.addEventListener('change', () => {
+    void withBusy(async () => {
+      const selectedProfileId = profileSelect.value;
+      if (!selectedProfileId) {
+        setDefaultCheckbox.checked = false;
+        return;
+      }
+      if (setDefaultCheckbox.checked) {
+        await setActiveProfileId(selectedProfileId);
+        cachedActiveProfileId = selectedProfileId;
+        showStatus('已设为默认档案', 'success');
+      } else if (cachedActiveProfileId === selectedProfileId) {
+        await setActiveProfileId(null);
+        cachedActiveProfileId = null;
+        showStatus('已取消默认档案', 'info');
+      }
+    });
+  });
+
+  apiSettingsForm.addEventListener('submit', (event) => {
+    void withBusy(async () => {
+      await handleSaveSettings(event);
+    });
+  });
+
+  testApiButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await handleTestApi();
+    });
+  });
+
+  createProfileForm.addEventListener('submit', (event) => {
+    void withBusy(async () => {
+      await handleCreateProfile(event);
+    });
+  });
+
+  openFullEditorButton.addEventListener('click', () => {
+    openFullOptionsEditor();
   });
 
   confirmButton.addEventListener('click', () => {
@@ -435,15 +591,16 @@ function bindEvents(): void {
     });
   });
 
-  // 会话被 Popup 等写入时自动刷新表格（同窗口多入口）
   chrome.storage.session.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'session') {
       return;
     }
-    if (!changes.pendingFillSession) {
-      return;
+    if (changes[FOCUS_SETTINGS_SESSION_KEY]?.newValue) {
+      settingsDetails.open = true;
+      void chrome.storage.session.remove(FOCUS_SETTINGS_SESSION_KEY);
+      settingsDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-    if (isBusy) {
+    if (!changes.pendingFillSession || isBusy) {
       return;
     }
     void (async () => {
@@ -459,26 +616,27 @@ function bindEvents(): void {
   });
 }
 
-/**
- * Side Panel 入口：绑定事件、拉档案、读 pendingFillSession 渲染表格。
- */
 async function bootstrapSidePanel(): Promise<void> {
   bindEvents();
   syncBusyUi();
   try {
     await loadState();
+    await maybeFocusSettingsFromPopup();
     currentSession = await loadPendingSession();
     renderMappingTable();
 
     if (cachedProfiles.length === 0) {
-      showStatus('暂无档案，请先在设置页创建档案', 'info');
+      showStatus('请先在上方「设置与新建档案」创建档案并填写 API', 'info');
     } else if (currentSession && currentSession.plan.items.length > 0) {
       showStatus(
         `已加载预览：${currentSession.plan.items.length} 项可填，可改值后确认写入`,
         'info',
       );
     } else {
-      showStatus('暂无预览计划：可点「重新扫描」或从 Popup 进入预览', 'info');
+      showStatus(
+        '日常扫描请用右上角 Popup；设置请展开上方区域',
+        'info',
+      );
     }
   } catch (error: unknown) {
     const message =

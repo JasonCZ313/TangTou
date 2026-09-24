@@ -1,13 +1,13 @@
-/* 侧边栏：填写预览，继承躺投品牌令牌 */
+/* 侧边助手：对照网页核对映射，继承躺投品牌令牌 */
 @import "../../shared/ui/brand.css";
 
 body {
-  min-width: 300px;
+  min-width: 320px;
   font-size: 13px;
 }
 
 .sidepanel-page {
-  padding: 16px 16px 22px;
+  padding: 16px 16px 24px;
 }
 
 .sidepanel-header {
@@ -16,12 +16,60 @@ body {
 
 .sidepanel-section {
   margin-top: 14px;
-  padding: 14px;
+  padding: 14px 16px;
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.section-heading-row .section-label {
+  margin: 0;
+}
+
+/* 文字链：打开 Options 管理档案 */
+.link-button {
+  border: none;
+  background: transparent;
+  padding: 4px 2px;
+  color: var(--tt-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-button:hover {
+  color: var(--tt-primary-strong, var(--tt-primary));
 }
 
 .field-label {
   display: block;
   margin-bottom: 6px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--tt-text-secondary);
+  font-weight: 500;
+}
+
+.checkbox-row input {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--tt-primary);
 }
 
 .mapping-section {
@@ -30,7 +78,7 @@ body {
 
 .table-scroll {
   overflow-x: auto;
-  max-height: min(55vh, 480px);
+  max-height: min(55vh, 520px);
   overflow-y: auto;
   border: 1.5px solid var(--tt-border);
   border-radius: var(--tt-radius-sm);
@@ -40,12 +88,12 @@ body {
 .mapping-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .mapping-table th,
 .mapping-table td {
-  padding: 9px 10px;
+  padding: 10px 12px;
   text-align: left;
   vertical-align: middle;
   border-bottom: 1px solid var(--tt-border);
@@ -67,11 +115,12 @@ body {
 .mapping-table .empty-row td {
   color: var(--tt-muted);
   text-align: center;
-  padding: 18px 10px;
+  padding: 22px 12px;
+  line-height: 1.5;
 }
 
 .field-label-cell {
-  max-width: 120px;
+  max-width: 128px;
   word-break: break-word;
   color: var(--tt-text);
   font-weight: 600;
@@ -89,13 +138,108 @@ body {
   color: var(--tt-muted);
 }
 
+/* 纵向：确认 / 扫描 / 撤销 */
 .sidepanel-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   margin-top: 14px;
 }
 
-.btn-primary {
-  grid-column: 1 / -1;
+.sidepanel-actions .btn {
+  width: 100%;
+}
+
+/* —— 侧栏内设置折叠区 —— */
+.settings-details {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.settings-summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--tt-primary);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-summary::before {
+  content: '▸';
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.settings-details[open] .settings-summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-body {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.settings-form .field input {
+  width: 100%;
+}
+
+.fill-mode-fieldset {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  cursor: pointer;
+  color: var(--tt-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.settings-form-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.create-profile-form {
+  padding-top: 4px;
+  border-top: 1px dashed var(--tt-border);
+}
+
+.hint-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--tt-muted);
+}
+
+.full-editor-btn {
+  width: 100%;
+  font-size: 12px;
 }

@@ -135,13 +135,30 @@
         border-radius: 8px;
         padding: 10px 12px;
       }
+      .sample-toc {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0 0 16px;
+        padding: 10px 12px;
+        background: #fff;
+        border: 1px solid var(--tt-border);
+        border-radius: 12px;
+      }
+      .sample-toc a {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #ccfbf1;
+        color: var(--tt-primary);
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .sample-toc a:hover { background: var(--tt-primary); color: #fff; }
+      #second-degree-block[hidden] { display: none !important; }
       @media (max-width: 720px) {
-        .grid {
-          grid-template-columns: 1fr;
-        }
-        .span-2 {
-          grid-column: auto;
-        }
+        .grid { grid-template-columns: 1fr; }
+        .span-2 { grid-column: auto; }
       }
     </style>
   </head>
@@ -154,12 +171,22 @@
           <p>验收扫描 / 安全写入 / 撤销 · 扩展不得自动点击提交</p>
         </div>
       </div>
+      <nav class="sample-toc" aria-label="样例表目录">
+        <a href="#fs-basic">基本信息</a>
+        <a href="#fs-intent">求职意向</a>
+        <a href="#fs-edu">教育经历</a>
+        <a href="#fs-exp">实习工作</a>
+        <a href="#fs-proj">项目经历</a>
+        <a href="#fs-skills">技能</a>
+        <a href="#fs-lang">语言</a>
+        <a href="#fs-cert">证书奖项</a>
+      </nav>
       <p class="lead">
-        与扩展档案分区对齐。标 <span class="req">*</span> 为常见强制项。
+        与扩展档案分区对齐。标 <span class="req">*</span> 为硬必填/常见强制项。学位选「双学位」时填写第二学位区。
       </p>
 
       <form id="sample-application-form" action="#" method="post">
-        <fieldset>
+        <fieldset id="fs-basic">
           <legend>基本信息</legend>
           <div class="grid">
             <label>姓名 *<input name="fullName" type="text" required /></label>
@@ -179,7 +206,7 @@
             </label>
             <label>出生日期<input name="birthday" type="date" /></label>
             <label>年龄<input name="age" type="text" /></label>
-            <label>国籍<input name="nationality" type="text" /></label>
+            <label>国籍 <span class="req">*</span><input name="nationality" type="text" required /></label>
             <label>民族
               <select name="ethnicity">
                 <option value="">请选择</option>
@@ -193,10 +220,55 @@
                 <option value="彝族">彝族</option>
                 <option value="蒙古族">蒙古族</option>
                 <option value="藏族">藏族</option>
-                <option value="其他">其他</option>
+                <option value="布依族">布依族</option>
+                <option value="侗族">侗族</option>
+                <option value="瑶族">瑶族</option>
+                <option value="朝鲜族">朝鲜族</option>
+                <option value="白族">白族</option>
+                <option value="哈尼族">哈尼族</option>
+                <option value="哈萨克族">哈萨克族</option>
+                <option value="黎族">黎族</option>
+                <option value="傣族">傣族</option>
+                <option value="畲族">畲族</option>
+                <option value="傈僳族">傈僳族</option>
+                <option value="仡佬族">仡佬族</option>
+                <option value="东乡族">东乡族</option>
+                <option value="高山族">高山族</option>
+                <option value="拉祜族">拉祜族</option>
+                <option value="水族">水族</option>
+                <option value="佤族">佤族</option>
+                <option value="纳西族">纳西族</option>
+                <option value="羌族">羌族</option>
+                <option value="土族">土族</option>
+                <option value="仫佬族">仫佬族</option>
+                <option value="锡伯族">锡伯族</option>
+                <option value="柯尔克孜族">柯尔克孜族</option>
+                <option value="达斡尔族">达斡尔族</option>
+                <option value="景颇族">景颇族</option>
+                <option value="毛南族">毛南族</option>
+                <option value="撒拉族">撒拉族</option>
+                <option value="布朗族">布朗族</option>
+                <option value="塔吉克族">塔吉克族</option>
+                <option value="阿昌族">阿昌族</option>
+                <option value="普米族">普米族</option>
+                <option value="鄂温克族">鄂温克族</option>
+                <option value="怒族">怒族</option>
+                <option value="京族">京族</option>
+                <option value="基诺族">基诺族</option>
+                <option value="德昂族">德昂族</option>
+                <option value="保安族">保安族</option>
+                <option value="俄罗斯族">俄罗斯族</option>
+                <option value="裕固族">裕固族</option>
+                <option value="乌孜别克族">乌孜别克族</option>
+                <option value="门巴族">门巴族</option>
+                <option value="鄂伦春族">鄂伦春族</option>
+                <option value="独龙族">独龙族</option>
+                <option value="塔塔尔族">塔塔尔族</option>
+                <option value="赫哲族">赫哲族</option>
+                <option value="珞巴族">珞巴族</option>
               </select>
             </label>
-            <label>籍贯<input name="nativePlace" type="text" /></label>
+            <label>籍贯 <span class="req">*</span><input name="nativePlace" type="text" required /></label>
             <label>户口所在地<input name="hukouLocation" type="text" /></label>
             <label>户口性质
               <select name="hukouType">
@@ -206,8 +278,8 @@
                 <option value="其他">其他</option>
               </select>
             </label>
-            <label>证件类型
-              <select name="idType">
+            <label>证件类型 <span class="req">*</span>
+              <select name="idType" required>
                 <option value="">请选择</option>
                 <option value="居民身份证">居民身份证</option>
                 <option value="护照">护照</option>
@@ -216,9 +288,9 @@
                 <option value="其他">其他</option>
               </select>
             </label>
-            <label>证件号码<input name="idNumber" type="text" /></label>
-            <label>政治面貌
-              <select name="politicalStatus">
+            <label>证件号码 <span class="req">*</span><input name="idNumber" type="text" required /></label>
+            <label>政治面貌 <span class="req">*</span>
+              <select name="politicalStatus" required>
                 <option value="">请选择</option>
                 <option value="群众">群众</option>
                 <option value="中国共产主义青年团团员">中国共产主义青年团团员</option>
@@ -228,8 +300,8 @@
                 <option value="其他">其他</option>
               </select>
             </label>
-            <label>婚姻状况
-              <select name="maritalStatus">
+            <label>婚姻状况 <span class="req">*</span>
+              <select name="maritalStatus" required>
                 <option value="">请选择</option>
                 <option value="未婚">未婚</option>
                 <option value="已婚">已婚</option>
@@ -255,7 +327,7 @@
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-intent">
           <legend>求职意向</legend>
           <div class="grid">
             <label>目标职位 *<input name="targetRole" type="text" required /></label>
@@ -296,7 +368,7 @@
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-edu">
           <legend>教育经历（最高学历）</legend>
           <div class="grid">
             <label>学校 *<input name="school" type="text" /></label>
@@ -321,8 +393,8 @@
             </label>
             <label>专业<input name="major" type="text" /></label>
             <label>学院<input name="college" type="text" /></label>
-            <label>入学日期<input name="eduStartDate" type="date" /></label>
-            <label>毕业日期<input name="eduEndDate" type="date" /></label>
+            <label>入学日期 <span class="req">*</span><input name="eduStartDate" type="date" required /></label>
+            <label>毕业日期 <span class="req">*</span><input name="eduEndDate" type="date" /></label>
             <label>学习形式
               <select name="studyMode">
                 <option value="">请选择</option>
@@ -337,7 +409,7 @@
               </select>
             </label>
             <label>学位
-              <select name="academicDegree">
+              <select name="academicDegree" id="academicDegreeSelect">
                 <option value="">请选择</option>
                 <option value="无学位">无学位</option>
                 <option value="学士">学士</option>
@@ -350,10 +422,21 @@
             <label>GPA<input name="gpa" type="text" /></label>
             <label>排名<input name="rank" type="text" /></label>
             <label class="span-2">教育说明<textarea name="eduDescription"></textarea></label>
+            <div class="span-2" id="second-degree-block" hidden>
+              <p class="hint">第二学位信息（选择双学位时填写）</p>
+              <div class="grid">
+                <label>第二学位学校 <span class="req">*</span><input name="secondSchool" type="text" /></label>
+                <label>第二学位专业 <span class="req">*</span><input name="secondMajor" type="text" /></label>
+                <label>第二学历层次<input name="secondDegreeLevel" type="text" /></label>
+                <label>第二入学日期<input name="secondStartDate" type="date" /></label>
+                <label>第二毕业日期<input name="secondEndDate" type="date" /></label>
+                <label class="span-2">第二学位说明<textarea name="secondEduDescription"></textarea></label>
+              </div>
+            </div>
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-exp">
           <legend>最近一段工作/实习</legend>
           <div class="grid">
             <label>公司/单位<input name="company" type="text" /></label>
@@ -374,11 +457,16 @@
             <label>工作城市<input name="expCity" type="text" /></label>
             <label>部门<input name="department" type="text" /></label>
             <label>证明人<input name="refereeName" type="text" /></label>
-            <label class="span-2">职责描述<textarea name="expDescription"></textarea></label>
+            <label>所属行业<input name="industry" type="text" placeholder="如：互联网/电商" /></label>
+            <label>公司性质<input name="companyType" type="text" /></label>
+            <label class="span-2">工作职责<textarea name="responsibilities" placeholder="条目/要点"></textarea></label>
+            <label class="span-2">工作内容<textarea name="workContent" placeholder="日常做了什么"></textarea></label>
+            <label class="span-2">业绩/成果<textarea name="achievements" placeholder="量化优先"></textarea></label>
+            <label class="span-2">总述<textarea name="expDescription"></textarea></label>
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-proj">
           <legend>项目经历</legend>
           <div class="grid">
             <label>项目名称<input name="projectName" type="text" /></label>
@@ -387,11 +475,13 @@
             <label>结束日期<input name="projectEndDate" type="date" /></label>
             <label>技术栈<input name="techStack" type="text" /></label>
             <label>项目链接<input name="projectLink" type="url" /></label>
-            <label class="span-2">项目描述<textarea name="projectDescription"></textarea></label>
+            <label class="span-2">项目内容<textarea name="projectContent"></textarea></label>
+            <label class="span-2">项目价值/成果<textarea name="projectValue"></textarea></label>
+            <label class="span-2">总述<textarea name="projectDescription"></textarea></label>
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-skills">
           <legend>技能与计算机</legend>
           <div class="grid">
             <label>计算机水平
@@ -414,11 +504,12 @@
                 <option value="精通">精通</option>
               </select>
             </label>
-            <label class="span-2">技能（逗号或空格分隔）<input name="skills" type="text" /></label>
+            <label>技能名称<input name="skillName" type="text" placeholder="如：TypeScript" /></label>
+            <label>技能熟练度<input name="skillLevel" type="text" placeholder="熟练" /></label>
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-lang">
           <legend>语言能力</legend>
           <div class="grid">
             <label>语种<input name="language" type="text" placeholder="如：英语" /></label>
@@ -450,7 +541,7 @@
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fs-cert">
           <legend>证书 / 奖项</legend>
           <div class="grid">
             <label>证书名称<input name="certificateName" type="text" /></label>
@@ -467,6 +558,10 @@
                 <option value="其他">其他</option>
               </select>
             </label>
+            <label>证书获证日期<input name="certificateDate" type="date" /></label>
+            <label>奖项日期<input name="awardDate" type="date" /></label>
+            <label class="span-2">证书说明<textarea name="certificateDescription"></textarea></label>
+            <label class="span-2">奖项说明<textarea name="awardDescription"></textarea></label>
           </div>
         </fieldset>
 
@@ -573,13 +668,22 @@
       </form>
     </main>
     <script>
-      // 仅阻止本地打开时的默认提交跳转，方便手工点测；扩展本身不得调用 submit。
       document
         .getElementById('sample-application-form')
         .addEventListener('submit', function onSubmit(event) {
           event.preventDefault();
           alert('表单已手动提交（验收用）；扩展不应触发此行为。');
         });
+      var degreeSelect = document.getElementById('academicDegreeSelect');
+      var secondBlock = document.getElementById('second-degree-block');
+      function syncSecondDegree() {
+        if (!degreeSelect || !secondBlock) return;
+        secondBlock.hidden = degreeSelect.value !== '双学位';
+      }
+      if (degreeSelect) {
+        degreeSelect.addEventListener('change', syncSecondDegree);
+        syncSecondDegree();
+      }
     </script>
   </body>
 </html>

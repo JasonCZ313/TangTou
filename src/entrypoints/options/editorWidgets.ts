@@ -1,4 +1,5 @@
 import type { CatalogOption } from '../../shared/catalogs/enums';
+import { createSearchableSelect } from './searchableSelect';
 
 /**
  * 创建带标签的文本输入，变更时回调。
@@ -67,7 +68,7 @@ export function createBoundTextarea(
 }
 
 /**
- * 创建下拉选择（含空选项「请选择」）。
+ * 创建可搜索下拉（统一动态列表与静态表单体验）。
  */
 export function createBoundSelect(
   labelText: string,
@@ -76,46 +77,13 @@ export function createBoundSelect(
   onChange: (value: string) => void,
   required: boolean = false,
 ): HTMLLabelElement {
-  const label = document.createElement('label');
-  label.className = 'field';
-
-  const span = document.createElement('span');
-  span.className = 'field-label';
-  span.append(document.createTextNode(labelText));
-  if (required) {
-    span.append(document.createTextNode(' '));
-    const reqMark = document.createElement('span');
-    reqMark.className = 'req';
-    reqMark.setAttribute('aria-label', '必填');
-    reqMark.textContent = '*';
-    span.appendChild(reqMark);
-  }
-
-  const select = document.createElement('select');
-  const blankOption = document.createElement('option');
-  blankOption.value = '';
-  blankOption.textContent = '请选择';
-  select.appendChild(blankOption);
-
-  for (const optionItem of options) {
-    const optionElement = document.createElement('option');
-    optionElement.value = optionItem.code;
-    optionElement.textContent = optionItem.labelZh;
-    select.appendChild(optionElement);
-  }
-
-  // 兼容旧数据存了中文标签的情况
-  const matched = options.find(
-    (item) => item.code === initialValue || item.labelZh === initialValue,
-  );
-  select.value = matched?.code ?? (initialValue || '');
-
-  select.addEventListener('change', () => {
-    onChange(select.value);
+  return createSearchableSelect({
+    labelText,
+    initialValue,
+    options,
+    onChange,
+    required,
   });
-
-  label.append(span, select);
-  return label;
 }
 
 /**
@@ -191,7 +159,6 @@ export function populateSelectOptions(
     optionElement.textContent = optionItem.labelZh;
     selectElement.appendChild(optionElement);
   }
-  // 兼容旧数据存了中文标签的情况
   const matched = options.find(
     (item) =>
       item.code === previousValue || item.labelZh === previousValue,
@@ -201,7 +168,6 @@ export function populateSelectOptions(
 
 /**
  * 为静态表单里带 data-catalog 的 select 填充枚举选项。
- * catalogKey → CatalogOption[]，例如 gender → GENDER_OPTIONS。
  */
 export function fillStaticSelectsByCatalog(
   rootElement: ParentNode,
