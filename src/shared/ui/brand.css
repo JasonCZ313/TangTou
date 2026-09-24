@@ -373,3 +373,18 @@ input[required]:user-invalid {
     transform: none;
   }
 }
+
+/* 页脚水印：小字、弱对比，作者名单独强调 */
+.maker-credit {
+  margin: 18px 0 4px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--tt-muted);
+  opacity: 0.85;
+}
+
+.maker-credit-name {
+  color: #2563eb;
+  font-weight: 700;
+}
