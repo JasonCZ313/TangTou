@@ -1,4 +1,5 @@
 import { MAX_PROFILES, createEmptyProfileData } from './defaults';
+import { normalizeProfileData } from './normalize';
 import type { Profile, ProfileData } from '../types/profile';
 import { getSettings, saveSettings } from './settingsStore';
 
@@ -13,12 +14,18 @@ function nowIso(): string {
 }
 
 /**
- * 读取全部档案列表；storage 缺失或格式不对时返回空数组。
+ * 读取全部档案列表；对每份 data 做超全结构归一化（兼容旧档案）。
  */
 export async function listProfiles(): Promise<Profile[]> {
   const stored = await chrome.storage.local.get('profiles');
   const profiles = stored.profiles;
-  return Array.isArray(profiles) ? (profiles as Profile[]) : [];
+  if (!Array.isArray(profiles)) {
+    return [];
+  }
+  return (profiles as Profile[]).map((profile) => ({
+    ...profile,
+    data: normalizeProfileData(profile.data),
+  }));
 }
 
 /**
@@ -61,7 +68,7 @@ export async function createProfile(options: {
     if (!sourceProfile) {
       throw new Error('SOURCE_PROFILE_NOT_FOUND');
     }
-    data = structuredClone(sourceProfile.data);
+    data = normalizeProfileData(structuredClone(sourceProfile.data));
   }
 
   const timestamp = nowIso();
@@ -123,8 +130,8 @@ export async function updateProfileData(
     throw new Error('PROFILE_NOT_FOUND');
   }
 
-  // 深拷贝后再写入，避免调用方保留 data 引用并后续 mutate 污染 storage 中的档案
-  const clonedData = structuredClone(data);
+  // 深拷贝并归一化后再写入，兼容残缺结构且避免引用污染
+  const clonedData = normalizeProfileData(structuredClone(data));
   const updatedProfile: Profile = {
     ...profiles[index],
     data: clonedData,

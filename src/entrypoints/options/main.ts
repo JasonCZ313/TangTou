@@ -1,7 +1,33 @@
 /**
- * Options 页主逻辑：API / 填写模式 / 档案 CRUD / 导入导出。
+ * Options 页主逻辑：API / 填写模式 / 超全档案 CRUD / 导入导出。
  * 在扩展页上下文中直接调用 storage API，不经 Background。
  */
+import {
+  ACADEMIC_DEGREE_OPTIONS,
+  AWARD_LEVEL_OPTIONS,
+  COMPUTER_LEVEL_OPTIONS,
+  DEGREE_LEVEL_OPTIONS,
+  EMPLOYMENT_TYPE_OPTIONS,
+  ETHNICITY_OPTIONS,
+  FAMILY_RELATION_OPTIONS,
+  FERTILITY_STATUS_OPTIONS,
+  GENDER_OPTIONS,
+  HEALTH_STATUS_OPTIONS,
+  HUKOU_TYPE_OPTIONS,
+  ID_TYPE_OPTIONS,
+  JOB_STATUS_OPTIONS,
+  JOB_TYPE_OPTIONS,
+  LANGUAGE_CERT_OPTIONS,
+  LANGUAGE_PROFICIENCY_OPTIONS,
+  MARITAL_STATUS_OPTIONS,
+  MILITARY_STATUS_OPTIONS,
+  OFFICE_SKILL_OPTIONS,
+  POLITICAL_STATUS_OPTIONS,
+  PUBLICATION_KIND_OPTIONS,
+  STUDY_MODE_OPTIONS,
+  YES_NO_OPTIONS,
+  type CatalogOption,
+} from '../../shared/catalogs/enums';
 import {
   appendProfilesAtomic,
   createProfile,
@@ -12,19 +38,35 @@ import {
   updateProfileData,
 } from '../../shared/storage/profileStore';
 import { getSettings, saveSettings } from '../../shared/storage/settingsStore';
+import { MAX_PROFILES } from '../../shared/storage/defaults';
 import {
-  createEmptyProfileData,
-  MAX_PROFILES,
-} from '../../shared/storage/defaults';
+  normalizeProfileData,
+  validateProfileData,
+} from '../../shared/storage/normalize';
 import type {
+  AwardItem,
+  CampusActivityItem,
+  CertificateItem,
   EducationItem,
   ExperienceItem,
+  FamilyMemberItem,
   FillMode,
+  LanguageItem,
   Profile,
   ProfileData,
   ProjectItem,
+  PublicationItem,
+  TrainingItem,
 } from '../../shared/types/profile';
 import type { ExtensionMessage } from '../../shared/types/messages';
+import {
+  createBoundCheckbox,
+  createBoundInput,
+  createBoundSelect,
+  createBoundTextarea,
+  createListItemCard,
+  fillStaticSelectsByCatalog,
+} from './editorWidgets';
 
 /** 状态提示的视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
@@ -41,6 +83,24 @@ interface ExportPayload {
     activeProfileId: string | null;
   };
 }
+
+/** 静态表单 data-catalog 与枚举表映射 */
+const STATIC_CATALOG_MAP: Record<string, CatalogOption[]> = {
+  gender: GENDER_OPTIONS,
+  ethnicity: ETHNICITY_OPTIONS,
+  hukouType: HUKOU_TYPE_OPTIONS,
+  idType: ID_TYPE_OPTIONS,
+  political: POLITICAL_STATUS_OPTIONS,
+  marital: MARITAL_STATUS_OPTIONS,
+  fertility: FERTILITY_STATUS_OPTIONS,
+  health: HEALTH_STATUS_OPTIONS,
+  military: MILITARY_STATUS_OPTIONS,
+  jobType: JOB_TYPE_OPTIONS,
+  jobStatus: JOB_STATUS_OPTIONS,
+  yesNo: YES_NO_OPTIONS,
+  computer: COMPUTER_LEVEL_OPTIONS,
+  office: OFFICE_SKILL_OPTIONS,
+};
 
 /** 当前内存中的档案列表缓存，供列表与下拉渲染 */
 let cachedProfiles: Profile[] = [];
@@ -91,23 +151,22 @@ const newProfileNameInput = document.getElementById(
 const cloneSourceSelect = document.getElementById(
   'cloneSourceSelect',
 ) as HTMLSelectElement;
-/** 创建按钮：满 5 份时禁用，避免误触后再报错 */
 const createProfileButton = document.getElementById(
   'createProfileButton',
 ) as HTMLButtonElement;
-/** 满员提示文案节点：显示「最多保存 5 份档案」 */
 const profileLimitTip = document.getElementById(
   'profileLimitTip',
 ) as HTMLParagraphElement;
-const editorSection = document.getElementById(
-  'editorSection',
-) as HTMLElement;
+const editorSection = document.getElementById('editorSection') as HTMLElement;
 const editingProfileName = document.getElementById(
   'editingProfileName',
 ) as HTMLParagraphElement;
 const profileEditorForm = document.getElementById(
   'profileEditorForm',
 ) as HTMLFormElement;
+const editorValidationHint = document.getElementById(
+  'editorValidationHint',
+) as HTMLParagraphElement;
 const educationListElement = document.getElementById(
   'educationList',
 ) as HTMLDivElement;
@@ -116,6 +175,27 @@ const experienceListElement = document.getElementById(
 ) as HTMLDivElement;
 const projectsListElement = document.getElementById(
   'projectsList',
+) as HTMLDivElement;
+const campusListElement = document.getElementById(
+  'campusList',
+) as HTMLDivElement;
+const languageListElement = document.getElementById(
+  'languageList',
+) as HTMLDivElement;
+const certificateListElement = document.getElementById(
+  'certificateList',
+) as HTMLDivElement;
+const awardListElement = document.getElementById(
+  'awardList',
+) as HTMLDivElement;
+const publicationListElement = document.getElementById(
+  'publicationList',
+) as HTMLDivElement;
+const trainingListElement = document.getElementById(
+  'trainingList',
+) as HTMLDivElement;
+const familyListElement = document.getElementById(
+  'familyList',
 ) as HTMLDivElement;
 const skillsTextarea = document.getElementById(
   'skillsTextarea',
@@ -156,6 +236,9 @@ function mapErrorMessage(error: unknown): string {
   if (message === 'SOURCE_PROFILE_NOT_FOUND') {
     return '用于复制的源档案不存在';
   }
+  if (message === 'PROFILE_VALIDATION_FAILED') {
+    return '档案必填项未完成，请检查编辑区提示';
+  }
   return message || '操作失败';
 }
 
@@ -184,10 +267,12 @@ function createRequestId(): string {
 }
 
 /**
- * 页面加载：读取 settings + profiles 并渲染全部区域。
+ * 页面加载：读取 settings + profiles，填充枚举下拉并渲染全部区域。
  */
 async function bootstrapOptionsPage(): Promise<void> {
   try {
+    fillStaticSelectsByCatalog(profileEditorForm, STATIC_CATALOG_MAP);
+
     const [settings, profiles] = await Promise.all([
       getSettings(),
       listProfiles(),
@@ -211,7 +296,6 @@ async function bootstrapOptionsPage(): Promise<void> {
 
 /**
  * 按当前档案数量启用/禁用新建相关控件，并切换满员中文提示。
- * profiles.length >= 5 时禁用创建按钮、名称输入与复制来源下拉。
  */
 function syncCreateControlsWithLimit(): void {
   const isAtProfileLimit = cachedProfiles.length >= MAX_PROFILES;
@@ -228,7 +312,6 @@ function renderProfileList(): void {
   profileListElement.replaceChildren();
   profileCountHint.textContent = `已保存 ${cachedProfiles.length} / ${MAX_PROFILES} 份`;
   emptyProfilesHint.classList.toggle('hidden', cachedProfiles.length > 0);
-  // 列表刷新后同步新建区禁用态，满足规格「满 5 份 UI 禁用新建」
   syncCreateControlsWithLimit();
 
   for (const profile of cachedProfiles) {
@@ -362,36 +445,38 @@ async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
 
 /**
  * 发送 TEST_API 消息；后台未实现或无有效响应时显示「后台未就绪」。
- * LLM 测连逻辑在 Task 6 实现，本任务只接线按钮。
  */
 function handleTestApiConnection(): void {
   const requestId = createRequestId();
   const message: ExtensionMessage = { type: 'TEST_API', requestId };
 
   try {
-    chrome.runtime.sendMessage(message, (response: ExtensionMessage | undefined) => {
-      if (chrome.runtime.lastError) {
-        showStatus('后台未就绪', 'error');
-        return;
-      }
-      if (!response) {
-        showStatus('后台未就绪', 'error');
-        return;
-      }
-      if (response.type === 'TEST_API_RESULT') {
-        if (response.ok) {
-          showStatus(response.detail || '连接成功', 'success');
-        } else {
-          showStatus(response.detail || '连接失败', 'error');
+    chrome.runtime.sendMessage(
+      message,
+      (response: ExtensionMessage | undefined) => {
+        if (chrome.runtime.lastError) {
+          showStatus('后台未就绪', 'error');
+          return;
         }
-        return;
-      }
-      if (response.type === 'ERROR') {
-        showStatus(response.message || '后台未就绪', 'error');
-        return;
-      }
-      showStatus('后台未就绪', 'error');
-    });
+        if (!response) {
+          showStatus('后台未就绪', 'error');
+          return;
+        }
+        if (response.type === 'TEST_API_RESULT') {
+          if (response.ok) {
+            showStatus(response.detail || '连接成功', 'success');
+          } else {
+            showStatus(response.detail || '连接失败', 'error');
+          }
+          return;
+        }
+        if (response.type === 'ERROR') {
+          showStatus(response.message || '后台未就绪', 'error');
+          return;
+        }
+        showStatus('后台未就绪', 'error');
+      },
+    );
   } catch {
     showStatus('后台未就绪', 'error');
   }
@@ -513,36 +598,59 @@ function openEditor(profile: Profile): void {
 function closeEditor(): void {
   editingProfileId = null;
   draftProfileData = null;
+  editorValidationHint.textContent = '';
   editorSection.classList.add('hidden');
 }
 
 /**
- * 将 ProfileData 填入静态字段与动态列表控件。
+ * 将 ProfileData 填入静态字段（input/select/textarea）与全部动态列表。
  */
 function fillEditorForm(data: ProfileData): void {
-  const pathInputs = profileEditorForm.querySelectorAll<HTMLInputElement>(
-    'input[data-path]',
-  );
-  for (const inputElement of pathInputs) {
-    const pathText = inputElement.dataset.path ?? '';
-    inputElement.value = readPathValue(data, pathText);
+  const pathFields = profileEditorForm.querySelectorAll<
+    HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+  >('[data-path]');
+  for (const fieldElement of pathFields) {
+    const pathText = fieldElement.dataset.path ?? '';
+    fieldElement.value = readPathValue(data, pathText);
   }
 
   skillsTextarea.value = data.skills.join('\n');
   notesTextarea.value = data.notes;
-  renderEducationRows(data.education);
-  renderExperienceRows(data.experience);
-  renderProjectRows(data.projects);
+  renderAllDynamicLists(data);
+  updateValidationHint(data);
 }
 
 /**
- * 按点分路径读取嵌套字符串字段（如 basic.fullName）。
+ * 刷新编辑区全部动态列表（教育/经历/项目等）。
+ */
+function renderAllDynamicLists(data: ProfileData): void {
+  renderEducationRows(data.education);
+  renderExperienceRows(data.experience);
+  renderProjectRows(data.projects);
+  renderCampusRows(data.campusActivities);
+  renderLanguageRows(data.languages);
+  renderCertificateRows(data.certificates);
+  renderAwardRows(data.awards);
+  renderPublicationRows(data.publications);
+  renderTrainingRows(data.trainings);
+  renderFamilyRows(data.familyMembers);
+}
+
+/**
+ * 按点分路径读取嵌套字符串字段（如 basic.fullName、computerLevel）。
  */
 function readPathValue(data: ProfileData, pathText: string): string {
+  if (!pathText) {
+    return '';
+  }
   const pathParts = pathText.split('.');
   let current: unknown = data;
   for (const pathPart of pathParts) {
-    if (current === null || current === undefined || typeof current !== 'object') {
+    if (
+      current === null ||
+      current === undefined ||
+      typeof current !== 'object'
+    ) {
       return '';
     }
     current = (current as Record<string, unknown>)[pathPart];
@@ -551,17 +659,23 @@ function readPathValue(data: ProfileData, pathText: string): string {
 }
 
 /**
- * 按点分路径写入嵌套字符串字段。
+ * 按点分路径写入嵌套字符串字段；支持顶层字段（如 computerLevel）。
  */
 function writePathValue(
   data: ProfileData,
   pathText: string,
   value: string,
 ): void {
-  const pathParts = pathText.split('.');
-  if (pathParts.length < 2) {
+  const pathParts = pathText.split('.').filter((part) => part.length > 0);
+  if (pathParts.length === 0) {
     return;
   }
+
+  if (pathParts.length === 1) {
+    (data as unknown as Record<string, unknown>)[pathParts[0]] = value;
+    return;
+  }
+
   let current: Record<string, unknown> = data as unknown as Record<
     string,
     unknown
@@ -578,7 +692,16 @@ function writePathValue(
 }
 
 /**
- * 渲染教育经历动态行。
+ * 在卡片内创建网格容器，便于动态字段排版。
+ */
+function createCardGrid(): HTMLDivElement {
+  const grid = document.createElement('div');
+  grid.className = 'form-grid';
+  return grid;
+}
+
+/**
+ * 渲染教育经历动态行（含学历枚举、在读/最高学历勾选）。
  */
 function renderEducationRows(items: EducationItem[]): void {
   educationListElement.replaceChildren();
@@ -589,39 +712,115 @@ function renderEducationRows(items: EducationItem[]): void {
       }
       draftProfileData.education.splice(itemIndex, 1);
       renderEducationRows(draftProfileData.education);
+      updateValidationHint(draftProfileData);
     });
 
-    card.append(
-      createBoundInput('学校', item.school, (value) => {
-        item.school = value;
-      }),
-      createBoundInput('学历', item.degree, (value) => {
-        item.degree = value;
-      }),
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput(
+        '学校',
+        item.school,
+        (value) => {
+          item.school = value;
+        },
+        'text',
+        true,
+      ),
+      createBoundSelect(
+        '学历层次',
+        item.degreeLevel || item.degree || '',
+        DEGREE_LEVEL_OPTIONS,
+        (value) => {
+          item.degreeLevel = value;
+          item.degree = value;
+        },
+        true,
+      ),
       createBoundInput('专业', item.major, (value) => {
         item.major = value;
       }),
-      createBoundInput('开始日期', item.startDate, (value) => {
-        item.startDate = value;
+      createBoundInput(
+        '入学日期',
+        item.startDate,
+        (value) => {
+          item.startDate = value;
+        },
+        'date',
+        true,
+      ),
+      createBoundInput(
+        '毕业日期',
+        item.endDate,
+        (value) => {
+          item.endDate = value;
+        },
+        'date',
+      ),
+      createBoundCheckbox('在读', Boolean(item.isCurrent), (checked) => {
+        item.isCurrent = checked;
       }),
-      createBoundInput('结束日期', item.endDate, (value) => {
-        item.endDate = value;
+      createBoundCheckbox('最高学历', Boolean(item.isHighest), (checked) => {
+        item.isHighest = checked;
+      }),
+      createBoundCheckbox('第一学历', Boolean(item.isFirstDegree), (checked) => {
+        item.isFirstDegree = checked;
+      }),
+      createBoundSelect(
+        '学习形式',
+        item.studyMode ?? '',
+        STUDY_MODE_OPTIONS,
+        (value) => {
+          item.studyMode = value;
+        },
+      ),
+      createBoundSelect(
+        '学位',
+        item.academicDegree ?? '',
+        ACADEMIC_DEGREE_OPTIONS,
+        (value) => {
+          item.academicDegree = value;
+        },
+      ),
+      createBoundInput('学院', item.college ?? '', (value) => {
+        item.college = value;
+      }),
+      createBoundInput('学制(年)', item.durationYears ?? '', (value) => {
+        item.durationYears = value;
+      }),
+      createBoundInput('就读城市', item.city ?? '', (value) => {
+        item.city = value;
+      }),
+      createBoundInput('GPA', item.gpa ?? '', (value) => {
+        item.gpa = value;
+      }),
+      createBoundInput('排名', item.rank ?? '', (value) => {
+        item.rank = value;
+      }),
+      createBoundInput('教育类型备注', item.educationType ?? '', (value) => {
+        item.educationType = value;
+      }),
+      createBoundTextarea('主修课程', item.courses ?? '', (value) => {
+        item.courses = value;
+      }),
+      createBoundTextarea('论文/课题', item.thesis ?? '', (value) => {
+        item.thesis = value;
       }),
       createBoundTextarea('说明', item.description ?? '', (value) => {
         item.description = value;
       }),
     );
+    card.appendChild(grid);
     educationListElement.appendChild(card);
   });
 }
 
 /**
- * 渲染工作经历动态行。
+ * 渲染实习/工作经历动态行。
  */
 function renderExperienceRows(items: ExperienceItem[]): void {
   experienceListElement.replaceChildren();
   items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`工作经历 ${itemIndex + 1}`, () => {
+    const card = createListItemCard(`工作/实习 ${itemIndex + 1}`, () => {
       if (!draftProfileData) {
         return;
       }
@@ -629,23 +828,75 @@ function renderExperienceRows(items: ExperienceItem[]): void {
       renderExperienceRows(draftProfileData.experience);
     });
 
-    card.append(
-      createBoundInput('公司', item.company, (value) => {
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput('公司/单位', item.company, (value) => {
         item.company = value;
       }),
       createBoundInput('职位', item.title, (value) => {
         item.title = value;
       }),
-      createBoundInput('开始日期', item.startDate, (value) => {
-        item.startDate = value;
+      createBoundInput(
+        '开始日期',
+        item.startDate,
+        (value) => {
+          item.startDate = value;
+        },
+        'date',
+      ),
+      createBoundInput(
+        '结束日期',
+        item.endDate,
+        (value) => {
+          item.endDate = value;
+        },
+        'date',
+      ),
+      createBoundCheckbox('至今在职', Boolean(item.isCurrent), (checked) => {
+        item.isCurrent = checked;
       }),
-      createBoundInput('结束日期', item.endDate, (value) => {
-        item.endDate = value;
+      createBoundSelect(
+        '雇佣类型',
+        item.employmentType ?? '',
+        EMPLOYMENT_TYPE_OPTIONS,
+        (value) => {
+          item.employmentType = value;
+        },
+      ),
+      createBoundInput('部门', item.department ?? '', (value) => {
+        item.department = value;
+      }),
+      createBoundInput('城市', item.city ?? '', (value) => {
+        item.city = value;
+      }),
+      createBoundInput('公司性质', item.companyType ?? '', (value) => {
+        item.companyType = value;
+      }),
+      createBoundInput('行业', item.industry ?? '', (value) => {
+        item.industry = value;
+      }),
+      createBoundInput('下属人数', item.subordinateCount ?? '', (value) => {
+        item.subordinateCount = value;
+      }),
+      createBoundInput('证明人', item.refereeName ?? '', (value) => {
+        item.refereeName = value;
+      }),
+      createBoundInput(
+        '证明人电话',
+        item.refereePhone ?? '',
+        (value) => {
+          item.refereePhone = value;
+        },
+        'tel',
+      ),
+      createBoundInput('离职原因', item.leaveReason ?? '', (value) => {
+        item.leaveReason = value;
       }),
       createBoundTextarea('职责描述', item.description, (value) => {
         item.description = value;
       }),
     );
+    card.appendChild(grid);
     experienceListElement.appendChild(card);
   });
 }
@@ -664,155 +915,586 @@ function renderProjectRows(items: ProjectItem[]): void {
       renderProjectRows(draftProfileData.projects);
     });
 
-    card.append(
+    const grid = createCardGrid();
+    grid.append(
       createBoundInput('项目名称', item.name, (value) => {
         item.name = value;
       }),
       createBoundInput('角色', item.role ?? '', (value) => {
         item.role = value;
       }),
-      createBoundInput('开始日期', item.startDate ?? '', (value) => {
-        item.startDate = value;
+      createBoundInput(
+        '开始日期',
+        item.startDate ?? '',
+        (value) => {
+          item.startDate = value;
+        },
+        'date',
+      ),
+      createBoundInput(
+        '结束日期',
+        item.endDate ?? '',
+        (value) => {
+          item.endDate = value;
+        },
+        'date',
+      ),
+      createBoundCheckbox('进行中', Boolean(item.isCurrent), (checked) => {
+        item.isCurrent = checked;
       }),
-      createBoundInput('结束日期', item.endDate ?? '', (value) => {
-        item.endDate = value;
+      createBoundInput(
+        '链接',
+        item.link ?? '',
+        (value) => {
+          item.link = value;
+        },
+        'url',
+      ),
+      createBoundInput('技术栈', item.techStack ?? '', (value) => {
+        item.techStack = value;
       }),
-      createBoundInput('链接', item.link ?? '', (value) => {
-        item.link = value;
+      createBoundInput('团队规模', item.teamSize ?? '', (value) => {
+        item.teamSize = value;
       }),
       createBoundTextarea('项目描述', item.description, (value) => {
         item.description = value;
       }),
     );
+    card.appendChild(grid);
     projectsListElement.appendChild(card);
   });
 }
 
 /**
- * 创建带标题与「删除」按钮的列表项卡片容器。
+ * 渲染校园/社团/志愿动态行。
  */
-function createListItemCard(
-  titleText: string,
-  onRemove: () => void,
-): HTMLDivElement {
-  const card = document.createElement('div');
-  card.className = 'item-card';
+function renderCampusRows(items: CampusActivityItem[]): void {
+  campusListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`校园经历 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.campusActivities.splice(itemIndex, 1);
+      renderCampusRows(draftProfileData.campusActivities);
+    });
 
-  const header = document.createElement('div');
-  header.className = 'item-card-header';
-
-  const title = document.createElement('p');
-  title.className = 'item-card-title';
-  title.textContent = titleText;
-
-  const removeButton = document.createElement('button');
-  removeButton.type = 'button';
-  removeButton.className = 'btn btn-danger btn-sm';
-  removeButton.textContent = '删除本条';
-  removeButton.addEventListener('click', onRemove);
-
-  header.append(title, removeButton);
-  card.appendChild(header);
-  return card;
-}
-
-/**
- * 创建绑定到草稿字段的单行输入。
- */
-function createBoundInput(
-  labelText: string,
-  initialValue: string,
-  onChange: (value: string) => void,
-): HTMLLabelElement {
-  const label = document.createElement('label');
-  label.className = 'field';
-
-  const span = document.createElement('span');
-  span.className = 'field-label';
-  span.textContent = labelText;
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = initialValue;
-  input.addEventListener('input', () => {
-    onChange(input.value);
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput('组织/社团', item.organization, (value) => {
+        item.organization = value;
+      }),
+      createBoundInput('职务', item.role, (value) => {
+        item.role = value;
+      }),
+      createBoundInput(
+        '开始日期',
+        item.startDate ?? '',
+        (value) => {
+          item.startDate = value;
+        },
+        'date',
+      ),
+      createBoundInput(
+        '结束日期',
+        item.endDate ?? '',
+        (value) => {
+          item.endDate = value;
+        },
+        'date',
+      ),
+      createBoundTextarea('说明', item.description ?? '', (value) => {
+        item.description = value;
+      }),
+    );
+    card.appendChild(grid);
+    campusListElement.appendChild(card);
   });
-
-  label.append(span, input);
-  return label;
 }
 
 /**
- * 创建绑定到草稿字段的多行输入。
+ * 渲染语言能力动态行。
  */
-function createBoundTextarea(
-  labelText: string,
-  initialValue: string,
-  onChange: (value: string) => void,
-): HTMLLabelElement {
-  const label = document.createElement('label');
-  label.className = 'field';
+function renderLanguageRows(items: LanguageItem[]): void {
+  languageListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`语言 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.languages.splice(itemIndex, 1);
+      renderLanguageRows(draftProfileData.languages);
+    });
 
-  const span = document.createElement('span');
-  span.className = 'field-label';
-  span.textContent = labelText;
-
-  const textarea = document.createElement('textarea');
-  textarea.rows = 3;
-  textarea.value = initialValue;
-  textarea.addEventListener('input', () => {
-    onChange(textarea.value);
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput('语种', item.language, (value) => {
+        item.language = value;
+      }),
+      createBoundSelect(
+        '熟练度',
+        item.proficiency,
+        LANGUAGE_PROFICIENCY_OPTIONS,
+        (value) => {
+          item.proficiency = value;
+        },
+      ),
+      createBoundSelect(
+        '证书',
+        item.certificate ?? '',
+        LANGUAGE_CERT_OPTIONS,
+        (value) => {
+          item.certificate = value;
+        },
+      ),
+      createBoundInput('成绩', item.score ?? '', (value) => {
+        item.score = value;
+      }),
+      createBoundInput(
+        '获证日期',
+        item.obtainedDate ?? '',
+        (value) => {
+          item.obtainedDate = value;
+        },
+        'date',
+      ),
+    );
+    card.appendChild(grid);
+    languageListElement.appendChild(card);
   });
-
-  label.append(span, textarea);
-  return label;
 }
 
 /**
- * 向草稿追加一条空白教育 / 工作 / 项目经历。
+ * 渲染证书动态行。
+ */
+function renderCertificateRows(items: CertificateItem[]): void {
+  certificateListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`证书 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.certificates.splice(itemIndex, 1);
+      renderCertificateRows(draftProfileData.certificates);
+    });
+
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput('证书名称', item.name, (value) => {
+        item.name = value;
+      }),
+      createBoundInput('等级', item.level ?? '', (value) => {
+        item.level = value;
+      }),
+      createBoundInput('颁发机构', item.issuer ?? '', (value) => {
+        item.issuer = value;
+      }),
+      createBoundInput(
+        '获证日期',
+        item.date ?? '',
+        (value) => {
+          item.date = value;
+        },
+        'date',
+      ),
+      createBoundInput('证书编号', item.number ?? '', (value) => {
+        item.number = value;
+      }),
+      createBoundInput('相关专业', item.major ?? '', (value) => {
+        item.major = value;
+      }),
+    );
+    card.appendChild(grid);
+    certificateListElement.appendChild(card);
+  });
+}
+
+/**
+ * 渲染奖项动态行。
+ */
+function renderAwardRows(items: AwardItem[]): void {
+  awardListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`奖项 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.awards.splice(itemIndex, 1);
+      renderAwardRows(draftProfileData.awards);
+    });
+
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput('奖项名称', item.name, (value) => {
+        item.name = value;
+      }),
+      createBoundSelect(
+        '级别',
+        item.level ?? '',
+        AWARD_LEVEL_OPTIONS,
+        (value) => {
+          item.level = value;
+        },
+      ),
+      createBoundInput(
+        '获奖日期',
+        item.date ?? '',
+        (value) => {
+          item.date = value;
+        },
+        'date',
+      ),
+      createBoundTextarea('说明', item.description ?? '', (value) => {
+        item.description = value;
+      }),
+    );
+    card.appendChild(grid);
+    awardListElement.appendChild(card);
+  });
+}
+
+/**
+ * 渲染论文/专利/著作动态行。
+ */
+function renderPublicationRows(items: PublicationItem[]): void {
+  publicationListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`成果 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.publications.splice(itemIndex, 1);
+      renderPublicationRows(draftProfileData.publications);
+    });
+
+    const grid = createCardGrid();
+    grid.append(
+      createBoundSelect(
+        '类型',
+        item.kind,
+        PUBLICATION_KIND_OPTIONS,
+        (value) => {
+          item.kind = value;
+        },
+      ),
+      createBoundInput('标题', item.title, (value) => {
+        item.title = value;
+      }),
+      createBoundInput('期刊/专利号', item.venueOrNumber ?? '', (value) => {
+        item.venueOrNumber = value;
+      }),
+      createBoundInput(
+        '日期',
+        item.date ?? '',
+        (value) => {
+          item.date = value;
+        },
+        'date',
+      ),
+      createBoundInput('作者排序', item.authorOrder ?? '', (value) => {
+        item.authorOrder = value;
+      }),
+      createBoundInput(
+        '链接',
+        item.link ?? '',
+        (value) => {
+          item.link = value;
+        },
+        'url',
+      ),
+    );
+    card.appendChild(grid);
+    publicationListElement.appendChild(card);
+  });
+}
+
+/**
+ * 渲染培训经历动态行。
+ */
+function renderTrainingRows(items: TrainingItem[]): void {
+  trainingListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`培训 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.trainings.splice(itemIndex, 1);
+      renderTrainingRows(draftProfileData.trainings);
+    });
+
+    const grid = createCardGrid();
+    grid.append(
+      createBoundInput('培训机构', item.organization, (value) => {
+        item.organization = value;
+      }),
+      createBoundInput('课程', item.course, (value) => {
+        item.course = value;
+      }),
+      createBoundInput(
+        '开始日期',
+        item.startDate ?? '',
+        (value) => {
+          item.startDate = value;
+        },
+        'date',
+      ),
+      createBoundInput(
+        '结束日期',
+        item.endDate ?? '',
+        (value) => {
+          item.endDate = value;
+        },
+        'date',
+      ),
+      createBoundInput('结业证书', item.certificate ?? '', (value) => {
+        item.certificate = value;
+      }),
+    );
+    card.appendChild(grid);
+    trainingListElement.appendChild(card);
+  });
+}
+
+/**
+ * 渲染家庭成员动态行。
+ */
+function renderFamilyRows(items: FamilyMemberItem[]): void {
+  familyListElement.replaceChildren();
+  items.forEach((item, itemIndex) => {
+    const card = createListItemCard(`家庭成员 ${itemIndex + 1}`, () => {
+      if (!draftProfileData) {
+        return;
+      }
+      draftProfileData.familyMembers.splice(itemIndex, 1);
+      renderFamilyRows(draftProfileData.familyMembers);
+    });
+
+    const grid = createCardGrid();
+    grid.append(
+      createBoundSelect(
+        '关系',
+        item.relationship,
+        FAMILY_RELATION_OPTIONS,
+        (value) => {
+          item.relationship = value;
+        },
+      ),
+      createBoundInput('姓名', item.name, (value) => {
+        item.name = value;
+      }),
+      createBoundInput('年龄', item.age ?? '', (value) => {
+        item.age = value;
+      }),
+      createBoundSelect(
+        '政治面貌',
+        item.politicalStatus ?? '',
+        POLITICAL_STATUS_OPTIONS,
+        (value) => {
+          item.politicalStatus = value;
+        },
+      ),
+      createBoundInput('工作单位', item.employer ?? '', (value) => {
+        item.employer = value;
+      }),
+      createBoundInput('职务', item.title ?? '', (value) => {
+        item.title = value;
+      }),
+      createBoundInput(
+        '电话',
+        item.phone ?? '',
+        (value) => {
+          item.phone = value;
+        },
+        'tel',
+      ),
+    );
+    card.appendChild(grid);
+    familyListElement.appendChild(card);
+  });
+}
+
+/**
+ * 创建空白教育经历条目。
+ */
+function createEmptyEducationItem(): EducationItem {
+  return {
+    school: '',
+    degreeLevel: '',
+    major: '',
+    startDate: '',
+    endDate: '',
+    isCurrent: false,
+    isHighest: false,
+    isFirstDegree: false,
+    description: '',
+  };
+}
+
+/**
+ * 创建空白工作/实习条目。
+ */
+function createEmptyExperienceItem(): ExperienceItem {
+  return {
+    company: '',
+    title: '',
+    startDate: '',
+    endDate: '',
+    isCurrent: false,
+    description: '',
+  };
+}
+
+/**
+ * 创建空白项目条目。
+ */
+function createEmptyProjectItem(): ProjectItem {
+  return {
+    name: '',
+    role: '',
+    startDate: '',
+    endDate: '',
+    description: '',
+    link: '',
+  };
+}
+
+/**
+ * 向草稿追加一条对应类型的空白列表项。
  */
 function handleAddListItem(listKind: string): void {
   if (!draftProfileData) {
     return;
   }
-  if (listKind === 'education') {
-    draftProfileData.education.push({
-      school: '',
-      degree: '',
-      major: '',
-      startDate: '',
-      endDate: '',
-      description: '',
-    });
-    renderEducationRows(draftProfileData.education);
-    return;
+
+  switch (listKind) {
+    case 'education':
+      draftProfileData.education.push(createEmptyEducationItem());
+      renderEducationRows(draftProfileData.education);
+      break;
+    case 'experience':
+      draftProfileData.experience.push(createEmptyExperienceItem());
+      renderExperienceRows(draftProfileData.experience);
+      break;
+    case 'projects':
+      draftProfileData.projects.push(createEmptyProjectItem());
+      renderProjectRows(draftProfileData.projects);
+      break;
+    case 'campus':
+      draftProfileData.campusActivities.push({
+        organization: '',
+        role: '',
+        startDate: '',
+        endDate: '',
+        description: '',
+      });
+      renderCampusRows(draftProfileData.campusActivities);
+      break;
+    case 'language':
+      draftProfileData.languages.push({
+        language: '',
+        proficiency: '',
+        certificate: '',
+        score: '',
+        obtainedDate: '',
+      });
+      renderLanguageRows(draftProfileData.languages);
+      break;
+    case 'certificate':
+      draftProfileData.certificates.push({
+        name: '',
+        level: '',
+        issuer: '',
+        date: '',
+        number: '',
+        major: '',
+      });
+      renderCertificateRows(draftProfileData.certificates);
+      break;
+    case 'award':
+      draftProfileData.awards.push({
+        name: '',
+        level: '',
+        date: '',
+        description: '',
+      });
+      renderAwardRows(draftProfileData.awards);
+      break;
+    case 'publication':
+      draftProfileData.publications.push({
+        kind: '',
+        title: '',
+        venueOrNumber: '',
+        date: '',
+        authorOrder: '',
+        link: '',
+      });
+      renderPublicationRows(draftProfileData.publications);
+      break;
+    case 'training':
+      draftProfileData.trainings.push({
+        organization: '',
+        course: '',
+        startDate: '',
+        endDate: '',
+        certificate: '',
+      });
+      renderTrainingRows(draftProfileData.trainings);
+      break;
+    case 'family':
+      draftProfileData.familyMembers.push({
+        relationship: '',
+        name: '',
+        age: '',
+        politicalStatus: '',
+        employer: '',
+        title: '',
+        phone: '',
+      });
+      renderFamilyRows(draftProfileData.familyMembers);
+      break;
+    default:
+      break;
   }
-  if (listKind === 'experience') {
-    draftProfileData.experience.push({
-      company: '',
-      title: '',
-      startDate: '',
-      endDate: '',
-      description: '',
-    });
-    renderExperienceRows(draftProfileData.experience);
-    return;
-  }
-  if (listKind === 'projects') {
-    draftProfileData.projects.push({
-      name: '',
-      role: '',
-      startDate: '',
-      endDate: '',
-      description: '',
-      link: '',
-    });
-    renderProjectRows(draftProfileData.projects);
-  }
+
+  updateValidationHint(draftProfileData);
 }
 
 /**
- * 从编辑表单收集草稿并调用 updateProfileData 持久化。
+ * 从静态表单收集 path 字段到草稿（不含动态列表，列表已直接改对象）。
+ */
+function collectStaticFieldsIntoDraft(data: ProfileData): void {
+  const pathFields = profileEditorForm.querySelectorAll<
+    HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+  >('[data-path]');
+  for (const fieldElement of pathFields) {
+    const pathText = fieldElement.dataset.path ?? '';
+    writePathValue(data, pathText, fieldElement.value.trim());
+  }
+
+  data.skills = skillsTextarea.value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  data.notes = notesTextarea.value;
+}
+
+/**
+ * 根据校验结果更新编辑区顶部提示文案。
+ */
+function updateValidationHint(data: ProfileData): void {
+  const result = validateProfileData(data);
+  const hintParts: string[] = [];
+  if (!result.ok) {
+    hintParts.push(`硬必填未完成：${result.missingRequired.join('；')}`);
+  }
+  if (result.softWarnings.length > 0) {
+    hintParts.push(`建议补全：${result.softWarnings.join('；')}`);
+  }
+  editorValidationHint.textContent = hintParts.join(' —— ');
+}
+
+/**
+ * 从编辑表单收集草稿，校验硬必填后调用 updateProfileData 持久化。
  */
 async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
   event.preventDefault();
@@ -821,19 +1503,17 @@ async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
     return;
   }
 
-  const pathInputs = profileEditorForm.querySelectorAll<HTMLInputElement>(
-    'input[data-path]',
-  );
-  for (const inputElement of pathInputs) {
-    const pathText = inputElement.dataset.path ?? '';
-    writePathValue(draftProfileData, pathText, inputElement.value.trim());
-  }
+  collectStaticFieldsIntoDraft(draftProfileData);
+  updateValidationHint(draftProfileData);
 
-  draftProfileData.skills = skillsTextarea.value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  draftProfileData.notes = notesTextarea.value;
+  const validation = validateProfileData(draftProfileData);
+  if (!validation.ok) {
+    showStatus(
+      `无法保存：${validation.missingRequired.join('；')}`,
+      'error',
+    );
+    return;
+  }
 
   try {
     const updated = await updateProfileData(
@@ -843,7 +1523,12 @@ async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
     await refreshProfilesFromStorage();
     editingProfileName.textContent = `正在编辑：${updated.name}`;
     draftProfileData = structuredClone(updated.data);
-    showStatus('档案内容已保存', 'success');
+    fillEditorForm(draftProfileData);
+    const softText =
+      validation.softWarnings.length > 0
+        ? `（建议：${validation.softWarnings.join('；')}）`
+        : '';
+    showStatus(`档案内容已保存${softText}`, 'success');
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   }
@@ -887,7 +1572,7 @@ function formatExportStamp(): string {
 }
 
 /**
- * 生成新档案 id（导入批次在内存组装时使用，与 profileStore 一致）。
+ * 生成新档案 id（导入批次在内存组装时使用）。
  */
 function createImportedProfileId(): string {
   return crypto.randomUUID();
@@ -901,76 +1586,14 @@ function createImportedTimestamp(): string {
 }
 
 /**
- * 将任意对象深度合并到目标上：对象递归合并，数组与原始值整体覆盖。
- * 用于把残缺导入 data 铺到 createEmptyProfileData() 骨架上，保证 skills 等必有数组。
- */
-function deepMergeRecord(
-  targetValue: Record<string, unknown>,
-  sourceValue: Record<string, unknown>,
-): Record<string, unknown> {
-  const mergedResult: Record<string, unknown> = { ...targetValue };
-
-  for (const [fieldKey, sourceFieldValue] of Object.entries(sourceValue)) {
-    if (sourceFieldValue === undefined) {
-      continue;
-    }
-
-    const targetFieldValue = mergedResult[fieldKey];
-    const sourceIsPlainObject =
-      sourceFieldValue !== null &&
-      typeof sourceFieldValue === 'object' &&
-      !Array.isArray(sourceFieldValue);
-    const targetIsPlainObject =
-      targetFieldValue !== null &&
-      typeof targetFieldValue === 'object' &&
-      !Array.isArray(targetFieldValue);
-
-    if (sourceIsPlainObject && targetIsPlainObject) {
-      mergedResult[fieldKey] = deepMergeRecord(
-        targetFieldValue as Record<string, unknown>,
-        sourceFieldValue as Record<string, unknown>,
-      );
-      continue;
-    }
-
-    if (Array.isArray(sourceFieldValue)) {
-      mergedResult[fieldKey] = structuredClone(sourceFieldValue);
-      continue;
-    }
-
-    if (sourceIsPlainObject) {
-      mergedResult[fieldKey] = structuredClone(sourceFieldValue);
-      continue;
-    }
-
-    mergedResult[fieldKey] = sourceFieldValue;
-  }
-
-  return mergedResult;
-}
-
-/**
- * 将导入的残缺 data 规范化：以空白 ProfileData 为底，深度合并导入字段。
- * 缺省的 education / experience / projects / skills / basic / jobIntent / notes 均保留空骨架，
- * 避免编辑区调用 skills.join 等时因 undefined 崩溃。
+ * 将导入的残缺 data 规范化为超全 ProfileData。
  */
 function normalizeImportedProfileData(rawData: unknown): ProfileData {
-  const emptyProfileData = createEmptyProfileData();
-  if (!rawData || typeof rawData !== 'object' || Array.isArray(rawData)) {
-    return emptyProfileData;
-  }
-
-  const mergedData = deepMergeRecord(
-    emptyProfileData as unknown as Record<string, unknown>,
-    rawData as Record<string, unknown>,
-  );
-
-  return mergedData as unknown as ProfileData;
+  return normalizeProfileData(rawData);
 }
 
 /**
  * 导入 JSON：先校验并在内存组装全部待写入档案，再一次性原子追加。
- * 跳过无效条目；成功计数不含跳过项。设置合并时保留本机 apiKey（导入文件通常为空）。
  */
 async function handleImportFileChange(): Promise<void> {
   const fileList = importFileInput.files;
@@ -992,7 +1615,6 @@ async function handleImportFileChange(): Promise<void> {
       return;
     }
 
-    // 先在内存中规范化全部有效档案；任一项失败则整批不写 storage
     const profilesToAppend: Profile[] = [];
     let skippedCount = 0;
 
@@ -1027,7 +1649,6 @@ async function handleImportFileChange(): Promise<void> {
       return;
     }
 
-    // 单次 storage 写入；失败时原有档案保持不变
     await appendProfilesAtomic(profilesToAppend);
 
     if (parsed.settings && typeof parsed.settings === 'object') {
@@ -1047,7 +1668,6 @@ async function handleImportFileChange(): Promise<void> {
           importedSettings.fillMode === 'direct'
             ? importedSettings.fillMode
             : currentSettings.fillMode,
-        // 导出已剔除 Key；空字符串时保留本机已有 Key，避免误清空
         apiKey:
           typeof importedSettings.apiKey === 'string' &&
           importedSettings.apiKey.length > 0

@@ -355,6 +355,20 @@ textarea {
   margin-bottom: 8px;
 }
 
+.checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-row input[type='checkbox'] {
+  width: auto;
+}
+
+.item-card .form-grid {
+  margin-top: 8px;
+}
+
 .item-card-title {
   margin: 0;
   font-size: 13px;

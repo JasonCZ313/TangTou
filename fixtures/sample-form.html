@@ -3,51 +3,79 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>简历自动填写 — 样例表单</title>
+    <title>简历自动填写 — 超全样例表单</title>
     <style>
       :root {
         color-scheme: light;
         font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         line-height: 1.5;
+        --border: #c5d0de;
+        --muted: #5a6a7c;
+        --bg: #f3f7fb;
       }
       body {
         margin: 0;
-        padding: 32px 20px 48px;
+        padding: 28px 16px 64px;
         background: linear-gradient(160deg, #f3f7fb 0%, #e8eef6 100%);
         color: #1a2332;
       }
       main {
-        max-width: 560px;
+        max-width: 920px;
         margin: 0 auto;
       }
       h1 {
-        margin: 0 0 8px;
-        font-size: 1.5rem;
+        margin: 0 0 6px;
+        font-size: 1.55rem;
       }
-      p {
-        margin: 0 0 24px;
-        color: #4a5a6d;
+      .lead {
+        margin: 0 0 20px;
+        color: var(--muted);
       }
       form {
         display: grid;
-        gap: 16px;
+        gap: 18px;
+      }
+      fieldset {
+        margin: 0;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+      }
+      legend {
+        padding: 0 8px;
+        font-weight: 700;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px 14px;
+      }
+      .span-2 {
+        grid-column: span 2;
       }
       label {
         display: grid;
-        gap: 6px;
+        gap: 4px;
         font-weight: 600;
+        font-size: 0.92rem;
+      }
+      .hint {
+        font-size: 0.8rem;
+        font-weight: 400;
+        color: var(--muted);
       }
       input,
       select,
       textarea {
         font: inherit;
-        padding: 10px 12px;
-        border: 1px solid #c5d0de;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
         border-radius: 8px;
         background: #fff;
       }
       textarea {
-        min-height: 120px;
+        min-height: 88px;
         resize: vertical;
       }
       button[type="submit"] {
@@ -60,64 +88,438 @@
         font-weight: 600;
         cursor: pointer;
       }
-      .hint {
-        font-size: 0.875rem;
-        font-weight: 400;
-        color: #6a7a8c;
+      .skip-note {
+        font-size: 0.85rem;
+        color: #8a4b00;
+        background: #fff6e8;
+        border: 1px solid #f0d4a8;
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      @media (max-width: 720px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .span-2 {
+          grid-column: auto;
+        }
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>样例投递表单</h1>
-      <p>用于手动验收 Content 扫描 / 安全写入 / 撤销。扩展不得自动点击下方提交。</p>
+      <h1>超全样例投递表单</h1>
+      <p class="lead">
+        与扩展档案分区对齐，用于验收扫描 / 安全写入 / 撤销。扩展不得自动点击提交。
+        标 * 对应档案硬必填或常见强制项。
+      </p>
+
       <form id="sample-application-form" action="#" method="post">
-        <label>
-          姓名
-          <input id="full-name" name="fullName" type="text" placeholder="请输入姓名" required />
-        </label>
-        <label>
-          邮箱
-          <input id="email" name="email" type="email" placeholder="name@example.com" required />
-        </label>
-        <label>
-          电话
-          <input id="phone" name="phone" type="tel" placeholder="手机号码" />
-        </label>
-        <label>
-          城市
-          <input id="city" name="city" type="text" placeholder="所在城市" />
-        </label>
-        <label>
-          学历
-          <select id="education" name="education" required>
-            <option value="">请选择</option>
-            <option value="bachelor">本科</option>
-            <option value="master">硕士</option>
-            <option value="phd">博士</option>
-            <option value="other">其他</option>
-          </select>
-        </label>
-        <label>
-          自我评价
-          <textarea
-            id="self-intro"
-            name="selfIntro"
-            placeholder="简要介绍你的优势与经历"
-          ></textarea>
-        </label>
-        <label>
-          补充说明（可编辑区域）
-          <span class="hint">contenteditable 字段</span>
-          <div
-            id="extra-notes"
-            contenteditable="true"
-            role="textbox"
-            aria-label="补充说明"
-            style="min-height: 72px; padding: 10px 12px; border: 1px solid #c5d0de; border-radius: 8px; background: #fff;"
-          ></div>
-        </label>
-        <!-- 以下控件应被扫描跳过：hidden / password / submit -->
+        <fieldset>
+          <legend>基本信息</legend>
+          <div class="grid">
+            <label>姓名 *<input name="fullName" type="text" required /></label>
+            <label>英文名<input name="englishName" type="text" /></label>
+            <label>手机 *<input name="phone" type="tel" required /></label>
+            <label>邮箱 *<input name="email" type="email" required /></label>
+            <label>现居城市 *<input name="currentCity" type="text" required /></label>
+            <label>现居详细地址<input name="currentAddress" type="text" class="span-2" /></label>
+            <label>性别
+              <select name="gender">
+                <option value="">请选择</option>
+                <option value="男">男</option>
+                <option value="女">女</option>
+                <option value="其他">其他</option>
+                <option value="不愿透露">不愿透露</option>
+              </select>
+            </label>
+            <label>出生日期<input name="birthday" type="date" /></label>
+            <label>年龄<input name="age" type="text" /></label>
+            <label>国籍<input name="nationality" type="text" /></label>
+            <label>民族
+              <select name="ethnicity">
+                <option value="">请选择</option>
+                <option value="汉族">汉族</option>
+                <option value="壮族">壮族</option>
+                <option value="满族">满族</option>
+                <option value="回族">回族</option>
+                <option value="苗族">苗族</option>
+                <option value="维吾尔族">维吾尔族</option>
+                <option value="土家族">土家族</option>
+                <option value="彝族">彝族</option>
+                <option value="蒙古族">蒙古族</option>
+                <option value="藏族">藏族</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>籍贯<input name="nativePlace" type="text" /></label>
+            <label>户口所在地<input name="hukouLocation" type="text" /></label>
+            <label>户口性质
+              <select name="hukouType">
+                <option value="">请选择</option>
+                <option value="城镇">城镇</option>
+                <option value="农村">农村</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>证件类型
+              <select name="idType">
+                <option value="">请选择</option>
+                <option value="居民身份证">居民身份证</option>
+                <option value="护照">护照</option>
+                <option value="港澳居民来往内地通行证">港澳居民来往内地通行证</option>
+                <option value="台湾居民来往大陆通行证">台湾居民来往大陆通行证</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>证件号码<input name="idNumber" type="text" /></label>
+            <label>政治面貌
+              <select name="politicalStatus">
+                <option value="">请选择</option>
+                <option value="群众">群众</option>
+                <option value="中国共产主义青年团团员">中国共产主义青年团团员</option>
+                <option value="中国共产党党员">中国共产党党员</option>
+                <option value="中国共产党预备党员">中国共产党预备党员</option>
+                <option value="民主党派">民主党派</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>婚姻状况
+              <select name="maritalStatus">
+                <option value="">请选择</option>
+                <option value="未婚">未婚</option>
+                <option value="已婚">已婚</option>
+                <option value="离异">离异</option>
+                <option value="丧偶">丧偶</option>
+                <option value="不愿透露">不愿透露</option>
+              </select>
+            </label>
+            <label>健康状况
+              <select name="healthStatus">
+                <option value="">请选择</option>
+                <option value="良好">良好</option>
+                <option value="一般">一般</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>身高(cm)<input name="heightCm" type="text" /></label>
+            <label>体重(kg)<input name="weightKg" type="text" /></label>
+            <label>微信号<input name="wechatId" type="text" /></label>
+            <label>个人网站<input name="personalWebsite" type="url" /></label>
+            <label>LinkedIn<input name="linkedinUrl" type="url" /></label>
+            <label>GitHub<input name="githubUrl" type="url" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>求职意向</legend>
+          <div class="grid">
+            <label>目标职位 *<input name="targetRole" type="text" required /></label>
+            <label>期望城市<input name="expectedCities" type="text" /></label>
+            <label>工作城市<input name="workCity" type="text" /></label>
+            <label>期望行业<input name="expectedIndustry" type="text" /></label>
+            <label>工作性质
+              <select name="jobType">
+                <option value="">请选择</option>
+                <option value="全职">全职</option>
+                <option value="实习">实习</option>
+                <option value="兼职">兼职</option>
+                <option value="派遣">派遣</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>求职状态
+              <select name="jobStatus">
+                <option value="">请选择</option>
+                <option value="正在找工作">正在找工作</option>
+                <option value="在职看机会">在职看机会</option>
+                <option value="在校学生">在校学生</option>
+                <option value="暂不求职">暂不求职</option>
+              </select>
+            </label>
+            <label>期望月薪下限<input name="salaryMin" type="text" /></label>
+            <label>期望月薪上限<input name="salaryMax" type="text" /></label>
+            <label>到岗日期<input name="availableDate" type="date" /></label>
+            <label>接受出差
+              <select name="acceptTravel">
+                <option value="">请选择</option>
+                <option value="是">是</option>
+                <option value="否">否</option>
+              </select>
+            </label>
+            <label>工作年限<input name="yearsOfExperience" type="text" /></label>
+            <label class="span-2">一句话自我介绍<input name="selfIntroShort" type="text" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>教育经历（最高学历）</legend>
+          <div class="grid">
+            <label>学校 *<input name="school" type="text" /></label>
+            <label>学历层次 *
+              <select name="degreeLevel">
+                <option value="">请选择</option>
+                <option value="小学">小学</option>
+                <option value="初中">初中</option>
+                <option value="中专">中专</option>
+                <option value="中技">中技</option>
+                <option value="职高">职高</option>
+                <option value="高中">高中</option>
+                <option value="大专（高职）">大专（高职）</option>
+                <option value="大学本科">大学本科</option>
+                <option value="硕士研究生">硕士研究生</option>
+                <option value="博士研究生">博士研究生</option>
+                <option value="博士后">博士后</option>
+                <option value="MBA">MBA</option>
+                <option value="EMBA">EMBA</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>专业<input name="major" type="text" /></label>
+            <label>学院<input name="college" type="text" /></label>
+            <label>入学日期<input name="eduStartDate" type="date" /></label>
+            <label>毕业日期<input name="eduEndDate" type="date" /></label>
+            <label>学习形式
+              <select name="studyMode">
+                <option value="">请选择</option>
+                <option value="全日制">全日制</option>
+                <option value="非全日制">非全日制</option>
+                <option value="成人教育">成人教育</option>
+                <option value="自学考试">自学考试</option>
+                <option value="网络教育">网络教育</option>
+                <option value="开放教育">开放教育</option>
+                <option value="委托培养">委托培养</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>学位
+              <select name="academicDegree">
+                <option value="">请选择</option>
+                <option value="无学位">无学位</option>
+                <option value="学士">学士</option>
+                <option value="硕士">硕士</option>
+                <option value="博士">博士</option>
+                <option value="双学位">双学位</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>GPA<input name="gpa" type="text" /></label>
+            <label>排名<input name="rank" type="text" /></label>
+            <label class="span-2">教育说明<textarea name="eduDescription"></textarea></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>最近一段工作/实习</legend>
+          <div class="grid">
+            <label>公司/单位<input name="company" type="text" /></label>
+            <label>职位<input name="jobTitle" type="text" /></label>
+            <label>开始日期<input name="expStartDate" type="date" /></label>
+            <label>结束日期<input name="expEndDate" type="date" /></label>
+            <label>雇佣类型
+              <select name="employmentType">
+                <option value="">请选择</option>
+                <option value="全职">全职</option>
+                <option value="实习">实习</option>
+                <option value="兼职">兼职</option>
+                <option value="志愿/公益">志愿/公益</option>
+                <option value="派遣">派遣</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>工作城市<input name="expCity" type="text" /></label>
+            <label>部门<input name="department" type="text" /></label>
+            <label>证明人<input name="refereeName" type="text" /></label>
+            <label class="span-2">职责描述<textarea name="expDescription"></textarea></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>项目经历</legend>
+          <div class="grid">
+            <label>项目名称<input name="projectName" type="text" /></label>
+            <label>角色<input name="projectRole" type="text" /></label>
+            <label>开始日期<input name="projectStartDate" type="date" /></label>
+            <label>结束日期<input name="projectEndDate" type="date" /></label>
+            <label>技术栈<input name="techStack" type="text" /></label>
+            <label>项目链接<input name="projectLink" type="url" /></label>
+            <label class="span-2">项目描述<textarea name="projectDescription"></textarea></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>技能与计算机</legend>
+          <div class="grid">
+            <label>计算机水平
+              <select name="computerLevel">
+                <option value="">请选择</option>
+                <option value="无">无</option>
+                <option value="计算机一级">计算机一级</option>
+                <option value="计算机二级">计算机二级</option>
+                <option value="计算机三级">计算机三级</option>
+                <option value="计算机四级">计算机四级</option>
+                <option value="熟练（无证）">熟练（无证）</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>办公软件
+              <select name="officeSkillLevel">
+                <option value="">请选择</option>
+                <option value="一般">一般</option>
+                <option value="熟练">熟练</option>
+                <option value="精通">精通</option>
+              </select>
+            </label>
+            <label class="span-2">技能（逗号或空格分隔）<input name="skills" type="text" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>语言能力</legend>
+          <div class="grid">
+            <label>语种<input name="language" type="text" placeholder="如：英语" /></label>
+            <label>熟练度
+              <select name="languageProficiency">
+                <option value="">请选择</option>
+                <option value="母语">母语</option>
+                <option value="精通">精通</option>
+                <option value="熟练">熟练</option>
+                <option value="一般">一般</option>
+                <option value="入门">入门</option>
+              </select>
+            </label>
+            <label>语言证书
+              <select name="languageCertificate">
+                <option value="">请选择</option>
+                <option value="大学英语四级 CET-4">大学英语四级 CET-4</option>
+                <option value="大学英语六级 CET-6">大学英语六级 CET-6</option>
+                <option value="英语专业四级 TEM-4">英语专业四级 TEM-4</option>
+                <option value="英语专业八级 TEM-8">英语专业八级 TEM-8</option>
+                <option value="雅思 IELTS">雅思 IELTS</option>
+                <option value="托福 TOEFL">托福 TOEFL</option>
+                <option value="托业 TOEIC">托业 TOEIC</option>
+                <option value="多邻国">多邻国</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>成绩<input name="languageScore" type="text" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>证书 / 奖项</legend>
+          <div class="grid">
+            <label>证书名称<input name="certificateName" type="text" /></label>
+            <label>证书等级<input name="certificateLevel" type="text" /></label>
+            <label>奖项名称<input name="awardName" type="text" /></label>
+            <label>奖项级别
+              <select name="awardLevel">
+                <option value="">请选择</option>
+                <option value="校级">校级</option>
+                <option value="市级">市级</option>
+                <option value="省级">省级</option>
+                <option value="国家级">国家级</option>
+                <option value="国际级">国际级</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>紧急联系人</legend>
+          <div class="grid">
+            <label>姓名<input name="emergencyName" type="text" /></label>
+            <label>关系<input name="emergencyRelationship" type="text" /></label>
+            <label>电话<input name="emergencyPhone" type="tel" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>家庭成员（银行/事业单位常见）</legend>
+          <div class="grid">
+            <label>关系
+              <select name="familyRelationship">
+                <option value="">请选择</option>
+                <option value="父亲">父亲</option>
+                <option value="母亲">母亲</option>
+                <option value="配偶">配偶</option>
+                <option value="子女">子女</option>
+                <option value="兄弟姐妹">兄弟姐妹</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>姓名<input name="familyName" type="text" /></label>
+            <label>工作单位<input name="familyEmployer" type="text" /></label>
+            <label>职务<input name="familyTitle" type="text" /></label>
+            <label>电话<input name="familyPhone" type="tel" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>体制 / 外企补充</legend>
+          <div class="grid">
+            <label>是否应届
+              <select name="isFreshGraduate">
+                <option value="">请选择</option>
+                <option value="是">是</option>
+                <option value="否">否</option>
+              </select>
+            </label>
+            <label>有无本单位亲属
+              <select name="hasRelativeInOrg">
+                <option value="">请选择</option>
+                <option value="是">是</option>
+                <option value="否">否</option>
+              </select>
+            </label>
+            <label>档案存放地<input name="archiveLocation" type="text" /></label>
+            <label>生源地<input name="studentOrigin" type="text" /></label>
+            <label>是否需要工作签证
+              <select name="needsVisa">
+                <option value="">请选择</option>
+                <option value="是">是</option>
+                <option value="否">否</option>
+              </select>
+            </label>
+            <label>愿否搬迁
+              <select name="willingToRelocate">
+                <option value="">请选择</option>
+                <option value="是">是</option>
+                <option value="否">否</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>自定义问答</legend>
+          <div class="grid">
+            <label class="span-2">自我评价<textarea name="selfEvaluation"></textarea></label>
+            <label class="span-2">职业规划<textarea name="careerPlan"></textarea></label>
+            <label class="span-2">为何加入本公司<textarea name="whyJoin"></textarea></label>
+            <label class="span-2">其他说明<textarea name="otherNotes"></textarea></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>可编辑补充（contenteditable）</legend>
+          <label class="span-2">
+            补充说明
+            <span class="hint">contenteditable 字段，用于验收非 input 写入</span>
+            <div
+              id="extra-notes"
+              contenteditable="true"
+              role="textbox"
+              aria-label="补充说明"
+              style="min-height: 72px; padding: 10px 12px; border: 1px solid #c5d0de; border-radius: 8px; background: #fff; font-weight: 400;"
+            ></div>
+          </label>
+        </fieldset>
+
+        <p class="skip-note">
+          以下控件应被扫描跳过：hidden / password / submit。扩展不得自动点击提交按钮。
+        </p>
         <input type="hidden" name="csrf" value="demo-token" />
         <label>
           密码（应跳过扫描）

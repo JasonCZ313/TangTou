@@ -127,7 +127,7 @@ function matchFieldToProfile(
   }
 
   if (corpusMatchesCity(rawText, normalizedLowerText)) {
-    const cityValue = basic.city.trim();
+    const cityValue = (basic.currentCity || basic.city || '').trim();
     if (cityValue) {
       return { value: cityValue, reason: '本地启发式：城市' };
     }
