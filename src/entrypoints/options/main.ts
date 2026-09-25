@@ -48,6 +48,7 @@ import type { ExtensionMessage } from '../../shared/types/messages';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { mountAppVersionLabel } from '../../shared/appVersion';
+import { mountEssayPolishControls } from './polishControl';
 import { fillStaticSelectsByCatalog } from './editorWidgets';
 import { appendListItem, renderAllDynamicLists } from './editorLists';
 import {
@@ -502,6 +503,7 @@ function renderTokenUsageSummary(stats: TokenUsageStats): void {
 async function bootstrapOptionsPage(): Promise<void> {
   mountFeedbackPanel();
   mountAppVersionLabel();
+  mountEssayPolishControls(document);
   try {
     ensureStaticCatalogsReady();
     setupEditorToc();

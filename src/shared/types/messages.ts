@@ -84,6 +84,22 @@ export type ExtensionMessage =
       usage?: LlmTokenUsage | null;
     }
   | {
+      type: 'POLISH_TEXT';
+      requestId: string;
+      /** 字段名，用来选择润色侧重，例如「工作内容」「业绩」 */
+      fieldName: string;
+      sourceText: string;
+      /** 用户临时写的要求，不超过 30 字；没有则为空字符串 */
+      customRequirement: string;
+    }
+  | {
+      type: 'POLISH_TEXT_RESULT';
+      requestId: string;
+      headline: string;
+      body: string;
+      usage?: LlmTokenUsage | null;
+    }
+  | {
       type: 'ERROR';
       requestId: string;
       code: string;

@@ -18,6 +18,8 @@ interface TrackedField {
   opener: HTMLElement | null;
   label: string;
   name: string;
+  /** 扫到时的内容。编辑层关掉再打开时，用它认出是不是同一个框，避免重复计数 */
+  valueSnapshot: string;
 }
 
 /**
@@ -227,6 +229,7 @@ function describeField(
     opener,
     label: descriptor.label,
     name: descriptor.name ?? '',
+    valueSnapshot: readCurrentValue(element) ?? '',
   });
 
   return descriptor;
@@ -362,8 +365,8 @@ const MAX_SCROLL_TARGETS = 3;
 const SCAN_BUDGET_MS = 50_000;
 /** 每一档滚动后留给懒加载的时间 */
 const SCROLL_PAUSE_MS = 160;
-/** 点开编辑类按钮的上限 */
-const MAX_EDIT_CLICKS = 16;
+/** 点开编辑类按钮的上限。Boss 直聘一类页面每个模块都要点一次编辑 */
+const MAX_EDIT_CLICKS = 24;
 /** 点开添加类按钮的上限；每个空区块只点一次 */
 const MAX_ADD_CLICKS = 8;
 /** 点开后等新控件出现 */
@@ -371,9 +374,7 @@ const CLICK_PAUSE_MS = 280;
 
 /** 这些字样是提交、跳转或破坏性操作，扫描时一律不点 */
 const BLOCKED_REVEAL_TEXT =
-  /提交|保存|下一步|上一步|发送|投递|登录|注册|确认|取消|删除|移除|关闭|submit|save|next|prev|send|apply|delete|remove|cancel/i;
-/** 空区块里用来露出第一行的按钮 */
-const ADD_REVEAL_TEXT = /添加|新增|增加|加一条|加一行|再加|\badd\b/i;
+  /提交|保存|完成|确定|下一步|上一步|发送|投递|登录|注册|确认|取消|删除|移除|关闭|submit|save|next|prev|send|apply|delete|remove|cancel/i;
 /** 把已有内容展开成可编辑框的按钮，含铅笔图标的 class / aria */
 const EDIT_REVEAL_TEXT = /编辑|修改|\bedit\b|pencil|铅笔/i;
 /** 折叠面板上像表单分区的文案，才允许点开 */
@@ -519,7 +520,33 @@ function openCollapsedPanels(): void {
 }
 
 /**
+ * 编辑层关掉后节点会卸掉。再次点开同一块时，按标签、name 和当时的内容接回原字段，不另计一条。
+ */
+function reuseDisconnectedField(element: Element, opener: HTMLElement | null): boolean {
+  const label = resolveFieldLabel(element);
+  const name = element.getAttribute('name') ?? '';
+  const valueSnapshot = readCurrentValue(element) ?? '';
+  for (const [fieldId, track] of fieldTracks) {
+    if (track.element.isConnected) {
+      continue;
+    }
+    if (track.label !== label || track.name !== name) {
+      continue;
+    }
+    if (track.valueSnapshot !== valueSnapshot) {
+      continue;
+    }
+    track.element = element;
+    track.opener = opener ?? track.opener;
+    fieldElementById.set(fieldId, element);
+    return true;
+  }
+  return false;
+}
+
+/**
  * 把当前已经露出来的控件登记进结果。同一个元素只登记一次。
+ * 编辑层重新打开时接回已卸掉的字段，避免同一块被数两遍。
  */
 function absorbVisibleFields(
   opener: HTMLElement | null,
@@ -531,6 +558,9 @@ function absorbVisibleFields(
       continue;
     }
     seenElements.add(candidate);
+    if (reuseDisconnectedField(candidate, opener)) {
+      continue;
+    }
     fields.push(describeField(candidate, opener));
   }
 }
@@ -685,56 +715,317 @@ async function scrollTargetToEnd(
   return Math.max(0, Math.min(100, Math.round((finalMetrics.top / finalMetrics.maxTop) * 100)));
 }
 
+/** 简历模块标题。悬停这些标题附近，让「编辑」按钮被脚本挂出来 */
+const SECTION_HEADING_TEXT =
+  /^(个人优势|个人介绍|自我评价|期望职位|求职意向|工作经历|工作\/实习经历|实习经历|教育经历|项目经历|项目经验|资格证书|专业技能|技能特长|培训经历|志愿者经历|荣誉奖项|所获荣誉)$/;
+
+/** 节点自己的文字就是编辑，不含子节点里的「删除」 */
+const EDIT_OWN_TEXT = /^(编辑|修改|edit)$/i;
+
+/** 节点自己的文字就是添加 */
+const ADD_OWN_TEXT = /^(添加|新增|增加|加一条|加一行)$/;
+
+/**
+ * 只取元素自己的文本节点，不把子按钮的「删除」「完成」算进来。
+ */
+function ownText(element: HTMLElement): string {
+  let text = '';
+  for (const child of element.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      text += child.textContent ?? '';
+    }
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 判断按钮是否被禁用。禁用的编辑不点，避免绕过站点自己的步骤限制。
+ */
+function isRevealDisabled(element: HTMLElement): boolean {
+  if (element.getAttribute('aria-disabled') === 'true') {
+    return true;
+  }
+  return element instanceof HTMLButtonElement && element.disabled;
+}
+
+/**
+ * class 像铅笔或 edit 图标，且不是「editor」这种整块容器。
+ */
+function classLooksLikeEditIcon(element: HTMLElement): boolean {
+  const className = typeof element.className === 'string' ? element.className : '';
+  if (!/(?:^|[^a-z])(edit|pencil)(?:[^a-z]|$)/i.test(className)) {
+    return false;
+  }
+  if (element.childElementCount > 2) {
+    return false;
+  }
+  return (element.textContent ?? '').trim().length < 8;
+}
+
+/**
+ * 这个节点是不是可以点的「编辑」或空区块「添加」。
+ * 编辑允许隐藏：Boss 直聘要鼠标放上去才显示，样式上的悬停用脚本拨不出来，所以直接点隐藏节点。
+ */
+function classifyRevealTarget(element: HTMLElement): 'edit' | 'add' | null {
+  if (!isSafeRevealTarget(element) || isRevealDisabled(element)) {
+    return null;
+  }
+  if (element.closest('[contenteditable="true"]')) {
+    return null;
+  }
+  const own = ownText(element);
+  const ariaLabel = (element.getAttribute('aria-label') ?? '').trim();
+  const title = (element.getAttribute('title') ?? '').trim();
+  const identity = `${own} ${ariaLabel} ${title}`.replace(/\s+/g, ' ').trim();
+  if (identity && BLOCKED_REVEAL_TEXT.test(identity)) {
+    return null;
+  }
+  if (isElementVisible(element)) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 180 || rect.height > 72) {
+      return null;
+    }
+  }
+  if (EDIT_OWN_TEXT.test(own) || EDIT_OWN_TEXT.test(ariaLabel) || EDIT_OWN_TEXT.test(title)) {
+    return 'edit';
+  }
+  if (!identity && classLooksLikeEditIcon(element)) {
+    return 'edit';
+  }
+  if (!isElementVisible(element)) {
+    return null;
+  }
+  if (ADD_OWN_TEXT.test(own) || ADD_OWN_TEXT.test(ariaLabel) || ADD_OWN_TEXT.test(title)) {
+    return 'add';
+  }
+  return null;
+}
+
+/**
+ * 收集当前能点的编辑和添加。父节点包着更小的「编辑」时只留子节点。
+ */
+function listRevealTargets(clicked: WeakSet<HTMLElement>): Array<{ element: HTMLElement; kind: 'edit' | 'add' }> {
+  const selector = 'button, a, span, i, div, label, svg, [role="button"]';
+  const found: Array<{ element: HTMLElement; kind: 'edit' | 'add' }> = [];
+  for (const node of document.querySelectorAll(selector)) {
+    if (!(node instanceof HTMLElement) || clicked.has(node)) {
+      continue;
+    }
+    const kind = classifyRevealTarget(node);
+    if (!kind) {
+      continue;
+    }
+    found.push({ element: node, kind });
+  }
+  return found.filter(
+    (item) => !found.some((other) => other.element !== item.element && item.element.contains(other.element)),
+  );
+}
+
+/**
+ * 给卡片补上鼠标移入，让靠 mouseenter 才创建的编辑按钮进入 DOM。
+ * 只靠样式 :hover 显示的按钮不会因此出现，那些仍靠直接点隐藏节点。
+ */
+function wakeHoverAround(element: HTMLElement): void {
+  let current: HTMLElement | null = element;
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    current.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, view: window }));
+    current.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, view: window }));
+    current = current.parentElement;
+  }
+}
+
+/**
+ * 对简历各模块标题发一次移入，方便下一轮能找到刚挂出来的编辑按钮。
+ */
+function wakeSectionHovers(): void {
+  let woken = 0;
+  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, span, p, li')) {
+    if (!(node instanceof HTMLElement)) {
+      continue;
+    }
+    if (!SECTION_HEADING_TEXT.test(ownText(node))) {
+      continue;
+    }
+    wakeHoverAround(node);
+    woken += 1;
+    if (woken >= 30) {
+      break;
+    }
+  }
+}
+
+/**
+ * 从编辑按钮往上找模块名，写进扫描进度。
+ */
+function sectionNameNear(element: HTMLElement): string {
+  let current: HTMLElement | null = element;
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    const heading = current.querySelector('h1, h2, h3, h4, h5, h6');
+    if (heading) {
+      const headingText = (heading.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 18);
+      if (headingText) {
+        return headingText;
+      }
+    }
+    current = current.parentElement;
+  }
+  return '这一块';
+}
+
+/**
+ * 在已经看得见的按钮里找文字完全匹配的那个，用来关编辑层。
+ */
+function findVisibleAction(pattern: RegExp): HTMLElement | null {
+  let bestMatch: HTMLElement | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+  for (const node of document.querySelectorAll('button, [role="button"], a, span, div')) {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isSafeRevealTarget(node)) {
+      continue;
+    }
+    if (!pattern.test(ownText(node))) {
+      continue;
+    }
+    const rect = node.getBoundingClientRect();
+    const area = rect.width * rect.height;
+    if (area <= 0 || area > 180 * 72 || area >= bestArea) {
+      continue;
+    }
+    bestMatch = node;
+    bestArea = area;
+  }
+  return bestMatch;
+}
+
+/**
+ * 关掉刚打开的编辑层：点「取消」或「关闭」，不点「完成」「保存」「确定」。
+ * 若接着问要不要放弃修改，只点「不保存」「放弃」「离开」；确认框里的「确定」仅在文案写明放弃时才点。
+ */
+async function dismissOpenedEditor(): Promise<void> {
+  const cancelButton = findVisibleAction(/^(取消|关闭)$/);
+  if (cancelButton) {
+    clickWithoutSubmitting(cancelButton);
+    await wait(220);
+  }
+  const discardButton = findVisibleAction(/^(不保存|放弃|离开)$/);
+  if (discardButton) {
+    clickWithoutSubmitting(discardButton);
+    await wait(180);
+    return;
+  }
+  for (const dialog of document.querySelectorAll(
+    '[role="dialog"], [role="alertdialog"], .dialog, .modal, .ant-modal, .el-dialog',
+  )) {
+    if (!(dialog instanceof HTMLElement) || !isElementVisible(dialog)) {
+      continue;
+    }
+    const dialogText = (dialog.innerText ?? '').slice(0, 300);
+    if (!/放弃|不保存|未保存/.test(dialogText)) {
+      continue;
+    }
+    for (const button of dialog.querySelectorAll('button, [role="button"], span, div, a')) {
+      if (!(button instanceof HTMLElement) || !isElementVisible(button)) {
+        continue;
+      }
+      if (!/^(不保存|放弃|离开|确定)$/.test(ownText(button))) {
+        continue;
+      }
+      clickWithoutSubmitting(button);
+      await wait(180);
+      return;
+    }
+  }
+}
+
 /**
  * 点开安全的「编辑 / 铅笔」和空区块的「添加」。
- * 新出现的字段记住是哪个按钮把它打开的。
+ * 隐藏的编辑也会点。点开后先记下输入框，再关编辑层，方便下一块打开。不点完成、保存、确定。
  */
+/**
+ * 同一块编辑在关掉后会换成新节点。用模块名和旁边的文字记住已经点过，避免来回开关。
+ */
+function revealSignature(element: HTMLElement): string {
+  const parentText = (element.parentElement?.textContent ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48);
+  const ariaLabel = element.getAttribute('aria-label') ?? '';
+  return `${ownText(element)}|${ariaLabel}|${sectionNameNear(element)}|${parentText}`;
+}
+
 async function clickRevealButtons(
-  absorbWithOpener: (opener: HTMLElement) => void,
+  absorbWithOpener: (opener: HTMLElement | null) => void,
+  reportOpening: (message: string) => void,
+  shouldStop: () => boolean,
 ): Promise<void> {
   const clicked = new WeakSet<HTMLElement>();
+  const clickedSignatures = new Set<string>();
   let editClicks = 0;
   let addClicks = 0;
 
-  for (let round = 0; round < 2; round += 1) {
-    const candidates = document.querySelectorAll('button, [role="button"], a');
-    for (const node of candidates) {
-      if (!(node instanceof HTMLElement)) {
+  for (let round = 0; round < 4; round += 1) {
+    if (shouldStop()) {
+      return;
+    }
+    wakeSectionHovers();
+    await wait(180);
+    const targets = listRevealTargets(clicked);
+    if (targets.length === 0) {
+      break;
+    }
+    let clickedThisRound = false;
+    for (const target of targets) {
+      if (shouldStop()) {
+        return;
+      }
+      const signature = revealSignature(target.element);
+      if (clickedSignatures.has(signature)) {
         continue;
       }
-      if (clicked.has(node) || !isElementVisible(node) || !isSafeRevealTarget(node)) {
-        continue;
-      }
-      const text = revealText(node);
-      if (!text || BLOCKED_REVEAL_TEXT.test(text)) {
-        continue;
-      }
-      const kind = ADD_REVEAL_TEXT.test(text)
-        ? 'add'
-        : EDIT_REVEAL_TEXT.test(text)
-          ? 'edit'
-          : null;
-      if (!kind) {
-        continue;
-      }
-      if (kind === 'add') {
-        if (addClicks >= MAX_ADD_CLICKS || nearbyAlreadyHasFields(node)) {
+      if (target.kind === 'add') {
+        if (addClicks >= MAX_ADD_CLICKS || nearbyAlreadyHasFields(target.element)) {
           continue;
         }
       } else if (editClicks >= MAX_EDIT_CLICKS) {
         continue;
       }
 
-      clicked.add(node);
-      node.scrollIntoView({ block: 'center', inline: 'nearest' });
-      clickWithoutSubmitting(node);
-      if (kind === 'add') {
+      const sectionName = sectionNameNear(target.element);
+      reportOpening(
+        target.kind === 'edit' ? `正在点开${sectionName}的编辑。` : `正在点开${sectionName}的添加。`,
+      );
+      // 已经有一块编辑层时先记下框再关掉，否则下一块编辑点不开
+      if (target.kind === 'edit' && findVisibleAction(/^(取消|关闭)$/)) {
+        absorbWithOpener(null);
+        await dismissOpenedEditor();
+        await wait(200);
+      }
+      if (!target.element.isConnected) {
+        continue;
+      }
+      clicked.add(target.element);
+      clickedSignatures.add(signature);
+      clickedThisRound = true;
+      const anchor = isElementVisible(target.element)
+        ? target.element
+        : target.element.parentElement ?? target.element;
+      anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
+      wakeHoverAround(target.element);
+      clickWithoutSubmitting(target.element);
+      if (target.kind === 'add') {
         addClicks += 1;
       } else {
         editClicks += 1;
       }
       await wait(CLICK_PAUSE_MS);
-      absorbWithOpener(node);
+      absorbWithOpener(target.element);
+      if (target.kind === 'edit' && findVisibleAction(/^(取消|关闭)$/)) {
+        await dismissOpenedEditor();
+        await wait(160);
+      }
+    }
+    if (!clickedThisRound) {
+      break;
     }
   }
 }
@@ -788,7 +1079,11 @@ export async function prepareFieldForWrite(
     : undefined;
   const needsReopen = !element || !isElementVisible(element);
   if (needsReopen && track.opener?.isConnected) {
-    track.opener.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const openerAnchor = isElementVisible(track.opener)
+      ? track.opener
+      : track.opener.parentElement ?? track.opener;
+    openerAnchor.scrollIntoView({ block: 'center', inline: 'nearest' });
+    wakeHoverAround(track.opener);
     clickWithoutSubmitting(track.opener);
     await wait(CLICK_PAUSE_MS);
   }
@@ -917,22 +1212,33 @@ export async function scanFieldsSettled(
 
     if (!shouldStop()) {
       report('opening', 74, `正在点开编辑和添加，已发现 ${fields.length} 个输入框。`);
-      await clickRevealButtons((opener) => {
-        absorb(opener);
-        report('opening', 82, `正在点开编辑和添加，已发现 ${fields.length} 个输入框。`);
-      });
+      await clickRevealButtons(
+        (opener) => {
+          absorb(opener);
+          report('opening', 86, `正在点开编辑和添加，已发现 ${fields.length} 个输入框。`);
+        },
+        (message) => {
+          report('opening', 78, `${message}已发现 ${fields.length} 个输入框。`);
+        },
+        shouldStop,
+      );
     } else {
       timedOut = true;
     }
 
     const liveFields = fields.filter((field) => {
       const track = fieldTracks.get(field.fieldId);
-      if (!track?.element.isConnected || !isElementVisible(track.element)) {
-        fieldTracks.delete(field.fieldId);
-        fieldElementById.delete(field.fieldId);
+      if (!track) {
         return false;
       }
-      return true;
+      const stillOnScreen = track.element.isConnected && isElementVisible(track.element);
+      // 编辑层关掉后框会消失，但打开它的按钮还在，写入时会再点开
+      if (stillOnScreen || track.opener?.isConnected) {
+        return true;
+      }
+      fieldTracks.delete(field.fieldId);
+      fieldElementById.delete(field.fieldId);
+      return false;
     });
 
     let notice: string | undefined;

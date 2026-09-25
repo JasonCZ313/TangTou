@@ -1,6 +1,12 @@
 import type { FillMappingItem, FillPlan } from '../types/fill';
 import { parseUsageFromPayload } from '../storage/usageStore';
 import type { LlmTokenUsage } from '../types/usage';
+import {
+  POLISH_SYSTEM_PROMPT,
+  buildPolishUserMessage,
+  parsePolishedPassage,
+  type PolishedPassage,
+} from './polishPrompt';
 
 /** Chat Completions 请求体中的单条消息 */
 interface ChatMessage {
@@ -283,6 +289,94 @@ export async function testApiConnection(options: {
     const detail =
       error instanceof Error ? error.message.slice(0, 200) : '未知错误';
     return { ok: false, detail };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 按固定润色标准改写一段长文。apiKey 只在 background 里使用。
+ * 附加要求超过调用方限制时不应传到这里。
+ */
+export async function requestTextPolish(options: {
+  apiBaseUrl: string;
+  apiKey: string;
+  model: string;
+  fieldName: string;
+  sourceText: string;
+  customRequirement: string;
+  timeoutMs?: number;
+}): Promise<{ passage: PolishedPassage; usage: LlmTokenUsage | null }> {
+  const baseUrl = options.apiBaseUrl.replace(/\/$/, '');
+  const endpointUrl = `${baseUrl}/chat/completions`;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? 60_000,
+  );
+  const messages: ChatMessage[] = [
+    { role: 'system', content: POLISH_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: buildPolishUserMessage(
+        options.fieldName,
+        options.sourceText,
+        options.customRequirement,
+      ),
+    },
+  ];
+  try {
+    let response = await postChatCompletions({
+      endpointUrl,
+      apiKey: options.apiKey,
+      model: options.model,
+      messages,
+      temperature: 0.3,
+      useJsonObjectFormat: true,
+      maxTokens: 800,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const firstErrorText = await response.text();
+      if (isResponseFormatRejection(response.status, firstErrorText)) {
+        response = await postChatCompletions({
+          endpointUrl,
+          apiKey: options.apiKey,
+          model: options.model,
+          messages,
+          temperature: 0.3,
+          useJsonObjectFormat: false,
+          maxTokens: 800,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const retryErrorText = await response.text();
+          throw new Error(
+            `LLM_HTTP_${response.status}: ${retryErrorText.slice(0, 200)}`,
+          );
+        }
+      } else {
+        throw new Error(
+          `LLM_HTTP_${response.status}: ${firstErrorText.slice(0, 200)}`,
+        );
+      }
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      throw new Error('模型没有返回能用的润色结果。请再试一次。');
+    }
+    return {
+      passage: parsePolishedPassage(content),
+      usage: parseUsageFromPayload(payload),
+    };
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) {
+      throw new Error('模型没有返回能用的润色结果。请再试一次。');
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }

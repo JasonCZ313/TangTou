@@ -1,4 +1,5 @@
 import type { CatalogOption } from '../../shared/catalogs/enums';
+import { attachPolishControlsIfLongText } from './polishControl';
 import { createSearchableSelect } from './searchableSelect';
 
 /**
@@ -64,6 +65,7 @@ export function createBoundTextarea(
   });
 
   label.append(span, textarea);
+  attachPolishControlsIfLongText(label, textarea, labelText);
   return label;
 }
 

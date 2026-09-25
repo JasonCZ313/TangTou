@@ -4,6 +4,7 @@ import {
   ensureHostPermission,
   requestFillPlan,
   requestResumeProfilePatch,
+  requestTextPolish,
   testApiConnection,
 } from '../shared/llm/openaiCompatible';
 import { listProfiles, getProfile } from '../shared/storage/profileStore';
@@ -460,6 +461,68 @@ async function handleParseResume(
 }
 
 /**
+ * 润色档案里的一段长文。用量记入现有 Token 累计。
+ */
+async function handlePolishText(
+  message: Extract<ExtensionMessage, { type: 'POLISH_TEXT' }>,
+): Promise<ExtensionMessage> {
+  const sourceText = message.sourceText.trim();
+  if (!sourceText) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'POLISH_EMPTY',
+      message: '请先写下这段内容，再润色。',
+    };
+  }
+  const customRequirement = message.customRequirement.trim();
+  if ([...customRequirement].length > 30) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'POLISH_REQUIREMENT_TOO_LONG',
+      message: '附加要求请控制在 30 个字以内。',
+    };
+  }
+  const settings = await getSettings();
+  if (!settings.apiBaseUrl.trim() || !settings.apiKey.trim()) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'API_NOT_CONFIGURED',
+      message: '请先配置 API 后再润色。',
+    };
+  }
+  const permissionGranted = await ensureHostPermission(settings.apiBaseUrl);
+  if (!permissionGranted) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'HOST_PERMISSION_DENIED',
+      message: '未获得 API 主机访问权限',
+    };
+  }
+  const { passage, usage } = await requestTextPolish({
+    apiBaseUrl: settings.apiBaseUrl,
+    apiKey: settings.apiKey,
+    model: settings.model,
+    fieldName: message.fieldName,
+    sourceText,
+    customRequirement,
+  });
+  if (usage) {
+    await recordTokenUsage(usage);
+  }
+  return {
+    type: 'POLISH_TEXT_RESULT',
+    requestId: message.requestId,
+    headline: passage.headline,
+    body: passage.body,
+    usage,
+  };
+}
+
+/**
  * 当前标签没有内容脚本时，Chrome 会用这句英文拒绝连接。
  */
 function isMissingContentScript(error: unknown): boolean {
@@ -535,6 +598,8 @@ async function dispatchMessage(
       return forwardApplyWithFiles(message);
     case 'PARSE_RESUME':
       return handleParseResume(message);
+    case 'POLISH_TEXT':
+      return handlePolishText(message);
     case 'SCAN_PROGRESS':
     case 'SCAN_FIELDS_RESULT':
       return message;

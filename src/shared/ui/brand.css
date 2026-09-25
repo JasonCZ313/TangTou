@@ -493,6 +493,183 @@ input[required]:user-invalid {
   min-height: 96px;
 }
 
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.polish-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.btn-polish {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #1c1917;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.btn-polish:hover {
+  background: #fbbf24;
+}
+
+.polish-help-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #d97706;
+  background: #fff7ed;
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.polish-method,
+.polish-inline-status {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.polish-method {
+  color: var(--tt-muted);
+}
+
+.polish-inline-status {
+  color: var(--tt-danger);
+  font-weight: 600;
+}
+
+.polish-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.polish-dialog-backdrop[hidden] {
+  display: none;
+}
+
+.polish-dialog {
+  width: min(840px, 100%);
+  max-height: min(80vh, 720px);
+  overflow: auto;
+  padding: 16px 18px 18px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18);
+}
+
+.polish-dialog-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.polish-dialog-field {
+  margin: 4px 0 12px;
+  color: var(--tt-muted);
+  font-size: 12px;
+}
+
+.polish-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.polish-compare h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.polish-compare pre {
+  margin: 0;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--tt-border);
+  border-radius: 10px;
+  background: #f8fafc;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.polish-dialog-status,
+.polish-dialog-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.polish-dialog-error {
+  color: var(--tt-danger);
+}
+
+.polish-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.polish-custom-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 180px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.polish-custom-label input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--tt-border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.polish-custom-count {
+  font-size: 11px;
+  color: var(--tt-muted);
+}
+
+.polish-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+@media (max-width: 720px) {
+  .polish-compare {
+    grid-template-columns: 1fr;
+  }
+}
+
 .app-version {
   margin: 16px 0 0;
   text-align: center;

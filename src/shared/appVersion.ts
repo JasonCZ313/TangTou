@@ -2,9 +2,9 @@ import versionRecord from '../../version.json';
 
 /**
  * 界面版本号 = git 标签 + 本地修订。
- * 标签仍是 V1.1.1 时，每次改动把 version.json 的 localRevision 加 1，变成 V1.1.1.1、V1.1.1.2。
- * 若用户推送后的新标签是 V1.2.0，下一次改动把 baseTag 改成 V1.2.0，localRevision 改为 1，即 V1.2.0.1。
- * 与标签完全一致、尚未再改时，localRevision 为 0，显示 V1.1.1.0。
+ * 标签仍是 V1.5.2 时，每次改动把 version.json 的 localRevision 加 1，变成 V1.5.2.1、V1.5.2.2。
+ * 若用户推送后的新标签是 V1.6.0，下一次改动把 baseTag 改成 V1.6.0，localRevision 改为 1，即 V1.6.0.1。
+ * 与标签完全一致、尚未再改时，localRevision 为 0，显示 V1.5.2.0。
  */
 export const APP_VERSION_BASE_TAG = versionRecord.baseTag;
 
