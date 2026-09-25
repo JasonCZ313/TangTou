@@ -25,6 +25,7 @@ import {
 } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
+import { mountApiGuide } from '../../shared/ui/apiGuide';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
@@ -335,11 +336,23 @@ async function refreshUsageLine(
 }
 
 /**
+ * 预览里有要填的项，或有可以手写的跳过项。
+ */
+function sessionHasMappingRows(): boolean {
+  if (!currentSession) {
+    return false;
+  }
+  const skippedCount =
+    currentSession.plan.skippedNotes?.length ??
+    currentSession.plan.skippedFieldIds.length;
+  return currentSession.plan.items.length > 0 || skippedCount > 0;
+}
+
+/**
  * 有预览时「确认写入」为 primary；无预览时「扫描本页」升为 primary。
  */
 function syncActionButtonHierarchy(): void {
-  const hasPlanItems =
-    currentSession !== null && currentSession.plan.items.length > 0;
+  const hasPlanItems = sessionHasMappingRows();
   if (hasPlanItems) {
     confirmButton.className = 'btn btn-primary action-confirm';
     rescanButton.className = 'btn btn-secondary action-scan';
@@ -352,8 +365,7 @@ function syncActionButtonHierarchy(): void {
 function syncBusyUi(): void {
   const hasProfiles = cachedProfiles.length > 0;
   const selectedProfileId = profileSelect.value;
-  const hasPlanItems =
-    currentSession !== null && currentSession.plan.items.length > 0;
+  const hasPlanItems = sessionHasMappingRows();
   const atLimit = cachedProfiles.length >= MAX_PROFILES;
 
   confirmButton.disabled = isBusy || !hasPlanItems;
@@ -440,10 +452,44 @@ function formatConfidencePercent(confidence: number): string {
   return `${Math.round(clamped * 100)}%`;
 }
 
+function optionMatchCaution(
+  field: FieldDescriptor | undefined,
+  valueText: string,
+): string {
+  const options = field?.options ?? [];
+  const targetText = valueText.trim().toLowerCase();
+  if (options.length === 0 || !targetText) {
+    return '';
+  }
+  const exactMatch = options.some(
+    (optionText) => optionText.trim().toLowerCase() === targetText,
+  );
+  if (exactMatch) {
+    return '';
+  }
+  const looseMatches = options.filter((optionText) => {
+    const optionLabel = optionText.trim().toLowerCase();
+    return optionLabel.includes(targetText) || targetText.includes(optionLabel);
+  });
+  if (looseMatches.length === 1) {
+    return '写入时会选最接近的一项';
+  }
+  if (looseMatches.length === 0) {
+    return '下拉里没有完全相同的选项，请改成选项原文';
+  }
+  return '下拉里有多项接近，请改成选项原文';
+}
+
 function renderMappingTable(): void {
   mappingTableBody.replaceChildren();
+  const skippedNotes =
+    currentSession?.plan.skippedNotes ??
+    (currentSession?.plan.skippedFieldIds ?? []).map((fieldId) => ({
+      fieldId,
+      reason: '没有把握对上档案',
+    }));
 
-  if (!currentSession || currentSession.plan.items.length === 0) {
+  if (!currentSession || (currentSession.plan.items.length === 0 && skippedNotes.length === 0)) {
     const emptyRow = document.createElement('tr');
     emptyRow.className = 'empty-row';
     const emptyCell = document.createElement('td');
@@ -459,6 +505,9 @@ function renderMappingTable(): void {
 
   const { plan, fields } = currentSession;
   for (const mappingItem of plan.items) {
+    const matchedField = fields.find(
+      (fieldItem) => fieldItem.fieldId === mappingItem.fieldId,
+    );
     const tableRow = document.createElement('tr');
     tableRow.dataset.fieldId = mappingItem.fieldId;
 
@@ -481,6 +530,13 @@ function renderMappingTable(): void {
       `${resolveFieldLabel(mappingItem.fieldId, fields)} 填写值`,
     );
     valueCell.appendChild(valueInput);
+    const cautionText = optionMatchCaution(matchedField, mappingItem.value);
+    if (cautionText) {
+      const cautionLine = document.createElement('span');
+      cautionLine.className = 'mapping-caution';
+      cautionLine.textContent = cautionText;
+      valueCell.appendChild(cautionLine);
+    }
 
     const confidenceCell = document.createElement('td');
     confidenceCell.className = 'confidence-cell';
@@ -492,14 +548,37 @@ function renderMappingTable(): void {
     mappingTableBody.appendChild(tableRow);
   }
 
-  const skippedCount = plan.skippedFieldIds.length;
-  if (skippedCount > 0) {
-    skippedSummaryElement.hidden = false;
-    skippedSummaryElement.textContent = `另有 ${skippedCount} 个字段已跳过（未映射）`;
-  } else {
-    skippedSummaryElement.hidden = true;
-    skippedSummaryElement.textContent = '';
+  for (const skippedNote of skippedNotes) {
+    const tableRow = document.createElement('tr');
+    tableRow.className = 'is-skipped';
+    tableRow.dataset.fieldId = skippedNote.fieldId;
+
+    const labelCell = document.createElement('td');
+    labelCell.className = 'field-label-cell';
+    labelCell.textContent = resolveFieldLabel(skippedNote.fieldId, fields);
+
+    const valueCell = document.createElement('td');
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.className = 'skip-input';
+    valueInput.placeholder = skippedNote.reason;
+    valueInput.dataset.fieldId = skippedNote.fieldId;
+    valueInput.setAttribute(
+      'aria-label',
+      `${resolveFieldLabel(skippedNote.fieldId, fields)}，${skippedNote.reason}`,
+    );
+    valueCell.appendChild(valueInput);
+
+    const confidenceCell = document.createElement('td');
+    confidenceCell.className = 'confidence-cell';
+    confidenceCell.textContent = '未填';
+
+    tableRow.append(labelCell, valueCell, confidenceCell);
+    mappingTableBody.appendChild(tableRow);
   }
+
+  skippedSummaryElement.hidden = true;
+  skippedSummaryElement.textContent = '';
   syncBusyUi();
 }
 
@@ -546,9 +625,33 @@ function collectEditedFillPlan(): FillPlan {
       value: valueInput ? valueInput.value : mappingItem.value,
     };
   });
+  const skippedNotes =
+    currentSession.plan.skippedNotes ??
+    currentSession.plan.skippedFieldIds.map((fieldId) => ({
+      fieldId,
+      reason: '没有把握对上档案',
+    }));
+  const stillSkipped: FillPlan['skippedNotes'] = [];
+  for (const skippedNote of skippedNotes) {
+    const skipInput = mappingTableBody.querySelector(
+      `input.skip-input[data-field-id="${CSS.escape(skippedNote.fieldId)}"]`,
+    ) as HTMLInputElement | null;
+    const typedValue = skipInput?.value.trim() ?? '';
+    if (!typedValue) {
+      stillSkipped.push(skippedNote);
+      continue;
+    }
+    editedItems.push({
+      fieldId: skippedNote.fieldId,
+      value: typedValue,
+      confidence: 1,
+      reason: '手动填写',
+    });
+  }
   return {
-    items: editedItems,
-    skippedFieldIds: [...currentSession.plan.skippedFieldIds],
+    items: editedItems.filter((mappingItem) => mappingItem.value.trim().length > 0 || mappingItem.attachmentId),
+    skippedFieldIds: stillSkipped.map((skippedNote) => skippedNote.fieldId),
+    skippedNotes: stillSkipped,
   };
 }
 
@@ -848,11 +951,15 @@ function openFullOptionsEditor(): void {
 }
 
 async function runConfirmWrite(): Promise<void> {
-  if (!currentSession || currentSession.plan.items.length === 0) {
+  if (!currentSession) {
     showError('没有可写入的映射项');
     return;
   }
   const editedPlan = collectEditedFillPlan();
+  if (editedPlan.items.length === 0) {
+    showError('没有可写入的映射项');
+    return;
+  }
   const applyResponse = await requestBackground({
     type: 'APPLY_FILL_PLAN',
     requestId: createRequestId(),
@@ -910,8 +1017,9 @@ async function runRescanFlow(profileId: string): Promise<void> {
   );
   showScanProgress(
     100,
-    scanResult.notice ??
-      `对照完成，${planResponse.plan.items.length} 项可以填。`,
+    scanResult.notice
+      ? `对照完成，${planResponse.plan.items.length} 项可以填。${scanResult.notice}`
+      : `对照完成，${planResponse.plan.items.length} 项可以填。`,
   );
   const pendingFillSession: PendingFillSession = {
     plan: planResponse.plan,
@@ -1067,6 +1175,7 @@ function bindEvents(): void {
 
 async function bootstrapSidePanel(): Promise<void> {
   mountFeedbackPanel();
+  mountApiGuide();
   mountAppVersionLabel();
   bindEvents();
   syncBusyUi();

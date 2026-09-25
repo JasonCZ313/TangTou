@@ -16,6 +16,7 @@ import { mergeProfileFillBlanks } from '../../shared/storage/mergeProfileBlanks'
 import {
   clearResumeRecognition,
   readResumeRecognition,
+  RESUME_RECOGNITION_REVISION,
   writeResumeRecognition,
   type SavedResumeRecognition,
 } from '../../shared/storage/resumeRecognitionStore';
@@ -216,15 +217,21 @@ export function mountResumeBlock(options: {
       savedRecognition.attachmentId === currentResume.id;
     applyButton.disabled = !recognitionMatchesFile;
     if (!currentResume) {
+      recognitionStatus.classList.remove('is-stale');
       recognitionStatus.textContent = '尚未上传简历。';
       return;
     }
     if (!recognitionMatchesFile) {
+      recognitionStatus.classList.remove('is-stale');
       recognitionStatus.textContent = `已保存文件「${currentResume.fileName}」。点「识别并保存」只抽出内容，不会改档案。`;
       return;
     }
-    recognitionStatus.textContent =
-      '识别结果已保存在本机。点「写入空白项」才会填进档案里仍为空的字段，已填内容不会被覆盖。';
+    const recognitionIsStale =
+      (savedRecognition?.recognitionRevision ?? 0) < RESUME_RECOGNITION_REVISION;
+    recognitionStatus.classList.toggle('is-stale', recognitionIsStale);
+    recognitionStatus.textContent = recognitionIsStale
+      ? '识别结果已保存在本机。点「写入空白项」才会填进空着的字段。识别规则已更新，请再点一次识别并保存。'
+      : '识别结果已保存在本机。点「写入空白项」才会填进档案里仍为空的字段，已填内容不会被覆盖。';
   }
 
   /**
@@ -329,6 +336,7 @@ export function mountResumeBlock(options: {
       fileName: resumeRow.fileName,
       savedAt: new Date().toISOString(),
       profilePatch,
+      recognitionRevision: RESUME_RECOGNITION_REVISION,
     };
     await writeResumeRecognition(profileId, savedRecognition);
     setProgress(100, '识别结果已保存');

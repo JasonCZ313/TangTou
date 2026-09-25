@@ -1,7 +1,12 @@
+import { AWARD_PRIZE_OPTIONS, labelOfCatalog } from '../catalogs/enums';
 import type { FieldDescriptor, FillPlan } from '../types/fill';
 import type { ProfileData } from '../types/profile';
 import type { AttachmentKind, AttachmentMeta } from '../types/attachment';
 import { attachmentKindLabel } from '../types/attachment';
+import {
+  notesForFieldIds,
+  SKIP_REASON_NO_FILE,
+} from '../fill/skipReasons';
 
 /** 启发式匹配结果：档案取值路径对应的填写值与原因文案 */
 interface HeuristicMatch {
@@ -146,7 +151,12 @@ function matchFieldToProfile(
 
   if (/获奖|奖项|所获荣誉|荣誉奖/.test(rawText) && !/附件|上传|证明/.test(rawText)) {
     const awardLines = profile.awards
-      .map((item) => [item.name, item.level].filter(Boolean).join(' ').trim())
+      .map((item) =>
+        [item.name, labelOfCatalog(AWARD_PRIZE_OPTIONS, item.prizeRank ?? ''), item.level]
+          .filter(Boolean)
+          .join(' ')
+          .trim(),
+      )
       .filter((line) => line.length > 0);
     if (awardLines.length === 0) {
       return null;
@@ -270,6 +280,7 @@ export function applyLocalHeuristics(
     partialPlan: {
       items: matchedItems,
       skippedFieldIds,
+      skippedNotes: notesForFieldIds(skippedFieldIds, SKIP_REASON_NO_FILE),
     },
     remainingFields,
   };

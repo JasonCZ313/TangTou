@@ -541,12 +541,13 @@ async function collectChatCompletionText(
 }
 
 const RESUME_PARSE_SYSTEM = `你是简历结构化助手。根据用户给出的简历纯文本，输出一个 JSON 对象，结构尽量接近：
-{"basic":{"fullName":"","phone":"","email":"","currentCity":"","nationality":"","nativePlace":"","gender":"","birthday":""},"jobIntent":{"targetRole":""},"education":[{"school":"","degreeLevel":"","major":"","startDate":"","endDate":"","description":""}],"experience":[{"company":"","title":"","startDate":"","endDate":"","description":"","responsibilities":"","workContent":"","achievements":""}],"projects":[{"name":"","description":"","content":"","value":""}],"skills":[{"name":""}],"certificates":[{"name":"","level":""}],"awards":[{"name":"","level":""}],"essays":{"selfEvaluation":""}}
+{"basic":{"fullName":"","phone":"","email":"","currentCity":"","nationality":"","nativePlace":"","gender":"","birthday":""},"jobIntent":{"targetRole":""},"education":[{"school":"","degreeLevel":"","major":"","startDate":"","endDate":"","description":"","skillsInvolved":""}],"experience":[{"company":"","title":"","startDate":"","endDate":"","description":"","responsibilities":"","workContent":"","achievements":"","skillsInvolved":""}],"projects":[{"name":"","role":"","duty":"","description":"","content":"","value":"","techStack":""}],"campusActivities":[{"organization":"","role":"","description":"","skillsInvolved":""}],"skills":[{"name":""}],"certificates":[{"name":"","level":"","skillsInvolved":""}],"awards":[{"name":"","level":"","prizeRank":"","skillsInvolved":""}],"publications":[{"kind":"","title":"","skillsInvolved":""}],"trainings":[{"organization":"","course":"","skillsInvolved":""}],"essays":{"selfEvaluation":""}}
 规则：只填写简历里明确出现的信息；没有的字段省略或留空字符串；日期尽量 YYYY-MM-DD；不要编造；不要 markdown。
 标题用词不同也要归类，不要因为不是完全相同的四个字就丢掉：
 - 「证书」「资格证书」「专业证书」「技能证书」写入 certificates，每个名称一条。
-- 「获奖」「获奖情况」「奖项」「荣誉」写入 awards，名称和等第分开，等第放 level。
+- 「获奖」「获奖情况」「奖项」「荣誉」写入 awards。名称放 name，一等奖、二等奖、金奖等放 prizeRank，校级、省级、国家级放 level，不要混在一起。
 - 「我的价值」「个人优势」「自我评价」「个人介绍」整段写入 essays.selfEvaluation，保留原文换行。
+- 某一段教育、实习、校园、证书、奖项、论文专利著作或培训里写明用到的技能，写入该条的 skillsInvolved，多项用顿号分隔。项目用到的技术写入该条 techStack，不要再写 skillsInvolved。项目职责写入 duty，最多12个字，不要把项目内容整段放进去。整份简历的技能清单仍写入 skills，不要把总清单复制进每一条。
 姓名、电话、邮箱、日期、学校、公司、职位各占一行，字符串里不要加换行。
 description、responsibilities、workContent、achievements、content、value 里，简历中每一条要点单独一行，用换行符 \\n 分隔。同一条在栏宽处折行的后半句要接回这一条，不要拆开。禁止把多条要点并成一整段。`;
 

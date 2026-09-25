@@ -399,6 +399,11 @@ body {
   font-size: 13px;
 }
 
+.hint.is-stale {
+  color: var(--tt-danger);
+  font-weight: 700;
+}
+
 .tip-banner {
   padding: 10px 12px;
   border-radius: 10px;

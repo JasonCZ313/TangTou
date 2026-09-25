@@ -158,6 +158,8 @@ export interface EducationItem {
   campusRole?: string;
   thesis?: string;
   description?: string;
+  /** 这一段教育里用到或具备的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
   /** 学位为双学位时填写 */
   secondDegree?: SecondDegreeInfo;
 }
@@ -203,12 +205,16 @@ export interface ExperienceItem extends LockableListItemFields {
   workContent?: string;
   /** 业绩/成果（量化优先） */
   achievements?: string;
+  /** 这一段工作或实习里用到或具备的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
 }
 
 /** 单条项目经历 */
 export interface ProjectItem extends LockableListItemFields {
   name: string;
   role?: string;
+  /** 本项目职责，最多 12 个字 */
+  duty?: string;
   startDate?: string;
   endDate?: string;
   isCurrent?: boolean;
@@ -230,6 +236,8 @@ export interface CampusActivityItem {
   startDate?: string;
   endDate?: string;
   description?: string;
+  /** 这一段校园经历里用到或具备的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
 }
 
 /** 单条技能（结构化，禁止逗号拼接） */
@@ -259,15 +267,22 @@ export interface CertificateItem extends LockableListItemFields {
   number?: string;
   major?: string;
   description?: string;
+  /** 这本证书对应或涉及的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
 }
 
 /** 奖项 */
 export interface AwardItem extends LockableListItemFields {
   name: string;
+  /** 级别：校级、省级、国家级 */
   level?: string;
+  /** 奖次：一等奖、二等奖、金奖等 */
+  prizeRank?: string;
   date?: string;
   issuer?: string;
   description?: string;
+  /** 这一项奖项对应或涉及的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
 }
 
 /** 论文/专利/著作 */
@@ -278,6 +293,8 @@ export interface PublicationItem {
   date?: string;
   authorOrder?: string;
   link?: string;
+  /** 这项成果用到或涉及的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
 }
 
 /** 培训 */
@@ -287,6 +304,8 @@ export interface TrainingItem {
   startDate?: string;
   endDate?: string;
   certificate?: string;
+  /** 这次培训学到或涉及的技能，多项用顿号分隔 */
+  skillsInvolved?: string;
 }
 
 /** 家庭成员 */

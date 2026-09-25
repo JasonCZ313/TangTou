@@ -47,6 +47,7 @@ import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
+import { mountApiGuide } from '../../shared/ui/apiGuide';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import { mountEssayPolishControls } from './polishControl';
 import { jumpToEditorTarget, mountEditorSearch } from './editorSearch';
@@ -503,6 +504,7 @@ function renderTokenUsageSummary(stats: TokenUsageStats): void {
 
 async function bootstrapOptionsPage(): Promise<void> {
   mountFeedbackPanel();
+  mountApiGuide();
   mountAppVersionLabel();
   mountEssayPolishControls(document);
   try {
@@ -1136,7 +1138,6 @@ const REQUIRED_FIELD_SELECTOR: Record<string, string> = {
   证件号码: '[data-path="basic.idNumber"]',
   政治面貌: '[data-path="basic.politicalStatus"]',
   婚姻状况: '[data-path="basic.maritalStatus"]',
-  目标职位: '[data-path="jobIntent.targetRole"]',
 };
 
 /**

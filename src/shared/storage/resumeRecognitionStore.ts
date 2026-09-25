@@ -10,7 +10,12 @@ export interface SavedResumeRecognition {
   fileName: string;
   savedAt: string;
   profilePatch: ProfileData;
+  /** 抽出证书、奖项和自我评价的规则版本。旧结果没有这个字段 */
+  recognitionRevision?: number;
 }
+
+/** 当前识别规则版本。旧缓存低于它时，档案页提示再识别一次 */
+export const RESUME_RECOGNITION_REVISION = 2;
 
 /**
  * 按档案隔离的存储键。
@@ -45,6 +50,10 @@ export async function readResumeRecognition(
     fileName: record.fileName,
     savedAt: typeof record.savedAt === 'string' ? record.savedAt : '',
     profilePatch: record.profilePatch,
+    recognitionRevision:
+      typeof record.recognitionRevision === 'number'
+        ? record.recognitionRevision
+        : undefined,
   };
 }
 

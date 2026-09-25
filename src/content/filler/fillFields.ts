@@ -57,34 +57,197 @@ function readElementValue(element: Element): string {
 }
 
 /**
- * 按文案或 value 匹配 select 选项并选中；匹配失败返回 false。
+ * 从年月日片段拼出控件要的日期字符串。对不上日期的原文原样返回。
  */
-function fillSelectElement(
-  selectElement: HTMLSelectElement,
-  nextValue: string,
-): boolean {
-  const normalizedTarget = nextValue.trim().toLowerCase();
-  const matchedOption = Array.from(selectElement.options).find((optionElement) => {
-    const optionValue = optionElement.value.trim().toLowerCase();
-    const optionText = (optionElement.textContent ?? '').trim().toLowerCase();
-    return optionValue === normalizedTarget || optionText === normalizedTarget;
-  });
-  if (!matchedOption) {
-    return false;
+function formatDateForControl(element: HTMLInputElement, rawValue: string): string {
+  const matched = rawValue.trim().match(/^(\d{4})\D+(\d{1,2})(?:\D+(\d{1,2}))?/);
+  if (!matched) {
+    return rawValue;
   }
-  selectElement.value = matchedOption.value;
-  selectElement.dispatchEvent(new Event('input', { bubbles: true }));
-  selectElement.dispatchEvent(new Event('change', { bubbles: true }));
-  return true;
+  const yearText = matched[1] ?? '';
+  const monthText = (matched[2] ?? '').padStart(2, '0');
+  const dayText = matched[3] ? matched[3].padStart(2, '0') : '';
+  const monthNumber = Number(monthText);
+  const dayNumber = dayText ? Number(dayText) : 0;
+  if (monthNumber < 1 || monthNumber > 12 || dayNumber > 31) {
+    return rawValue;
+  }
+  const hintText = [
+    element.placeholder,
+    element.getAttribute('aria-label') ?? '',
+    element.closest('label')?.textContent ?? '',
+  ].join(' ');
+  const looksLikeDate =
+    element.type === 'date' ||
+    element.type === 'month' ||
+    element.type === 'datetime-local' ||
+    /日期|年月|生日|出生|入职|毕业|时间/.test(hintText);
+  if (!looksLikeDate) {
+    return rawValue;
+  }
+  if (element.type === 'month') {
+    return `${yearText}-${monthText}`;
+  }
+  const dayOrFirst = dayText || '01';
+  if (element.type === 'datetime-local') {
+    return `${yearText}-${monthText}-${dayOrFirst}T00:00`;
+  }
+  if (element.type === 'date') {
+    return `${yearText}-${monthText}-${dayOrFirst}`;
+  }
+  if (hintText.includes('年') && hintText.includes('月')) {
+    if (dayText && hintText.includes('日')) {
+      return `${yearText}年${monthText}月${dayText}日`;
+    }
+    return `${yearText}年${monthText}月`;
+  }
+  if (hintText.includes('/')) {
+    return dayText ? `${yearText}/${monthText}/${dayText}` : `${yearText}/${monthText}`;
+  }
+  if (hintText.includes('.')) {
+    return dayText ? `${yearText}.${monthText}.${dayText}` : `${yearText}.${monthText}`;
+  }
+  return dayText ? `${yearText}-${monthText}-${dayText}` : `${yearText}-${monthText}`;
 }
 
 /**
- * 写入 contenteditable：设置 textContent 并派发 input/change，兼容部分富文本监听。
+ * 在原生下拉里选一项。完全相同优先；只有一个「多几个字」的选项时用那一项。
  */
-function fillContentEditable(element: HTMLElement, nextValue: string): void {
-  element.textContent = nextValue;
-  element.dispatchEvent(new Event('input', { bubbles: true }));
-  element.dispatchEvent(new Event('change', { bubbles: true }));
+function chooseSelectOption(
+  selectElement: HTMLSelectElement,
+  nextValue: string,
+): HTMLOptionElement | null {
+  const targetText = nextValue.trim().toLowerCase();
+  if (!targetText) {
+    return null;
+  }
+  const options = Array.from(selectElement.options);
+  const exactOption = options.find((optionElement) => {
+    const optionValue = optionElement.value.trim().toLowerCase();
+    const optionLabel = (optionElement.textContent ?? '').trim().toLowerCase();
+    return optionValue === targetText || optionLabel === targetText;
+  });
+  if (exactOption) {
+    return exactOption;
+  }
+  const looseOptions = options.filter((optionElement) => {
+    const optionLabel = (optionElement.textContent ?? '').trim().toLowerCase();
+    if (!optionLabel) {
+      return false;
+    }
+    return optionLabel.includes(targetText) || targetText.includes(optionLabel);
+  });
+  return looseOptions.length === 1 ? looseOptions[0] ?? null : null;
+}
+
+/**
+ * 这个文本框是不是仿下拉：点开后才出现选项。
+ */
+function looksLikeCustomSelect(inputElement: HTMLInputElement): boolean {
+  const popupKind = inputElement.getAttribute('aria-haspopup');
+  if (inputElement.getAttribute('role') === 'combobox' || popupKind === 'listbox') {
+    return true;
+  }
+  return inputElement.readOnly && /选择|下拉/.test(
+    `${inputElement.placeholder} ${inputElement.getAttribute('aria-label') ?? ''}`,
+  );
+}
+
+/**
+ * 找到这个输入框对应的选项列表。没打开时返回 null。
+ */
+function findOptionList(inputElement: HTMLInputElement): HTMLElement | null {
+  const listId =
+    inputElement.getAttribute('aria-controls') ||
+    inputElement.getAttribute('aria-owns') ||
+    '';
+  if (listId) {
+    const listed = inputElement.ownerDocument.getElementById(listId);
+    if (listed instanceof HTMLElement) {
+      return listed;
+    }
+  }
+  const nearbyList = inputElement.parentElement?.querySelector('[role="listbox"]');
+  return nearbyList instanceof HTMLElement ? nearbyList : null;
+}
+
+/**
+ * 选项列表里只有一项对得上时，返回那一项。多项接近则不猜。
+ */
+function uniqueOptionElement(listElement: HTMLElement, nextValue: string): HTMLElement | null {
+  const targetText = nextValue.trim().toLowerCase();
+  const optionElements = Array.from(
+    listElement.querySelectorAll('[role="option"], li'),
+  ).filter((node): node is HTMLElement => node instanceof HTMLElement);
+  const exactElements = optionElements.filter((optionElement) => {
+    return (optionElement.textContent ?? '').trim().toLowerCase() === targetText;
+  });
+  if (exactElements.length === 1) {
+    return exactElements[0] ?? null;
+  }
+  const looseElements = optionElements.filter((optionElement) => {
+    const optionLabel = (optionElement.textContent ?? '').trim().toLowerCase();
+    return optionLabel.length > 0 && (optionLabel.includes(targetText) || targetText.includes(optionLabel));
+  });
+  return looseElements.length === 1 ? looseElements[0] ?? null : null;
+}
+
+/**
+ * 仿下拉：列表没开就点一下输入框，再点唯一对上的选项。不点确定或保存。
+ */
+async function chooseCustomOption(
+  inputElement: HTMLInputElement,
+  nextValue: string,
+): Promise<void> {
+  if (!looksLikeCustomSelect(inputElement)) {
+    return;
+  }
+  let listElement = findOptionList(inputElement);
+  if (!listElement) {
+    inputElement.click();
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, 180);
+    });
+    listElement = findOptionList(inputElement);
+  }
+  if (!listElement) {
+    return;
+  }
+  const optionElement = uniqueOptionElement(listElement, nextValue);
+  optionElement?.click();
+}
+
+/**
+ * 写入 contenteditable。先用输入事件交给编辑器，接不住再写文本。
+ */
+function fillContentEditable(element: HTMLElement, nextValue: string): boolean {
+  element.focus();
+  const selection = element.ownerDocument.getSelection();
+  if (selection) {
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  const beforeInput = new InputEvent('beforeinput', {
+    bubbles: true,
+    cancelable: true,
+    inputType: 'insertText',
+    data: nextValue,
+  });
+  element.dispatchEvent(beforeInput);
+  if ((element.textContent ?? '').trim() !== nextValue.trim()) {
+    element.textContent = nextValue;
+  }
+  element.dispatchEvent(
+    new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertText',
+      data: nextValue,
+    }),
+  );
+  const writtenText = (element.textContent ?? '').trim();
+  return nextValue.trim().length === 0 || writtenText.length > 0;
 }
 
 /**
@@ -160,7 +323,14 @@ function fillCheckableInput(
  */
 function writeValueToElement(element: Element, nextValue: string): boolean {
   if (element instanceof HTMLSelectElement) {
-    return fillSelectElement(element, nextValue);
+    const matchedOption = chooseSelectOption(element, nextValue);
+    if (!matchedOption) {
+      return false;
+    }
+    element.value = matchedOption.value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
   }
 
   if (element instanceof HTMLTextAreaElement) {
@@ -175,13 +345,13 @@ function writeValueToElement(element: Element, nextValue: string): boolean {
     if (element.type === 'checkbox' || element.type === 'radio') {
       return fillCheckableInput(element, nextValue);
     }
-    setNativeValue(element, nextValue);
+    const dateAdjusted = formatDateForControl(element, nextValue);
+    setNativeValue(element, dateAdjusted);
     return true;
   }
 
   if (element instanceof HTMLElement && element.isContentEditable) {
-    fillContentEditable(element, nextValue);
-    return true;
+    return fillContentEditable(element, nextValue);
   }
 
   return false;
@@ -267,6 +437,9 @@ export async function applyFillPlan(
     if (!writeSucceeded) {
       skipped += 1;
       continue;
+    }
+    if (targetElement instanceof HTMLInputElement) {
+      await chooseCustomOption(targetElement, mappingItem.value);
     }
 
     lastUndoSnapshots.push({

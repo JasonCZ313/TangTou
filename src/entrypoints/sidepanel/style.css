@@ -138,6 +138,14 @@ body {
   color: var(--tt-muted);
 }
 
+.mapping-caution {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #b45309;
+}
+
 /* 纵向：确认 / 扫描 / 撤销 */
 .sidepanel-actions {
   display: flex;
@@ -241,6 +249,11 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+/* 教程按钮单独占一行，避免挤进「保存 / 测试」两列里只露出一半 */
+#openApiGuideButton {
+  grid-column: 1 / -1;
 }
 
 .create-profile-form {

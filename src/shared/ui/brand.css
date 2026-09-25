@@ -729,3 +729,106 @@ input[required]:user-invalid {
   color: #2563eb;
   font-weight: 700;
 }
+
+/* API 获取教程：设置页和侧栏共用的说明弹层 */
+.api-guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 12px;
+  background: rgba(19, 78, 74, 0.45);
+  overflow: auto;
+}
+
+.api-guide {
+  width: min(760px, 100%);
+  margin: auto;
+  padding: 18px 18px 22px;
+  border: 1px solid var(--tt-border-strong);
+  border-radius: 16px;
+  background: var(--tt-surface);
+  box-shadow: 0 18px 48px rgba(15, 118, 110, 0.18);
+}
+
+.api-guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.api-guide-head h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--tt-primary);
+}
+
+.api-guide-lead {
+  margin: 10px 0 0;
+  color: var(--tt-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.api-guide-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.api-guide-tabs button {
+  border: 1px solid var(--tt-border-strong);
+  border-radius: 999px;
+  background: var(--tt-surface-soft);
+  color: var(--tt-text);
+  padding: 6px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.api-guide-tabs button[aria-selected='true'] {
+  background: var(--tt-primary);
+  border-color: var(--tt-primary);
+  color: #fff;
+}
+
+.api-guide-panel {
+  margin-top: 14px;
+}
+
+.api-guide-steps {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.api-guide-steps li {
+  margin: 0 0 16px;
+  line-height: 1.65;
+}
+
+.api-guide-link-hint,
+.api-guide-steps a {
+  color: var(--tt-primary);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.api-guide-steps code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--tt-primary-soft);
+  font-size: 0.92em;
+}
+
+.api-guide-shot {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--tt-border);
+  border-radius: 10px;
+}

@@ -232,8 +232,9 @@ async function runFillFlow(profileId: string): Promise<void> {
   );
   showScanProgress(
     100,
-    scanResult.notice ??
-      `对照完成，${planResponse.plan.items.length} 项可以填。`,
+    scanResult.notice
+      ? `对照完成，${planResponse.plan.items.length} 项可以填。${scanResult.notice}`
+      : `对照完成，${planResponse.plan.items.length} 项可以填。`,
   );
   const fillPlan = planResponse.plan;
 

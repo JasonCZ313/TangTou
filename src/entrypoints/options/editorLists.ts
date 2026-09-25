@@ -4,6 +4,7 @@
 import {
   ACADEMIC_DEGREE_OPTIONS,
   AWARD_LEVEL_OPTIONS,
+  AWARD_PRIZE_OPTIONS,
   COMMON_CERTIFICATE_OPTIONS,
   COMPANY_TYPE_OPTIONS,
   DEGREE_LEVEL_OPTIONS,
@@ -12,6 +13,7 @@ import {
   INDUSTRY_OPTIONS,
   LANGUAGE_CERT_OPTIONS,
   LANGUAGE_PROFICIENCY_OPTIONS,
+  labelOfCatalog,
   POLITICAL_STATUS_OPTIONS,
   PUBLICATION_KIND_OPTIONS,
   SKILL_LEVEL_OPTIONS,
@@ -53,6 +55,24 @@ import { createBoundRegionField } from './regionCascader';
 export interface ListAttachmentContext {
   profileId: string;
   notify: (message: string, kind: 'info' | 'success' | 'error') => void;
+}
+
+/**
+ * 这一条经历、证书或成果里用到或具备的技能。
+ * 和档案顶部的总技能列表分开：这里只写和本条有关的内容。
+ */
+function createSkillsInvolvedInput(
+  currentValue: string | undefined,
+  onChange: (value: string) => void,
+): HTMLLabelElement {
+  return createBoundInput(
+    '涉及技能',
+    currentValue ?? '',
+    onChange,
+    'text',
+    false,
+    '多项用顿号分隔，如 Python、Excel',
+  );
 }
 
 /** 创建网格容器 */
@@ -173,6 +193,7 @@ export function createEmptyEducationItem(): EducationItem {
     isFirstDegree: false,
     academicDegree: '',
     description: '',
+    skillsInvolved: '',
     secondDegree: {
       school: '',
       major: '',
@@ -201,6 +222,7 @@ export function createEmptyExperienceItem(): ExperienceItem {
     responsibilities: '',
     workContent: '',
     achievements: '',
+    skillsInvolved: '',
     industry: '',
   };
 }
@@ -213,6 +235,7 @@ export function createEmptyProjectItem(): ProjectItem {
     cloudLink: '',
     name: '',
     role: '',
+    duty: '',
     startDate: '',
     endDate: '',
     description: '',
@@ -237,6 +260,7 @@ export function createEmptyCertificateItem(): CertificateItem {
     number: '',
     major: '',
     description: '',
+    skillsInvolved: '',
   };
 }
 
@@ -249,9 +273,11 @@ export function createEmptyAwardItem(): AwardItem {
     cloudLink: '',
     name: '',
     level: '',
+    prizeRank: '',
     date: '',
     issuer: '',
     description: '',
+    skillsInvolved: '',
   };
 }
 
@@ -412,6 +438,9 @@ function renderEducationRows(
       createBoundTextarea('说明', item.description ?? '', (value) => {
         item.description = value;
       }),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
+      }),
     );
     card.appendChild(grid);
 
@@ -517,6 +546,7 @@ function renderExperienceRows(
           { label: '职责', value: item.responsibilities ?? '' },
           { label: '内容', value: item.workContent ?? '' },
           { label: '业绩', value: item.achievements ?? '' },
+          { label: '涉及技能', value: item.skillsInvolved ?? '' },
           { label: '总述', value: item.description },
           { label: '附件备注', value: item.attachmentNote ?? '' },
           { label: '网盘', value: item.cloudLink ?? '' },
@@ -597,6 +627,9 @@ function renderExperienceRows(
       createBoundTextarea('总述', item.description, (value) => {
         item.description = value;
       }),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
+      }),
     );
     appendItemNoteFields(grid, item);
     card.appendChild(grid);
@@ -643,6 +676,7 @@ function renderProjectRows(
         createReadonlySummary([
           { label: '名称', value: item.name },
           { label: '角色', value: item.role ?? '' },
+          { label: '职责', value: item.duty ?? '' },
           { label: '起止', value: `${item.startDate || '—'} ~ ${item.isCurrent ? '进行中' : item.endDate || '—'}` },
           { label: '技术栈', value: item.techStack ?? '' },
           { label: '内容', value: item.content ?? '' },
@@ -666,6 +700,17 @@ function renderProjectRows(
       createBoundInput('角色', item.role ?? '', (value) => {
         item.role = value;
       }),
+      createBoundInput(
+        '职责',
+        item.duty ?? '',
+        (value) => {
+          item.duty = value;
+        },
+        'text',
+        false,
+        '12个字以内',
+        12,
+      ),
       createBoundInput('开始日期', item.startDate ?? '', (value) => {
         item.startDate = value;
       }, 'date'),
@@ -735,6 +780,9 @@ function renderCampusRows(
       }, 'date'),
       createBoundTextarea('说明', item.description ?? '', (value) => {
         item.description = value;
+      }),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
       }),
     );
     card.appendChild(grid);
@@ -843,6 +891,7 @@ function renderCertificateRows(
           { label: '有效期至', value: item.expireDate ?? '' },
           { label: '编号', value: item.number ?? '' },
           { label: '说明', value: item.description ?? '' },
+          { label: '涉及技能', value: item.skillsInvolved ?? '' },
           { label: '附件备注', value: item.attachmentNote ?? '' },
           { label: '网盘', value: item.cloudLink ?? '' },
         ]),
@@ -883,6 +932,9 @@ function renderCertificateRows(
       }),
       createBoundTextarea('说明', item.description ?? '', (value) => {
         item.description = value;
+      }),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
       }),
     );
     appendItemNoteFields(grid, item);
@@ -930,9 +982,11 @@ function renderAwardRows(
         createReadonlySummary([
           { label: '名称', value: item.name },
           { label: '级别', value: item.level ?? '' },
+          { label: '奖次', value: labelOfCatalog(AWARD_PRIZE_OPTIONS, item.prizeRank ?? '') },
           { label: '日期', value: item.date ?? '' },
           { label: '颁发单位', value: item.issuer ?? '' },
           { label: '说明', value: item.description ?? '' },
+          { label: '涉及技能', value: item.skillsInvolved ?? '' },
           { label: '附件备注', value: item.attachmentNote ?? '' },
           { label: '网盘', value: item.cloudLink ?? '' },
         ]),
@@ -950,6 +1004,9 @@ function renderAwardRows(
       createBoundSelect('级别', item.level ?? '', AWARD_LEVEL_OPTIONS, (value) => {
         item.level = value;
       }),
+      createBoundSelect('奖次', item.prizeRank ?? '', AWARD_PRIZE_OPTIONS, (value) => {
+        item.prizeRank = value;
+      }),
       createBoundInput('获奖日期', item.date ?? '', (value) => {
         item.date = value;
       }, 'date'),
@@ -958,6 +1015,9 @@ function renderAwardRows(
       }),
       createBoundTextarea('说明', item.description ?? '', (value) => {
         item.description = value;
+      }),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
       }),
     );
     appendItemNoteFields(grid, item);
@@ -1005,6 +1065,9 @@ function renderPublicationRows(
       createBoundInput('链接', item.link ?? '', (value) => {
         item.link = value;
       }, 'url'),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
+      }),
     );
     card.appendChild(grid);
     host.appendChild(card);
@@ -1038,6 +1101,9 @@ function renderTrainingRows(
       }, 'date'),
       createBoundInput('结业证书', item.certificate ?? '', (value) => {
         item.certificate = value;
+      }),
+      createSkillsInvolvedInput(item.skillsInvolved, (value) => {
+        item.skillsInvolved = value;
       }),
     );
     card.appendChild(grid);
@@ -1142,6 +1208,7 @@ export function appendListItem(
         startDate: '',
         endDate: '',
         description: '',
+        skillsInvolved: '',
       });
       break;
     case 'skills':
@@ -1170,6 +1237,7 @@ export function appendListItem(
         date: '',
         authorOrder: '',
         link: '',
+        skillsInvolved: '',
       });
       break;
     case 'training':
@@ -1179,6 +1247,7 @@ export function appendListItem(
         startDate: '',
         endDate: '',
         certificate: '',
+        skillsInvolved: '',
       });
       break;
     case 'family':

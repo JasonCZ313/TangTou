@@ -27,8 +27,16 @@ export interface FillMappingItem {
   attachmentId?: string;
 }
 
+/** 这一轮明确不写的字段，以及给用户看的原因 */
+export interface SkippedFieldNote {
+  fieldId: string;
+  reason: string;
+}
+
 /** 一轮填写计划：待写入项与明确跳过的字段 */
 export interface FillPlan {
   items: FillMappingItem[];
   skippedFieldIds: string[];
+  /** 和跳过的字段一一对应。旧计划可能没有，界面会用默认原因 */
+  skippedNotes?: SkippedFieldNote[];
 }

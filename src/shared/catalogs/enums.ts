@@ -235,6 +235,21 @@ export const AWARD_LEVEL_OPTIONS: CatalogOption[] = [
   { code: 'other', labelZh: '其他' },
 ];
 
+/** 奖次：一等奖、二等奖这类名次，和校级/省级的「级别」分开 */
+export const AWARD_PRIZE_OPTIONS: CatalogOption[] = [
+  { code: 'special', labelZh: '特等奖' },
+  { code: 'first', labelZh: '一等奖' },
+  { code: 'second', labelZh: '二等奖' },
+  { code: 'third', labelZh: '三等奖' },
+  { code: 'gold', labelZh: '金奖' },
+  { code: 'silver', labelZh: '银奖' },
+  { code: 'bronze', labelZh: '铜奖' },
+  { code: 'excellence', labelZh: '优秀奖' },
+  { code: 'finalist', labelZh: '入围奖' },
+  { code: 'champion', labelZh: '冠军' },
+  { code: 'other', labelZh: '其他' },
+];
+
 export const FAMILY_RELATION_OPTIONS: CatalogOption[] = [
   { code: 'father', labelZh: '父亲' },
   { code: 'mother', labelZh: '母亲' },

@@ -218,6 +218,7 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
       startDate: item.startDate ?? '',
       endDate: item.endDate ?? '',
       city: syncRegionTextField(item.city, item.cityRegion),
+      skillsInvolved: item.skillsInvolved ?? '',
       secondDegree,
     };
   });
@@ -235,6 +236,7 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
       startDate: item.startDate ?? '',
       endDate: item.endDate ?? '',
       description: item.description ?? '',
+      skillsInvolved: item.skillsInvolved ?? '',
       responsibilities: item.responsibilities ?? '',
       workContent: item.workContent ?? '',
       achievements: item.achievements ?? '',
@@ -257,6 +259,7 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
         attachmentNote: item.attachmentNote ?? '',
         cloudLink: item.cloudLink ?? '',
         name: item.name ?? '',
+        duty: Array.from(item.duty ?? '').slice(0, 12).join(''),
         description: item.description ?? '',
         content,
         value: item.value ?? '',
@@ -264,9 +267,6 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     },
   );
 
-  merged.campusActivities = Array.isArray(merged.campusActivities)
-    ? merged.campusActivities
-    : [];
   merged.skills = normalizeSkills(
     sourceRecord.skills !== undefined ? sourceRecord.skills : merged.skills,
   );
@@ -279,6 +279,7 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
       attachmentNote: item.attachmentNote ?? '',
       cloudLink: item.cloudLink ?? '',
       name: item.name ?? '',
+      skillsInvolved: item.skillsInvolved ?? '',
     }),
   );
   merged.awards = (Array.isArray(merged.awards) ? merged.awards : []).map(
@@ -289,12 +290,28 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
       attachmentNote: item.attachmentNote ?? '',
       cloudLink: item.cloudLink ?? '',
       name: item.name ?? '',
+      prizeRank: item.prizeRank ?? '',
+      skillsInvolved: item.skillsInvolved ?? '',
     }),
   );
-  merged.publications = Array.isArray(merged.publications)
-    ? merged.publications
-    : [];
-  merged.trainings = Array.isArray(merged.trainings) ? merged.trainings : [];
+  merged.campusActivities = (
+    Array.isArray(merged.campusActivities) ? merged.campusActivities : []
+  ).map((item) => ({
+    ...item,
+    skillsInvolved: item.skillsInvolved ?? '',
+  }));
+  merged.publications = (
+    Array.isArray(merged.publications) ? merged.publications : []
+  ).map((item) => ({
+    ...item,
+    skillsInvolved: item.skillsInvolved ?? '',
+  }));
+  merged.trainings = (Array.isArray(merged.trainings) ? merged.trainings : []).map(
+    (item) => ({
+      ...item,
+      skillsInvolved: item.skillsInvolved ?? '',
+    }),
+  );
   merged.familyMembers = Array.isArray(merged.familyMembers)
     ? merged.familyMembers
     : [];
@@ -360,9 +377,6 @@ export function validateProfileData(
   }
   if (!profileData.basic.maritalStatus?.trim()) {
     missingRequired.push('婚姻状况');
-  }
-  if (!profileData.jobIntent.targetRole.trim()) {
-    missingRequired.push('目标职位');
   }
 
   const hasCompleteEducation = profileData.education.some((item) => {

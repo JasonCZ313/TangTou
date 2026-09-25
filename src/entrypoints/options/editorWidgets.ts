@@ -11,6 +11,8 @@ export function createBoundInput(
   onChange: (value: string) => void,
   inputType: string = 'text',
   required: boolean = false,
+  placeholder = '',
+  maxLength = 0,
 ): HTMLLabelElement {
   const label = document.createElement('label');
   label.className = 'field';
@@ -31,6 +33,12 @@ export function createBoundInput(
   const input = document.createElement('input');
   input.type = inputType;
   input.value = initialValue;
+  if (placeholder) {
+    input.placeholder = placeholder;
+  }
+  if (maxLength > 0) {
+    input.maxLength = maxLength;
+  }
   if (required) {
     input.required = true;
   }

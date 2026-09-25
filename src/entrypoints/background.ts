@@ -20,6 +20,12 @@ import {
 } from '../shared/storage/usageStore';
 import type { FillPlan } from '../shared/types/fill';
 import type { ExtensionMessage } from '../shared/types/messages';
+import {
+  notesForFieldIds,
+  SKIP_REASON_NO_MODEL,
+  SKIP_REASON_TIMEOUT,
+  SKIP_REASON_UNSURE,
+} from '../shared/fill/skipReasons';
 import { sendToActiveTab } from '../shared/messaging/send';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
 
@@ -188,6 +194,7 @@ async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
 
 /**
  * 合并本地启发式 items 与 LLM 计划：同一 fieldId 以启发式为准，LLM 重复项丢弃。
+ * 已经要写的字段不再出现在跳过列表里。
  */
 function mergeHeuristicAndLlmPlan(
   heuristicPlan: FillPlan,
@@ -199,14 +206,28 @@ function mergeHeuristicAndLlmPlan(
   const llmItemsWithoutHeuristicOverlap = llmPlan.items.filter(
     (item) => !heuristicFieldIds.has(item.fieldId),
   );
+  const items = [...heuristicPlan.items, ...llmItemsWithoutHeuristicOverlap];
+  const filledFieldIds = new Set(items.map((item) => item.fieldId));
+  const skippedFieldIds = [
+    ...new Set([
+      ...heuristicPlan.skippedFieldIds,
+      ...llmPlan.skippedFieldIds,
+    ]),
+  ].filter((fieldId) => !filledFieldIds.has(fieldId));
+  const notedFieldIds = new Set(
+    (heuristicPlan.skippedNotes ?? []).map((note) => note.fieldId),
+  );
+  const skippedNotes = [
+    ...(heuristicPlan.skippedNotes ?? []),
+    ...notesForFieldIds(
+      skippedFieldIds.filter((fieldId) => !notedFieldIds.has(fieldId)),
+      SKIP_REASON_UNSURE,
+    ),
+  ];
   return {
-    items: [...heuristicPlan.items, ...llmItemsWithoutHeuristicOverlap],
-    skippedFieldIds: [
-      ...new Set([
-        ...heuristicPlan.skippedFieldIds,
-        ...llmPlan.skippedFieldIds,
-      ]),
-    ],
+    items,
+    skippedFieldIds,
+    skippedNotes,
   };
 }
 
@@ -260,7 +281,17 @@ async function handleBuildFillPlan(
       requestId: message.requestId,
       plan: {
         items: tippedItems,
-        skippedFieldIds: remainingFields.map((field) => field.fieldId),
+        skippedFieldIds: [
+          ...partialPlan.skippedFieldIds,
+          ...remainingFields.map((field) => field.fieldId),
+        ],
+        skippedNotes: [
+          ...(partialPlan.skippedNotes ?? []),
+          ...notesForFieldIds(
+            remainingFields.map((field) => field.fieldId),
+            SKIP_REASON_NO_MODEL,
+          ),
+        ],
       },
     };
   }
@@ -310,7 +341,17 @@ async function handleBuildFillPlan(
       requestId: message.requestId,
       plan: {
         items: partialPlan.items,
-        skippedFieldIds: remainingFields.map((field) => field.fieldId),
+        skippedFieldIds: [
+          ...partialPlan.skippedFieldIds,
+          ...remainingFields.map((field) => field.fieldId),
+        ],
+        skippedNotes: [
+          ...(partialPlan.skippedNotes ?? []),
+          ...notesForFieldIds(
+            remainingFields.map((field) => field.fieldId),
+            SKIP_REASON_TIMEOUT,
+          ),
+        ],
       },
       notice: `模型超过 120 秒还没答完。本机已经配上 ${partialPlan.items.length} 项，其余 ${remainingFields.length} 项这次没配。可以再点一次扫描，或检查网络和模型地址。`,
     };

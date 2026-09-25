@@ -299,6 +299,9 @@ export function waitForFormSettle(rootDocument: Document = document): Promise<vo
   });
 }
 
+/** 最近一次从整页收集控件时，读不到的跨域框架数量 */
+let lastUnreachableFrameCount = 0;
+
 /**
  * 收集普通文档、开放 Shadow DOM 和同源 iframe 里的表单控件。
  */
@@ -306,6 +309,7 @@ function collectFormControls(root: ParentNode): Element[] {
   const controls: Element[] = [];
   const visitedRoots = new Set<ParentNode>();
   const selector = 'input, textarea, select, [contenteditable="true"]';
+  let unreachableFrameCount = 0;
 
   /**
    * 遍历一个根节点，并继续进入其开放影子树和同源框架。
@@ -325,15 +329,23 @@ function collectFormControls(root: ParentNode): Element[] {
         try {
           if (element.contentDocument) {
             visit(element.contentDocument);
+          } else if (element.src) {
+            const frameUrl = new URL(element.src, window.location.href);
+            if (frameUrl.origin !== window.location.origin) {
+              unreachableFrameCount += 1;
+            }
           }
         } catch {
-          // 跨域框架不允许读取
+          unreachableFrameCount += 1;
         }
       }
     }
   };
 
   visit(root);
+  if (root === document) {
+    lastUnreachableFrameCount = unreachableFrameCount;
+  }
   return controls;
 }
 
@@ -1246,6 +1258,10 @@ export async function scanFieldsSettled(
       notice = `时间到了，先交回已发现的 ${liveFields.length} 个输入框。滚动停在${mainLabel}大约 ${stopPercent}%。`;
     } else if (liveFields.length === 0) {
       notice = `没有扫到可以填写的输入框。滚过了${mainLabel}，停在大约 ${stopPercent}%。请确认打开的是网申表单后再扫一次。`;
+    }
+    if (lastUnreachableFrameCount > 0) {
+      const frameNote = `另有 ${lastUnreachableFrameCount} 个隔离框架，里面的输入框写不进去。`;
+      notice = notice ? `${notice}${frameNote}` : frameNote;
     }
     return { fields: liveFields, notice, stopPercent };
   } finally {
