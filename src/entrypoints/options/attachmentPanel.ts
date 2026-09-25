@@ -1,6 +1,7 @@
 /**
  * 分散附件 UI：简历置顶识别、头像进基本信息、条目卡片内上传。
  */
+import { describeUserFacingError } from '../../shared/messaging/userFacingError';
 import { extractResumeText } from '../../shared/resume/extractResumeText';
 import { overlayLocalResumeContacts } from '../../shared/resume/resumeContacts';
 import {
@@ -185,7 +186,9 @@ export function mountResumeBlock(options: {
     if (/API|钥匙|权限|LLM_HTTP|401|403/.test(message)) {
       return '模型没接住。到侧栏核对地址、钥匙和模型名，测试连接通过后再识别。';
     }
-    return message || '识别失败。请再点一次；若仍如此，换 DOCX 试试。';
+    return describeUserFacingError(
+      message || '识别失败。请再点一次；若仍如此，换 DOCX 试试。',
+    );
   }
 
   /** 当前简历文件，没有则为 null */

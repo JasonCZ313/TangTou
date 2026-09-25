@@ -1,6 +1,6 @@
 import type { FillPlan } from '../../shared/types/fill';
 import type { FileUploadPayload } from '../../shared/types/messages';
-import { resolveFieldElement } from '../scanner/scanFields';
+import { prepareFieldForWrite, resolveFieldElement } from '../scanner/scanFields';
 import { setNativeValue } from './setNativeValue';
 
 /** 已填写字段的视觉高亮 class，撤销时一并移除 */
@@ -216,15 +216,16 @@ function assignFilePayload(
 
 /**
  * 按 FillPlan 将映射值安全写入页面控件。
- * file 控件只接受 filePayloads 中对应的本机附件。
+ * 写入前把控件滚进视野；若扫描时是点开才出现的，框被收起会再点一次。
+ * file 控件只接受 filePayloads 中对应的本机附件。不提交表单。
  */
-export function applyFillPlan(
+export async function applyFillPlan(
   plan: FillPlan,
   filePayloads: FileUploadPayload[] = [],
-): {
+): Promise<{
   filled: number;
   skipped: number;
-} {
+}> {
   ensureHighlightStyles();
   lastUndoSnapshots = [];
 
@@ -232,7 +233,7 @@ export function applyFillPlan(
   let skipped = plan.skippedFieldIds.length;
 
   for (const mappingItem of plan.items) {
-    const targetElement = resolveFieldElement(mappingItem.fieldId);
+    const targetElement = await prepareFieldForWrite(mappingItem.fieldId);
     if (!targetElement) {
       skipped += 1;
       continue;

@@ -56,6 +56,20 @@
         </button>
       </section>
 
+      <div id="scanProgress" class="scan-progress" hidden>
+        <p id="scanProgressLabel" class="scan-progress-label">正在准备扫描</p>
+        <div
+          class="scan-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          aria-labelledby="scanProgressLabel"
+        >
+          <div id="scanProgressFill" class="scan-progress-fill"></div>
+        </div>
+      </div>
+
       <p
         id="statusMessage"
         class="status-message"

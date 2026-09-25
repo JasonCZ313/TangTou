@@ -13,7 +13,22 @@ export interface FileUploadPayload {
 /** 扩展内部消息联合类型（UI / Background / Content） */
 export type ExtensionMessage =
   | { type: 'SCAN_FIELDS'; requestId: string }
-  | { type: 'SCAN_FIELDS_RESULT'; requestId: string; fields: FieldDescriptor[] }
+  | { type: 'SCAN_FIELDS_STARTED'; requestId: string }
+  | {
+      type: 'SCAN_PROGRESS';
+      requestId: string;
+      /** 0 到 100，读条用 */
+      percent: number;
+      foundCount: number;
+      message: string;
+    }
+  | {
+      type: 'SCAN_FIELDS_RESULT';
+      requestId: string;
+      fields: FieldDescriptor[];
+      /** 时间到了先交回，或一个框都没有时的说明 */
+      notice?: string;
+    }
   | {
       type: 'BUILD_FILL_PLAN';
       requestId: string;
@@ -26,6 +41,8 @@ export type ExtensionMessage =
       plan: FillPlan;
       /** 本次 LLM 用量；仅启发式或接口未返回时为 undefined */
       usage?: LlmTokenUsage | null;
+      /** 计划可用，但模型超时等需要用红框告诉用户的说明 */
+      notice?: string;
     }
   | { type: 'APPLY_FILL_PLAN'; requestId: string; plan: FillPlan; filePayloads?: FileUploadPayload[] }
   | {

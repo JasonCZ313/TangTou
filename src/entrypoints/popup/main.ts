@@ -10,6 +10,11 @@ import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
+import {
+  requestFillPlanWithWait,
+  scanActivePage,
+} from '../../shared/messaging/pageScan';
+import { describeUserFacingError } from '../../shared/messaging/userFacingError';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
 import type { AppSettings, Profile } from '../../shared/types/profile';
@@ -24,6 +29,8 @@ type StatusKind = 'info' | 'success' | 'error';
 interface PendingFillSession {
   plan: FillPlan;
   fields: FieldDescriptor[];
+  /** 模型超时等仍要在侧栏红框里说明的话 */
+  notice?: string;
 }
 
 /** 内存中的档案列表，供下拉渲染 */
@@ -52,6 +59,18 @@ const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
 const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
+const scanProgressElement = document.getElementById(
+  'scanProgress',
+) as HTMLElement;
+const scanProgressLabel = document.getElementById(
+  'scanProgressLabel',
+) as HTMLParagraphElement;
+const scanProgressFill = document.getElementById(
+  'scanProgressFill',
+) as HTMLElement;
+const scanProgressTrack = scanProgressElement.querySelector(
+  '.scan-progress-track',
+) as HTMLElement;
 
 /**
  * 在状态区展示文案；kind 控制成功/错误/提示配色。
@@ -67,6 +86,17 @@ function showStatus(message: string, kind: StatusKind = 'info'): void {
  */
 function showError(message: string): void {
   showStatus(message, 'error');
+}
+
+/**
+ * 更新扫描读条：百分比、当前动作，以及已经发现多少输入框。
+ */
+function showScanProgress(percent: number, message: string): void {
+  const clampedPercent = Math.max(0, Math.min(100, Math.round(percent)));
+  scanProgressElement.hidden = false;
+  scanProgressFill.style.width = `${clampedPercent}%`;
+  scanProgressLabel.textContent = `${message} ${clampedPercent}%`;
+  scanProgressTrack.setAttribute('aria-valuenow', String(clampedPercent));
 }
 
 /**
@@ -177,28 +207,33 @@ async function maybePersistDefaultProfile(profileId: string): Promise<void> {
  * preview：写入 session pendingFillSession 并打开 Side Panel；direct：立即 APPLY。
  */
 async function runFillFlow(profileId: string): Promise<void> {
-  const scanResponse = await requestBackground({
-    type: 'SCAN_FIELDS',
-    requestId: createRequestId(),
+  const scanResult = await scanActivePage(createRequestId(), (progress) => {
+    showScanProgress(progress.percent, progress.message);
   });
-  if (scanResponse.type !== 'SCAN_FIELDS_RESULT') {
-    throw new Error('扫描字段失败');
-  }
-  const scannedFields = scanResponse.fields;
+  const scannedFields = scanResult.fields;
   if (scannedFields.length === 0) {
-    showStatus('当前页未扫描到可填字段', 'info');
+    showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
+    showError(
+      scanResult.notice ??
+        '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再扫一次。',
+    );
     return;
   }
 
-  const planResponse = await requestBackground({
-    type: 'BUILD_FILL_PLAN',
-    requestId: createRequestId(),
+  const planResponse = await requestFillPlanWithWait(
+    createRequestId(),
     profileId,
-    fields: scannedFields,
-  });
-  if (planResponse.type !== 'FILL_PLAN_RESULT') {
-    throw new Error('生成填写计划失败');
-  }
+    scannedFields,
+    (elapsedSeconds) => {
+      const waitPercent = Math.min(99, 90 + Math.floor(elapsedSeconds / 15));
+      showScanProgress(waitPercent, `正在对照档案，已等待 ${elapsedSeconds} 秒。`);
+    },
+  );
+  showScanProgress(
+    100,
+    scanResult.notice ??
+      `对照完成，${planResponse.plan.items.length} 项可以填。`,
+  );
   const fillPlan = planResponse.plan;
 
   const stateResponse = await requestBackground({
@@ -214,14 +249,18 @@ async function runFillFlow(profileId: string): Promise<void> {
     const pendingFillSession: PendingFillSession = {
       plan: fillPlan,
       fields: scannedFields,
+      notice: planResponse.notice,
     };
     await chrome.storage.session.set({ pendingFillSession });
     // 必须在 Popup 内直接 open：经 Background 会丢失「用户手势」导致失败
     await openSidePanelFromPopup();
-    const usageTip =
-      fillPlanResponseUsageText(planResponse.usage);
+    const usageTip = fillPlanResponseUsageText(planResponse.usage);
+    if (planResponse.notice) {
+      showError(`${planResponse.notice} 侧边助手已打开，可以先核对本机配上的项。`);
+      return;
+    }
     showStatus(
-      `已打开侧边助手，请核对后写入${usageTip}`,
+      `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${fillPlan.items.length} 项可以填。侧边助手已打开，请在那里核对后再写入。${usageTip}`,
       'success',
     );
     return;
@@ -236,8 +275,14 @@ async function runFillFlow(profileId: string): Promise<void> {
     throw new Error('写入页面失败');
   }
   const usageTip = fillPlanResponseUsageText(planResponse.usage);
+  if (planResponse.notice) {
+    showError(
+      `${planResponse.notice} 已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。`,
+    );
+    return;
+  }
   showStatus(
-    `已填写 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped}${usageTip}`,
+    `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。${usageTip}`,
     'success',
   );
 }
@@ -265,7 +310,10 @@ async function runUndoFlow(): Promise<void> {
   if (undoResponse.type !== 'UNDO_FILL_RESULT') {
     throw new Error('撤销失败');
   }
-  showStatus(`已撤销 ${undoResponse.restored} 项`, 'success');
+  showStatus(
+    `已撤销 ${undoResponse.restored} 项，页面恢复到写入前。`,
+    'success',
+  );
 }
 
 /**
@@ -293,13 +341,12 @@ async function openSidePanel(): Promise<void> {
 }
 
 /**
- * 打开侧边助手并展开设置区（API / 建档案）。
- * 先标记 session（不 await），再立刻 open，避免丢失用户手势。
+ * 在新标签页打开完整档案编辑页（Options），不打开侧边栏。
  */
-async function openSettingsInSidePanel(): Promise<void> {
-  void chrome.storage.session.set({ sidePanelFocusSettings: true });
-  await openSidePanelFromPopup();
-  showStatus('已打开侧边助手设置区', 'success');
+function openProfileOptionsPage(): void {
+  const optionsUrl = chrome.runtime.getURL('/options.html');
+  void chrome.tabs.create({ url: optionsUrl });
+  showStatus('已在新标签打开档案编辑页', 'success');
 }
 
 /**
@@ -314,11 +361,7 @@ async function withBusy(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error: unknown) {
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : '操作失败，请稍后重试';
-    showError(message);
+    showError(describeUserFacingError(error));
   } finally {
     isBusy = false;
     syncBusyUi();
@@ -361,7 +404,7 @@ function bindEvents(): void {
         showError('请先选择档案');
         return;
       }
-      showStatus('正在扫描并生成填写计划…', 'info');
+      showStatus('正在滚动页面，已发现 0 个输入框。', 'info');
       await maybePersistDefaultProfile(selectedProfileId);
       await runFillFlow(selectedProfileId);
     });
@@ -373,11 +416,7 @@ function bindEvents(): void {
       try {
         await openSidePanel();
       } catch (error: unknown) {
-        const message =
-          error instanceof Error && error.message
-            ? error.message
-            : '无法打开侧边助手';
-        showError(message);
+        showError(describeUserFacingError(error));
       }
     })();
   });
@@ -385,13 +424,9 @@ function bindEvents(): void {
   openOptionsButton.addEventListener('click', () => {
     void (async () => {
       try {
-        await openSettingsInSidePanel();
+        openProfileOptionsPage();
       } catch (error: unknown) {
-        const message =
-          error instanceof Error && error.message
-            ? error.message
-            : '无法打开设置';
-        showError(message);
+        showError(describeUserFacingError(error));
       }
     })();
   });
@@ -418,11 +453,7 @@ async function bootstrapPopup(): Promise<void> {
       showStatus('就绪：扫描后请在侧边助手核对预览', 'info');
     }
   } catch (error: unknown) {
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : '初始化失败';
-    showError(message);
+    showError(describeUserFacingError(error));
   }
 }
 

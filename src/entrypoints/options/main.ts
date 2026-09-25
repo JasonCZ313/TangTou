@@ -45,6 +45,8 @@ import {
 import type { FillMode, Profile, ProfileData, RegionSelection } from '../../shared/types/profile';
 import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
+import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import { mountFeedbackMailLink } from '../../shared/feedback/feedbackMail';
 import { fillStaticSelectsByCatalog } from './editorWidgets';
 import { appendListItem, renderAllDynamicLists } from './editorLists';
 import {
@@ -304,7 +306,7 @@ function mapErrorMessage(error: unknown): string {
   if (message === 'PROFILE_VALIDATION_FAILED') {
     return '档案必填项未完成，请检查编辑区提示';
   }
-  return message || '操作失败';
+  return describeUserFacingError(message || '操作失败');
 }
 
 function formatUpdatedAt(isoText: string): string {
@@ -497,6 +499,10 @@ function renderTokenUsageSummary(stats: TokenUsageStats): void {
 }
 
 async function bootstrapOptionsPage(): Promise<void> {
+  const feedbackMailLink = document.getElementById('feedbackMailLink');
+  if (feedbackMailLink instanceof HTMLAnchorElement) {
+    mountFeedbackMailLink(feedbackMailLink);
+  }
   try {
     ensureStaticCatalogsReady();
     setupEditorToc();

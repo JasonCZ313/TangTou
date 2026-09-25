@@ -116,6 +116,12 @@
           <button type="button" id="openFullEditorButton" class="btn btn-ghost full-editor-btn">
             编辑完整简历档案（新标签页）
           </button>
+          <p class="feedback-row">
+            <a id="feedbackMailLink" class="feedback-mail-link">意见反馈</a>
+            <span class="feedback-row-hint">
+              打开邮件后主题为「【躺投】问题反馈」。若主题是空的，请手动写上这句，并在正文说明问题和所在页面。
+            </span>
+          </p>
         </div>
       </details>
 
@@ -165,6 +171,20 @@
           撤销本轮
         </button>
       </section>
+
+      <div id="scanProgress" class="scan-progress" hidden>
+        <p id="scanProgressLabel" class="scan-progress-label">正在准备扫描</p>
+        <div
+          class="scan-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          aria-labelledby="scanProgressLabel"
+        >
+          <div id="scanProgressFill" class="scan-progress-fill"></div>
+        </div>
+      </div>
 
       <p
         id="statusMessage"

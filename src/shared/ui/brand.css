@@ -332,6 +332,34 @@ input[required]:user-invalid {
   border-radius: 8px;
 }
 
+/* 扫描读条：写清百分比和当前在做什么 */
+.scan-progress {
+  margin: 12px 0 0;
+}
+
+.scan-progress-label {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--tt-text-secondary);
+}
+
+.scan-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e7eeeb;
+  overflow: hidden;
+}
+
+.scan-progress-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tt-primary);
+  transition: width 0.2s ease;
+}
+
 /* —— 状态条 —— */
 .status-message {
   min-height: 1.4em;
@@ -350,15 +378,23 @@ input[required]:user-invalid {
 }
 
 .status-message.is-success {
+  padding: 14px 16px;
+  border-width: 2px;
+  border-color: #34d399;
   background: #ecfdf5;
-  border-color: #6ee7b7;
   color: var(--tt-success);
+  font-weight: 600;
+  line-height: 1.55;
 }
 
 .status-message.is-error {
+  padding: 14px 16px;
+  border-width: 2px;
+  border-color: #f87171;
   background: #fef2f2;
-  border-color: #fecaca;
   color: var(--tt-danger);
+  font-weight: 600;
+  line-height: 1.55;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -375,6 +411,26 @@ input[required]:user-invalid {
 }
 
 /* 页脚水印：小字、弱对比，作者名单独强调 */
+.feedback-row {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--tt-muted);
+}
+
+.feedback-mail-link {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--tt-primary);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.feedback-row-hint {
+  color: var(--tt-muted);
+}
+
 .maker-credit {
   margin: 18px 0 4px;
   text-align: center;

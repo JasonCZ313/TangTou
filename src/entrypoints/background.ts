@@ -18,6 +18,7 @@ import {
 import type { FillPlan } from '../shared/types/fill';
 import type { ExtensionMessage } from '../shared/types/messages';
 import { sendToActiveTab } from '../shared/messaging/send';
+import { describeUserFacingError } from '../shared/messaging/userFacingError';
 
 /** 无 API Key 仅用启发式填写时的用户提示文案 */
 const HEURISTICS_ONLY_TIP = '未配置 API，仅填写高置信基础字段';
@@ -38,18 +39,28 @@ function normalizeError(error: unknown): { code: string; message: string } {
       };
     }
     if (errorMessage.startsWith('LLM_HTTP_')) {
-      return { code: 'LLM_HTTP', message: errorMessage };
+      const statusCode = errorMessage.slice('LLM_HTTP_'.length);
+      return {
+        code: 'LLM_HTTP',
+        message: `模型接口返回了 ${statusCode}。请核对钥匙、模型名，以及地址是否以 https:// 开头。`,
+      };
     }
     if (
       errorMessage === 'LLM_EMPTY_CONTENT' ||
       errorMessage === 'LLM_INVALID_SHAPE'
     ) {
-      return { code: errorMessage, message: '模型返回内容无效' };
+      return {
+        code: errorMessage,
+        message: '模型没有返回能用的填写计划。请换一个模型，或稍后再试。',
+      };
     }
     if (error.name === 'AbortError') {
-      return { code: 'LLM_TIMEOUT', message: '请求超时' };
+      return {
+        code: 'LLM_TIMEOUT',
+        message: '模型超过等待时间还没返回。请检查网络和接口地址后再试。',
+      };
     }
-    return { code: 'UNKNOWN', message: errorMessage.slice(0, 200) };
+    return { code: 'UNKNOWN', message: describeUserFacingError(error) };
   }
   return { code: 'UNKNOWN', message: '未知错误' };
 }
@@ -271,13 +282,36 @@ async function handleBuildFillPlan(
   }
 
   const { system, user } = buildFillPrompt(profile.data, remainingFields);
-  const { plan: llmPlan, usage } = await requestFillPlan({
-    apiBaseUrl: settings.apiBaseUrl,
-    apiKey: settings.apiKey,
-    model: settings.model,
-    system,
-    user,
-  });
+  /** 对照档案单独给两分钟，避免长页面字段一多就被 60 秒掐断 */
+  const FILL_PLAN_TIMEOUT_MS = 120_000;
+  let llmPlan: FillPlan;
+  let usage: Awaited<ReturnType<typeof requestFillPlan>>['usage'];
+  try {
+    const llmResult = await requestFillPlan({
+      apiBaseUrl: settings.apiBaseUrl,
+      apiKey: settings.apiKey,
+      model: settings.model,
+      system,
+      user,
+      timeoutMs: FILL_PLAN_TIMEOUT_MS,
+    });
+    llmPlan = llmResult.plan;
+    usage = llmResult.usage;
+  } catch (error: unknown) {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    if (!timedOut) {
+      throw error;
+    }
+    return {
+      type: 'FILL_PLAN_RESULT',
+      requestId: message.requestId,
+      plan: {
+        items: partialPlan.items,
+        skippedFieldIds: remainingFields.map((field) => field.fieldId),
+      },
+      notice: `模型超过 120 秒还没答完。本机已经配上 ${partialPlan.items.length} 项，其余 ${remainingFields.length} 项这次没配。可以再点一次扫描，或检查网络和模型地址。`,
+    };
+  }
 
   // 有 usage 则累加到本机统计（部分兼容接口不返回 usage）
   if (usage) {
@@ -426,12 +460,57 @@ async function handleParseResume(
 }
 
 /**
- * 将 SCAN_FIELDS / UNDO_LAST_FILL 转发到活动标签页 content script。
+ * 当前标签没有内容脚本时，Chrome 会用这句英文拒绝连接。
+ */
+function isMissingContentScript(error: unknown): boolean {
+  const detail = error instanceof Error ? error.message : String(error ?? '');
+  return /receiving end does not exist|could not establish connection/i.test(detail);
+}
+
+/**
+ * 往当前普通网页注入扫描脚本。浏览器自己的页面会换成中文说明。
+ */
+async function injectContentScriptIntoActiveTab(): Promise<void> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const activeTab = tabs[0];
+  if (activeTab?.id === undefined) {
+    throw new Error('找不到当前标签页。请先点一下网申页面，再试。');
+  }
+  const pageUrl = activeTab.url ?? '';
+  if (!/^https?:\/\//i.test(pageUrl)) {
+    throw new Error(
+      '这一页不是普通网申网页，躺投只能扫描以 http 或 https 开头的页面。请切到网申页再试。',
+    );
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      files: ['content-scripts/content.js'],
+    });
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : '';
+    if (/cannot be scripted|cannot access|restricted|gallery/i.test(detail)) {
+      throw new Error('这一页不允许扩展注入脚本。请换到普通的网申网页再试。');
+    }
+    throw new Error('扫描脚本没能装进这个页面。请刷新网申页后再试。');
+  }
+}
+
+/**
+ * 把扫描、写入、撤销发到当前页。页面还没有脚本时先注入一次再发。
  */
 async function forwardToActiveTab(
   message: ExtensionMessage,
 ): Promise<ExtensionMessage> {
-  return sendToActiveTab(message);
+  try {
+    return await sendToActiveTab(message);
+  } catch (error: unknown) {
+    if (!isMissingContentScript(error)) {
+      throw error;
+    }
+    await injectContentScriptIntoActiveTab();
+    return await sendToActiveTab(message);
+  }
 }
 
 /**
@@ -456,6 +535,9 @@ async function dispatchMessage(
       return forwardApplyWithFiles(message);
     case 'PARSE_RESUME':
       return handleParseResume(message);
+    case 'SCAN_PROGRESS':
+    case 'SCAN_FIELDS_RESULT':
+      return message;
     case 'SCAN_FIELDS':
     case 'UNDO_LAST_FILL':
       return forwardToActiveTab(message);

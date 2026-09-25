@@ -19,6 +19,12 @@ import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
+import {
+  requestFillPlanWithWait,
+  scanActivePage,
+} from '../../shared/messaging/pageScan';
+import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import { mountFeedbackMailLink } from '../../shared/feedback/feedbackMail';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
 import type { FillMode, Profile } from '../../shared/types/profile';
@@ -34,6 +40,8 @@ type StatusKind = 'info' | 'success' | 'error';
 interface PendingFillSession {
   plan: FillPlan;
   fields: FieldDescriptor[];
+  /** 模型超时等仍要红框说明的话 */
+  notice?: string;
 }
 
 /** Popup「打开设置」写入，侧栏启动时展开设置区 */
@@ -108,6 +116,18 @@ const rescanButton = document.getElementById(
 const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
+const scanProgressElement = document.getElementById(
+  'scanProgress',
+) as HTMLElement;
+const scanProgressLabel = document.getElementById(
+  'scanProgressLabel',
+) as HTMLParagraphElement;
+const scanProgressFill = document.getElementById(
+  'scanProgressFill',
+) as HTMLElement;
+const scanProgressTrack = scanProgressElement.querySelector(
+  '.scan-progress-track',
+) as HTMLElement;
 const tokenUsageLine = document.getElementById(
   'tokenUsageLine',
 ) as HTMLParagraphElement;
@@ -123,6 +143,17 @@ function showStatus(message: string, kind: StatusKind = 'info'): void {
 
 function showError(message: string): void {
   showStatus(message, 'error');
+}
+
+/**
+ * 更新扫描读条：百分比、当前动作，以及已经发现多少输入框。
+ */
+function showScanProgress(percent: number, message: string): void {
+  const clampedPercent = Math.max(0, Math.min(100, Math.round(percent)));
+  scanProgressElement.hidden = false;
+  scanProgressFill.style.width = `${clampedPercent}%`;
+  scanProgressLabel.textContent = `${message} ${clampedPercent}%`;
+  scanProgressTrack.setAttribute('aria-valuenow', String(clampedPercent));
 }
 
 /** 表单旁提示的语气：成功、失败、进行中 */
@@ -488,6 +519,7 @@ async function loadPendingSession(): Promise<PendingFillSession | null> {
   return {
     plan: rawSession.plan,
     fields: Array.isArray(rawSession.fields) ? rawSession.fields : [],
+    notice: typeof rawSession.notice === 'string' ? rawSession.notice : undefined,
   };
 }
 
@@ -827,7 +859,7 @@ async function runConfirmWrite(): Promise<void> {
   await clearPendingSession();
   renderMappingTable();
   showStatus(
-    `已填写 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped}`,
+    `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。`,
     'success',
   );
 }
@@ -840,45 +872,58 @@ async function runUndoFlow(): Promise<void> {
   if (undoResponse.type !== 'UNDO_FILL_RESULT') {
     throw new Error('撤销失败');
   }
-  showStatus(`已撤销 ${undoResponse.restored} 项`, 'success');
+  showStatus(
+    `已撤销 ${undoResponse.restored} 项，页面恢复到写入前。`,
+    'success',
+  );
 }
 
 async function runRescanFlow(profileId: string): Promise<void> {
-  showStatus('正在扫描本页并生成填写计划…', 'info');
-  const scanResponse = await requestBackground({
-    type: 'SCAN_FIELDS',
-    requestId: createRequestId(),
+  showScanProgress(4, '正在滚动页面，已发现 0 个输入框。');
+  const scanResult = await scanActivePage(createRequestId(), (progress) => {
+    showScanProgress(progress.percent, progress.message);
   });
-  if (scanResponse.type !== 'SCAN_FIELDS_RESULT') {
-    throw new Error('扫描字段失败');
-  }
-  const scannedFields = scanResponse.fields;
+  const scannedFields = scanResult.fields;
   if (scannedFields.length === 0) {
     await clearPendingSession();
     renderMappingTable();
-    showStatus('当前页未扫描到可填字段', 'info');
+    showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
+    showError(
+      scanResult.notice ??
+        '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再扫一次。',
+    );
     return;
   }
-  const planResponse = await requestBackground({
-    type: 'BUILD_FILL_PLAN',
-    requestId: createRequestId(),
+  const planResponse = await requestFillPlanWithWait(
+    createRequestId(),
     profileId,
-    fields: scannedFields,
-  });
-  if (planResponse.type !== 'FILL_PLAN_RESULT') {
-    throw new Error('生成填写计划失败');
-  }
+    scannedFields,
+    (elapsedSeconds) => {
+      const waitPercent = Math.min(99, 90 + Math.floor(elapsedSeconds / 15));
+      showScanProgress(waitPercent, `正在对照档案，已等待 ${elapsedSeconds} 秒。`);
+    },
+  );
+  showScanProgress(
+    100,
+    scanResult.notice ??
+      `对照完成，${planResponse.plan.items.length} 项可以填。`,
+  );
   const pendingFillSession: PendingFillSession = {
     plan: planResponse.plan,
     fields: scannedFields,
+    notice: planResponse.notice,
   };
   await chrome.storage.session.set({ pendingFillSession });
   currentSession = pendingFillSession;
   renderMappingTable();
-  showStatus(
-    `已生成预览：${planResponse.plan.items.length} 项可填，可改值后确认写入`,
-    'success',
-  );
+  if (planResponse.notice) {
+    showError(planResponse.notice);
+  } else {
+    showStatus(
+      `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${planResponse.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
+      'success',
+    );
+  }
   await refreshUsageLine(planResponse.usage ?? null);
 }
 
@@ -891,11 +936,7 @@ async function withBusy(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error: unknown) {
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : '操作失败，请稍后重试';
-    showError(message);
+    showError(describeUserFacingError(error));
   } finally {
     isBusy = false;
     syncBusyUi();
@@ -1005,10 +1046,14 @@ function bindEvents(): void {
       currentSession = await loadPendingSession();
       renderMappingTable();
       if (currentSession && currentSession.plan.items.length > 0) {
-        showStatus(
-          `已加载预览：${currentSession.plan.items.length} 项可填`,
-          'info',
-        );
+        if (currentSession.notice) {
+          showError(currentSession.notice);
+        } else {
+          showStatus(
+            `扫完了：发现 ${currentSession.fields.length} 个输入框，其中 ${currentSession.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
+            'success',
+          );
+        }
         await refreshUsageLine();
       }
     })();
@@ -1016,6 +1061,10 @@ function bindEvents(): void {
 }
 
 async function bootstrapSidePanel(): Promise<void> {
+  const feedbackMailLink = document.getElementById('feedbackMailLink');
+  if (feedbackMailLink instanceof HTMLAnchorElement) {
+    mountFeedbackMailLink(feedbackMailLink);
+  }
   bindEvents();
   syncBusyUi();
   try {
@@ -1027,10 +1076,14 @@ async function bootstrapSidePanel(): Promise<void> {
     if (cachedProfiles.length === 0) {
       showStatus('请先在上方「设置与新建档案」创建档案并填写 API', 'info');
     } else if (currentSession && currentSession.plan.items.length > 0) {
-      showStatus(
-        `已加载预览：${currentSession.plan.items.length} 项可填，可改值后确认写入`,
-        'info',
-      );
+      if (currentSession.notice) {
+        showError(currentSession.notice);
+      } else {
+        showStatus(
+          `扫完了：发现 ${currentSession.fields.length} 个输入框，其中 ${currentSession.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
+          'success',
+        );
+      }
     } else {
       showStatus(
         '日常扫描请用右上角 Popup；设置请展开上方区域',
@@ -1038,11 +1091,7 @@ async function bootstrapSidePanel(): Promise<void> {
       );
     }
   } catch (error: unknown) {
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : '初始化失败';
-    showError(message);
+    showError(describeUserFacingError(error));
   }
 }
 
