@@ -22,6 +22,10 @@ interface PositionedGlyph {
   x: number;
   y: number;
   width: number;
+  /** 字高，用来判断同一行和段间距，不用固定像素 */
+  height: number;
+  /** PDF 内容流标记这一项已经到行尾 */
+  hasEndOfLine: boolean;
 }
 
 /**
@@ -72,6 +76,8 @@ async function extractDocxText(buffer: ArrayBuffer): Promise<string> {
   const xml = await documentFile.async('string');
   const withBreaks = xml
     .replace(/<w:p[^>]*>/g, '\n')
+    .replace(/<w:br[^>]*\/>/g, '\n')
+    .replace(/<w:cr[^>]*\/>/g, '\n')
     .replace(/<w:tab\/>/g, '\t');
   const stripped = withBreaks.replace(/<[^>]+>/g, '');
   return decodeXmlEntities(stripped);
@@ -187,6 +193,8 @@ function collectGlyphs(items: unknown[]): PositionedGlyph[] {
       str?: unknown;
       transform?: unknown;
       width?: unknown;
+      height?: unknown;
+      hasEOL?: unknown;
     };
     if (typeof record.str !== 'string' || !Array.isArray(record.transform)) {
       continue;
@@ -195,39 +203,177 @@ function collectGlyphs(items: unknown[]): PositionedGlyph[] {
     if (typeof transform[4] !== 'number' || typeof transform[5] !== 'number') {
       continue;
     }
+    const verticalScale = typeof transform[3] === 'number' ? Math.abs(transform[3]) : 0;
+    const horizontalScale = typeof transform[0] === 'number' ? Math.abs(transform[0]) : 0;
+    const reportedHeight = typeof record.height === 'number' ? record.height : 0;
+    const height = reportedHeight || verticalScale || horizontalScale || 10;
     glyphs.push({
       text: record.str,
       x: transform[4],
       y: transform[5],
-      width: typeof record.width === 'number' ? record.width : record.str.length * 6,
+      width: typeof record.width === 'number' ? record.width : record.str.length * height * 0.6,
+      height,
+      hasEndOfLine: record.hasEOL === true,
     });
   }
   return glyphs;
 }
 
+/** 行首像新要点：圆点、短横、序号、中文序号 */
+const NEW_POINT_PATTERN =
+  /^(?:[•●○▪◦·]\s*|[-–—*]\s+|\d{1,2}[.、．)]\s*|[（(]\d{1,2}[）)]\s*|[一二三四五六七八九十]{1,3}[、.])/;
+
 /**
- * 按纵坐标分行、横坐标排序，大空隙视为分栏。
+ * 这一行是不是新的一条，而不是上一句在栏宽处折下来的后半句。
  */
-function layoutGlyphs(glyphs: PositionedGlyph[]): string {
-  if (glyphs.length === 0) {
-    return '';
+function isNewPoint(lineText: string): boolean {
+  return NEW_POINT_PATTERN.test(lineText.trim());
+}
+
+/**
+ * 上一行已经收束，下一行应另起，而不是接在句中。
+ */
+function endsSentence(lineText: string): boolean {
+  return /[。！？；;.!?]$/.test(lineText.trim());
+}
+
+/**
+ * 折行接回同一条。中文直接相连，英文单词之间补一个空格。
+ */
+function joinWrappedLine(previousText: string, nextText: string): string {
+  const leftText = previousText.trimEnd();
+  const rightText = nextText.trimStart();
+  if (/[A-Za-z0-9]$/.test(leftText) && /^[A-Za-z0-9]/.test(rightText)) {
+    return `${leftText} ${rightText}`;
   }
+  return `${leftText}${rightText}`;
+}
+
+/**
+ * 页中间有一条竖向空白时，按左栏再右栏阅读。单栏简历不拆。
+ */
+function splitIntoColumns(glyphs: PositionedGlyph[]): PositionedGlyph[][] {
+  if (glyphs.length < 8) {
+    return [glyphs];
+  }
+  const minX = Math.min(...glyphs.map((glyph) => glyph.x));
+  const maxX = Math.max(...glyphs.map((glyph) => glyph.x + glyph.width));
+  const pageWidth = maxX - minX;
+  if (pageWidth < 280) {
+    return [glyphs];
+  }
+  const bandStart = minX + pageWidth * 0.3;
+  const bandEnd = minX + pageWidth * 0.7;
+  const bucketWidth = 8;
+  let bestGapStart = -1;
+  let bestGapWidth = 0;
+  let runStart = -1;
+  for (let cursorX = bandStart; cursorX < bandEnd; cursorX += bucketWidth) {
+    const occupied = glyphs.some(
+      (glyph) => glyph.x < cursorX + bucketWidth && glyph.x + glyph.width > cursorX,
+    );
+    if (!occupied) {
+      if (runStart < 0) {
+        runStart = cursorX;
+      }
+      continue;
+    }
+    if (runStart >= 0) {
+      const runWidth = cursorX - runStart;
+      if (runWidth > bestGapWidth) {
+        bestGapWidth = runWidth;
+        bestGapStart = runStart;
+      }
+      runStart = -1;
+    }
+  }
+  if (bestGapWidth < 28 || bestGapStart < 0) {
+    return [glyphs];
+  }
+  const splitX = bestGapStart + bestGapWidth / 2;
+  const leftColumn = glyphs.filter((glyph) => glyph.x + glyph.width / 2 < splitX);
+  const rightColumn = glyphs.filter((glyph) => glyph.x + glyph.width / 2 >= splitX);
+  if (leftColumn.length < 4 || rightColumn.length < 4) {
+    return [glyphs];
+  }
+  return [leftColumn, rightColumn];
+}
+
+/**
+ * 纵坐标接近的字形合成一行。阈值是字高的一半，避免固定像素把折行和换行混在一起。
+ */
+function groupGlyphsIntoLines(glyphs: PositionedGlyph[]): PositionedGlyph[][] {
   const sorted = [...glyphs].sort(
     (left, right) => right.y - left.y || left.x - right.x,
   );
   const lines: PositionedGlyph[][] = [];
   for (const glyph of sorted) {
     const currentLine = lines[lines.length - 1];
-    if (!currentLine || Math.abs(glyph.y - currentLine[0].y) > 4) {
+    const anchor = currentLine?.[0];
+    const lineHeight = anchor
+      ? Math.max(anchor.height, glyph.height, 8)
+      : glyph.height;
+    const sameLineThreshold = Math.max(2, lineHeight * 0.5);
+    const lineAlreadyEnded = currentLine?.some((item) => item.hasEndOfLine) ?? false;
+    const wrappedToNextLine = Boolean(
+      anchor && lineAlreadyEnded && glyph.x + glyph.width < anchor.x,
+    );
+    if (!anchor || Math.abs(glyph.y - anchor.y) > sameLineThreshold || wrappedToNextLine) {
       lines.push([glyph]);
       continue;
     }
     currentLine.push(glyph);
   }
-  return lines
-    .map((line) => joinLine(line))
-    .filter((lineText) => lineText.length > 0)
-    .join('\n');
+  return lines;
+}
+
+/**
+ * 把一栏里的视觉行收成要点：折行接上，新要点、大段距、句末另起一行。
+ */
+function layoutColumn(glyphs: PositionedGlyph[]): string {
+  const lines = groupGlyphsIntoLines(glyphs);
+  const lineTexts = lines
+    .map((line) => ({
+      text: joinLine(line),
+      y: line[0]?.y ?? 0,
+      height: Math.max(...line.map((glyph) => glyph.height), 10),
+    }))
+    .filter((line) => line.text.length > 0);
+  if (lineTexts.length === 0) {
+    return '';
+  }
+  const blocks: string[] = [];
+  let currentBlock = lineTexts[0].text;
+  for (let lineIndex = 1; lineIndex < lineTexts.length; lineIndex += 1) {
+    const previousLine = lineTexts[lineIndex - 1];
+    const nextLine = lineTexts[lineIndex];
+    const lineGap = previousLine.y - nextLine.y;
+    const lineHeight = Math.max(previousLine.height, nextLine.height, 8);
+    const startsNewPoint = isNewPoint(nextLine.text);
+    const paragraphGap = lineGap > lineHeight * 1.6;
+    const previousEnded = endsSentence(currentBlock);
+    if (startsNewPoint || paragraphGap || previousEnded) {
+      blocks.push(currentBlock);
+      currentBlock = nextLine.text;
+      continue;
+    }
+    currentBlock = joinWrappedLine(currentBlock, nextLine.text);
+  }
+  blocks.push(currentBlock);
+  return blocks.join('\n');
+}
+
+/**
+ * 按栏阅读后还原一页。单栏直接排；双栏先左后右。
+ */
+function layoutGlyphs(glyphs: PositionedGlyph[]): string {
+  if (glyphs.length === 0) {
+    return '';
+  }
+  return splitIntoColumns(glyphs)
+    .map((column) => layoutColumn(column))
+    .filter((columnText) => columnText.length > 0)
+    .join('\n\n');
 }
 
 /**

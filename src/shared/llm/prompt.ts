@@ -149,6 +149,9 @@ export function buildFillPrompt(
     '学历请优先使用 composedDegree 或 degreeLabel 等中文标签去匹配下拉选项文案。' +
     '实习/工作请区分 responsibilities（职责）、workContent（内容）、achievements（业绩）。' +
     '项目请优先使用 content（内容）与 value（价值/成果）。' +
+    '页面写「我的价值」「个人优势」「自我评价」「个人介绍」时，用 essays.selfEvaluation，不要因为用词不同就跳过。' +
+    '「获奖」「奖项」「荣誉」用 awards 的 name 与 level；「证书」「资格证书」用 certificates 的 name。' +
+    '同一类有多条、页面也有多格时逐条填入，不要把四条证书塞进同一个编号框，也不要整类跳过。' +
     '双学位时使用 secondDegree 字段；技能为 skills 数组（含 name/level）；' +
     '紧急联系人为 emergencyContacts 数组；行业专项见 industryExtras。';
 

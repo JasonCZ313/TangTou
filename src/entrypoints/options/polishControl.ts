@@ -35,6 +35,9 @@ interface PolishSession {
 let polishDialog: HTMLDivElement | null = null;
 let polishSession: PolishSession | null = null;
 let polishRequestRunning = false;
+let activePolishRequestId = '';
+let displayedPolishPercent = 0;
+let polishPercentTimer = 0;
 
 /**
  * 统计附加要求的字数。中文一个字算一个。
@@ -51,9 +54,11 @@ async function requestPolish(
   sourceText: string,
   customRequirement: string,
 ): Promise<{ headline: string; body: string }> {
+  const requestId = createRequestId();
+  activePolishRequestId = requestId;
   const response = await sendRuntimeMessage({
     type: 'POLISH_TEXT',
-    requestId: createRequestId(),
+    requestId,
     fieldName,
     sourceText,
     customRequirement,
@@ -104,6 +109,54 @@ function showDialogError(message: string): void {
 }
 
 /**
+ * 把百分比画到进度条和右侧数字上。
+ */
+function paintPolishPercent(percent: number): void {
+  displayedPolishPercent = percent;
+  const fill = polishDialog?.querySelector('[data-polish-progress-fill]');
+  const percentLabel = polishDialog?.querySelector('[data-polish-progress-percent]');
+  if (fill instanceof HTMLElement) {
+    fill.style.width = `${percent}%`;
+  }
+  if (percentLabel) {
+    percentLabel.textContent = `${percent}%`;
+  }
+}
+
+/**
+ * 请求还没吐字时，百分比自己往 90% 靠近，避免进度条停在 0。
+ */
+function startPolishPercent(): void {
+  window.clearInterval(polishPercentTimer);
+  paintPolishPercent(0);
+  polishPercentTimer = window.setInterval(() => {
+    if (displayedPolishPercent >= 90) {
+      return;
+    }
+    const step = Math.max(1, Math.round((90 - displayedPolishPercent) * 0.12));
+    paintPolishPercent(Math.min(90, displayedPolishPercent + step));
+  }, 250);
+}
+
+/**
+ * 流式返回的百分比只往上走，并且在结果到达前不超过 92。
+ */
+function applyStreamPercent(percent: number): void {
+  const cappedPercent = Math.max(0, Math.min(92, Math.round(percent)));
+  if (cappedPercent > displayedPolishPercent) {
+    paintPolishPercent(cappedPercent);
+  }
+}
+
+/**
+ * 润色完成时把进度停在 100%。
+ */
+function finishPolishPercent(): void {
+  window.clearInterval(polishPercentTimer);
+  paintPolishPercent(100);
+}
+
+/**
  * 润色进行时锁住对照层上的按钮，避免连点打出两段结果。
  */
 function setDialogBusy(busy: boolean): void {
@@ -121,6 +174,19 @@ function setDialogBusy(busy: boolean): void {
   if (statusLine) {
     statusLine.textContent = busy ? '正在润色…' : '';
   }
+  const progress = polishDialog.querySelector('[data-polish-progress]');
+  if (progress instanceof HTMLElement) {
+    progress.hidden = !busy;
+  }
+  if (busy) {
+    startPolishPercent();
+  } else {
+    window.clearInterval(polishPercentTimer);
+  }
+  const requirementInput = polishDialog.querySelector('[data-polish-requirement]');
+  if (requirementInput instanceof HTMLInputElement) {
+    requirementInput.disabled = busy;
+  }
 }
 
 /**
@@ -131,13 +197,22 @@ async function regenerateComparison(customRequirement: string): Promise<void> {
     return;
   }
   setDialogBusy(true);
+  const errorLine = polishDialog?.querySelector('[data-polish-error]');
+  if (errorLine instanceof HTMLElement) {
+    errorLine.hidden = true;
+    errorLine.textContent = '';
+  }
   try {
     const passage = await requestPolish(
       polishSession.fieldName,
       polishSession.sourceText,
       customRequirement,
     );
+    finishPolishPercent();
     renderComparison(passage.headline, passage.body);
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, 280);
+    });
   } catch (error: unknown) {
     showDialogError(describeUserFacingError(error));
   } finally {
@@ -158,6 +233,13 @@ function ensurePolishDialog(): HTMLDivElement {
   backdrop.innerHTML = `
     <div class="polish-dialog" role="dialog" aria-modal="true" aria-labelledby="polishDialogTitle">
       <h3 id="polishDialogTitle" class="polish-dialog-title">润色对照</h3>
+      <p class="polish-dialog-hint">建议使用 AI 自动修改。有特殊要求再点「我来提供要求」。</p>
+      <div class="polish-progress" data-polish-progress hidden>
+        <div class="polish-progress-track">
+          <div class="polish-progress-fill" data-polish-progress-fill></div>
+        </div>
+        <span class="polish-progress-percent" data-polish-progress-percent>0%</span>
+      </div>
       <p class="polish-dialog-field" data-polish-field></p>
       <div class="polish-compare">
         <section>
@@ -180,6 +262,7 @@ function ensurePolishDialog(): HTMLDivElement {
         <button type="button" class="btn btn-secondary" data-polish-regenerate>按此要求重新生成</button>
       </div>
       <div class="polish-dialog-actions">
+        <button type="button" class="btn btn-primary" data-polish-auto>AI 自动修改</button>
         <button type="button" class="btn btn-primary" data-polish-confirm>确定更改</button>
         <button type="button" class="btn btn-secondary" data-polish-cancel>取消更改</button>
         <button type="button" class="btn btn-secondary" data-polish-ask>我来提供要求</button>
@@ -214,6 +297,10 @@ function ensurePolishDialog(): HTMLDivElement {
 
   backdrop.querySelector('[data-polish-cancel]')?.addEventListener('click', () => {
     closePolishDialog();
+  });
+
+  backdrop.querySelector('[data-polish-auto]')?.addEventListener('click', () => {
+    void regenerateComparison('');
   });
 
   backdrop.querySelector('[data-polish-ask]')?.addEventListener('click', () => {
@@ -271,7 +358,7 @@ function closePolishDialog(): void {
 }
 
 /**
- * 打开对照层并完成第一次润色。原文为空时只在字段下提示，不请求模型。
+ * 打开对照层，左边是原文，右边先空着。点「AI 自动修改」才请求模型。
  */
 async function openPolishComparison(
   textarea: HTMLTextAreaElement,
@@ -305,16 +392,17 @@ async function openPolishComparison(
   if (resultColumn) {
     resultColumn.textContent = '';
   }
-  dialog.hidden = false;
-  setDialogBusy(true);
-  try {
-    const passage = await requestPolish(fieldName, sourceText, '');
-    renderComparison(passage.headline, passage.body);
-  } catch (error: unknown) {
-    showDialogError(describeUserFacingError(error));
-  } finally {
-    setDialogBusy(false);
+  const progress = dialog.querySelector('[data-polish-progress]');
+  if (progress instanceof HTMLElement) {
+    progress.hidden = true;
   }
+  const statusLine = dialog.querySelector('[data-polish-status]');
+  if (statusLine) {
+    statusLine.textContent = '';
+  }
+  dialog.dataset.headline = '';
+  dialog.dataset.body = '';
+  dialog.hidden = false;
 }
 
 /**
@@ -408,3 +496,15 @@ export function mountEssayPolishControls(root: ParentNode): void {
     attachPolishControls(fieldLabel, textarea, fieldName);
   }
 }
+
+/**
+ * 接收后台按已生成字数算出的百分比，和本页的时间进度取较高的那个。
+ */
+chrome.runtime.onMessage.addListener((message: { type?: string; requestId?: string; percent?: number }) => {
+  if (message.type !== 'POLISH_PROGRESS' || message.requestId !== activePolishRequestId) {
+    return;
+  }
+  if (typeof message.percent === 'number') {
+    applyStreamPercent(message.percent);
+  }
+});

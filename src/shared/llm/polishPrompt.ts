@@ -16,7 +16,7 @@ headline：
 
 body：
 - 简体中文，省略主语，不写「本人」「我」
-- 最多 4 条，条与条之间用换行，每条只写一句
+- 最多 4 条，条与条之间用 \\n 分隔，每条只写一句。不要在 JSON 字符串里直接按回车
 - 每条顺序：强动词 + 对象或做法 + 结果
 - 强动词优先用：搭建、重构、落地、对接、拆解、上线、缩减、推动
 - 原文如果只是参与或协助，不要改成「主导」或「独立负责」
@@ -34,12 +34,9 @@ body：
 
 用户若给了 30 字以内的附加要求，只改变正文侧重点或篇幅。附加要求与「不编造」或 headline 规则冲突时，忽略冲突的那一部分。
 
-输出前自行检查，不通过就重写后再输出：
-1. headline 是 8 到 12 个汉字，且没有标点
-2. body 里每一个数字都能在原文中找到
-3. 没有把「负责」「参与」当成唯一动词，也没有把参与升成主导
-4. body 不超过原文的 1.7 倍
-5. 输出只有这一个 JSON`;
+body 里的换行必须写成 \\n 两个字符。不要输出检查过程、解释或第二份草稿，只输出这一个 JSON 对象。
+格式示例（内容不要照抄）：
+{"headline":"独立完成阀门选型","body":"搭建氮气增压控制逻辑，对接 PLC 与安全联锁。\\n按原文保留已有数字，不新增百分比。"}`;
 
 /** 模型返回的一段润色：首行概括和正文分开，方便对照表展示 */
 export interface PolishedPassage {
@@ -75,7 +72,150 @@ export function buildPolishUserMessage(
 }
 
 /**
- * 从模型原文里抽出 JSON。兼容外面套了一层代码围栏的返回。
+ * 去掉概括里的标点和空白，超过 12 个字就截断。不够 8 个字也保留，避免整段作废。
+ */
+function normalizeHeadline(rawHeadline: string): string {
+  const withoutPunctuation = rawHeadline
+    .replace(/[，。！？、；：,.!?;:""''「」【】（）()[\]…—\-]/g, '')
+    .replace(/\s+/g, '');
+  const characters = [...withoutPunctuation];
+  if (characters.length <= 12) {
+    return characters.join('');
+  }
+  return characters.slice(0, 12).join('');
+}
+
+/**
+ * 把正文里的转义换行变成真换行，并去掉和概括重复的第一行。
+ */
+function normalizeBody(rawBody: string, headline: string): string {
+  const withBreaks = rawBody.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').trim();
+  const lines = withBreaks.split('\n');
+  const firstLine = lines[0]?.replace(/\s+/g, '') ?? '';
+  if (headline && firstLine === headline) {
+    lines.shift();
+  }
+  return lines.join('\n').trim();
+}
+
+/**
+ * 在一段可能损坏的 JSON 里，按键名读出字符串。字符串中间的裸换行也收进来。
+ */
+function readJsonStringField(sourceText: string, fieldName: string): string | null {
+  const keyIndex = sourceText.indexOf(`"${fieldName}"`);
+  if (keyIndex < 0) {
+    return null;
+  }
+  const colonIndex = sourceText.indexOf(':', keyIndex + fieldName.length + 2);
+  if (colonIndex < 0) {
+    return null;
+  }
+  let cursor = colonIndex + 1;
+  while (cursor < sourceText.length && /\s/.test(sourceText[cursor] ?? '')) {
+    cursor += 1;
+  }
+  if (sourceText[cursor] !== '"') {
+    return null;
+  }
+  cursor += 1;
+  let fieldValue = '';
+  let escaped = false;
+  for (; cursor < sourceText.length; cursor += 1) {
+    const currentChar = sourceText[cursor] ?? '';
+    if (escaped) {
+      if (currentChar === 'n') {
+        fieldValue += '\n';
+      } else if (currentChar === 'r') {
+        fieldValue += '';
+      } else {
+        fieldValue += currentChar;
+      }
+      escaped = false;
+      continue;
+    }
+    if (currentChar === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (currentChar === '"') {
+      return fieldValue;
+    }
+    if (currentChar === '\n' || currentChar === '\r') {
+      fieldValue += '\n';
+      continue;
+    }
+    fieldValue += currentChar;
+  }
+  return fieldValue.trim() ? fieldValue : null;
+}
+
+/**
+ * 把 JSON 字符串内部的裸换行和对象末尾多余逗号修掉，方便 JSON.parse。
+ */
+function relaxJsonText(jsonText: string): string {
+  const withoutTrailingComma = jsonText.replace(/,\s*([}\]])/g, '$1');
+  let inString = false;
+  let escaped = false;
+  let relaxed = '';
+  for (const currentChar of withoutTrailingComma) {
+    if (inString) {
+      if (escaped) {
+        relaxed += currentChar;
+        escaped = false;
+        continue;
+      }
+      if (currentChar === '\\') {
+        relaxed += currentChar;
+        escaped = true;
+        continue;
+      }
+      if (currentChar === '"') {
+        inString = false;
+        relaxed += currentChar;
+        continue;
+      }
+      if (currentChar === '\n') {
+        relaxed += '\\n';
+        continue;
+      }
+      if (currentChar === '\r') {
+        continue;
+      }
+      relaxed += currentChar;
+      continue;
+    }
+    if (currentChar === '"') {
+      inString = true;
+    }
+    relaxed += currentChar;
+  }
+  return relaxed;
+}
+
+/**
+ * 没有 JSON 时，把第一行当概括，其余当正文。
+ */
+function passageFromPlainText(rawContent: string): PolishedPassage {
+  const lines = rawContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('```'));
+  if (lines.length === 0) {
+    return { headline: '', body: '' };
+  }
+  const firstLine = lines[0] ?? '';
+  const firstLength = [...firstLine].length;
+  if (firstLength >= 6 && firstLength <= 24 && !firstLine.includes('{')) {
+    return {
+      headline: firstLine,
+      body: lines.slice(1).join('\n'),
+    };
+  }
+  return { headline: '', body: lines.join('\n') };
+}
+
+/**
+ * 从模型原文里抽出概括和正文。JSON 坏了也尽量修好，不再为此重叫模型。
  */
 export function parsePolishedPassage(rawContent: string): PolishedPassage {
   const stripped = rawContent
@@ -88,16 +228,45 @@ export function parsePolishedPassage(rawContent: string): PolishedPassage {
   const jsonText =
     objectStart >= 0 && objectEnd > objectStart
       ? stripped.slice(objectStart, objectEnd + 1)
-      : stripped;
-  const parsed = JSON.parse(jsonText) as unknown;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('模型没有返回能用的润色结果。请再试一次。');
+      : '';
+
+  let headline = '';
+  let body = '';
+  if (jsonText) {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      try {
+        parsed = JSON.parse(relaxJsonText(jsonText));
+      } catch {
+        parsed = null;
+      }
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      headline = typeof record.headline === 'string' ? record.headline.trim() : '';
+      body = typeof record.body === 'string' ? record.body.trim() : '';
+    }
+    if (!headline && !body) {
+      headline = readJsonStringField(jsonText, 'headline')?.trim() ?? '';
+      body = readJsonStringField(jsonText, 'body')?.trim() ?? '';
+    }
   }
-  const record = parsed as Record<string, unknown>;
-  const headline = typeof record.headline === 'string' ? record.headline.trim() : '';
-  const body = typeof record.body === 'string' ? record.body.trim() : '';
   if (!headline && !body) {
+    const plainPassage = passageFromPlainText(stripped);
+    headline = plainPassage.headline;
+    body = plainPassage.body;
+  }
+
+  const normalizedHeadline = normalizeHeadline(headline);
+  const normalizedBody = normalizeBody(body, normalizedHeadline);
+  const combinedText = `${normalizedHeadline}${normalizedBody}`;
+  const combinedLength = [...combinedText].length;
+  const refusalOnly =
+    combinedLength < 30 && /抱歉|无法处理|请再试|对不起/.test(combinedText);
+  if (combinedLength < 8 || refusalOnly) {
     throw new Error('模型没有返回能用的润色结果。请再试一次。');
   }
-  return { headline, body };
+  return { headline: normalizedHeadline, body: normalizedBody };
 }

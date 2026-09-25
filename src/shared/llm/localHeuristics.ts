@@ -136,6 +136,48 @@ function matchFieldToProfile(
     return null;
   }
 
+  if (/自我评价|个人优势|我的价值|个人介绍|个人评价/.test(rawText)) {
+    const evaluation = profile.essays?.selfEvaluation?.trim() ?? '';
+    if (evaluation) {
+      return { value: evaluation, reason: '本地启发式：自我评价' };
+    }
+    return null;
+  }
+
+  if (/获奖|奖项|所获荣誉|荣誉奖/.test(rawText) && !/附件|上传|证明/.test(rawText)) {
+    const awardLines = profile.awards
+      .map((item) => [item.name, item.level].filter(Boolean).join(' ').trim())
+      .filter((line) => line.length > 0);
+    if (awardLines.length === 0) {
+      return null;
+    }
+    const awardValue =
+      field.tag === 'textarea' || awardLines.length === 1
+        ? awardLines.join('\n')
+        : '';
+    if (awardValue) {
+      return { value: awardValue, reason: '本地启发式：奖项' };
+    }
+    return null;
+  }
+
+  if (/证书|资格证/.test(rawText) && !/附件|上传|证明|编号/.test(rawText)) {
+    const certificateNames = profile.certificates
+      .map((item) => item.name.trim())
+      .filter((name) => name.length > 0);
+    if (certificateNames.length === 0) {
+      return null;
+    }
+    const certificateValue =
+      field.tag === 'textarea' || certificateNames.length === 1
+        ? certificateNames.join('\n')
+        : '';
+    if (certificateValue) {
+      return { value: certificateValue, reason: '本地启发式：证书' };
+    }
+    return null;
+  }
+
   return null;
 }
 

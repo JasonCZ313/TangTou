@@ -100,6 +100,12 @@ export type ExtensionMessage =
       usage?: LlmTokenUsage | null;
     }
   | {
+      type: 'POLISH_PROGRESS';
+      requestId: string;
+      /** 0 到 100 的整数。结果未返回前最高报到 92 */
+      percent: number;
+    }
+  | {
       type: 'ERROR';
       requestId: string;
       code: string;

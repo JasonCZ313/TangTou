@@ -36,6 +36,9 @@ function translateRawError(rawMessage: string): string {
   if (detail === 'NO_ACTIVE_TAB' || detail.includes('无法确定当前标签页')) {
     return '找不到当前标签页。请先点一下网申页面，再扫描。';
   }
+  if (/未处理的消息类型/.test(detail)) {
+    return '扩展还在用旧版本。请在扩展管理页对躺投点一次重新加载，再润色。';
+  }
   if (detail === 'EMPTY_RUNTIME_RESPONSE' || detail === 'EMPTY_TAB_RESPONSE') {
     return '扩展后台没有回音。请在扩展管理页对躺投点一次重新加载，再刷新网申页。';
   }

@@ -584,6 +584,43 @@ input[required]:user-invalid {
   font-size: 16px;
 }
 
+.polish-dialog-hint {
+  margin: 6px 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.polish-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.polish-progress-track {
+  flex: 1;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #fde68a;
+}
+
+.polish-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #d97706;
+}
+
+.polish-progress-percent {
+  flex: none;
+  min-width: 36px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #b45309;
+  text-align: right;
+}
+
 .polish-dialog-field {
   margin: 4px 0 12px;
   color: var(--tt-muted);

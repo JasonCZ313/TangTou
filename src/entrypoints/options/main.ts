@@ -49,6 +49,7 @@ import { describeUserFacingError } from '../../shared/messaging/userFacingError'
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import { mountEssayPolishControls } from './polishControl';
+import { jumpToEditorTarget, mountEditorSearch } from './editorSearch';
 import { fillStaticSelectsByCatalog } from './editorWidgets';
 import { appendListItem, renderAllDynamicLists } from './editorLists';
 import {
@@ -350,7 +351,7 @@ function setupEditorToc(): void {
       if (target instanceof HTMLDetailsElement) {
         target.open = true;
       }
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      jumpToEditorTarget(target);
       setActiveTocLink(section.id);
     });
     listItem.appendChild(linkButton);
@@ -507,6 +508,8 @@ async function bootstrapOptionsPage(): Promise<void> {
   try {
     ensureStaticCatalogsReady();
     setupEditorToc();
+    mountEditorSearch(profileEditorForm);
+    bindRequiredMissingClear();
 
     const [settings, profiles, tokenUsage] = await Promise.all([
       getSettings(),
@@ -787,6 +790,7 @@ function openEditor(profile: Profile): void {
   fillEditorForm(draftProfileData);
   remountDistributedAttachments(profile.id);
   void refreshAvatarHint(profile.id);
+  clearRequiredAlerts();
   stickySaveStatus.textContent = '';
   editorSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -1119,6 +1123,121 @@ async function refreshAvatarHint(profileId: string): Promise<void> {
 }
 
 /**
+ * 硬必填文案对应到编辑区里最具体的控件或分区。
+ */
+const REQUIRED_FIELD_SELECTOR: Record<string, string> = {
+  姓名: '[data-path="basic.fullName"]',
+  手机: '[data-path="basic.phone"]',
+  邮箱: '[data-path="basic.email"]',
+  现居城市: '[data-path="basic.currentCity"]',
+  国籍: '[data-path="basic.nationality"]',
+  籍贯: '[data-path="basic.nativePlace"]',
+  证件类型: '[data-path="basic.idType"]',
+  证件号码: '[data-path="basic.idNumber"]',
+  政治面貌: '[data-path="basic.politicalStatus"]',
+  婚姻状况: '[data-path="basic.maritalStatus"]',
+  目标职位: '[data-path="jobIntent.targetRole"]',
+};
+
+/**
+ * 底栏提示用的短名称，避免把整句教育校验贴在按钮旁。
+ */
+function shortMissingLabel(label: string): string {
+  if (label.includes('双学位')) {
+    return '第二学位';
+  }
+  if (label.includes('教育')) {
+    return '教育经历';
+  }
+  if (label.includes('头像')) {
+    return '头像';
+  }
+  return label;
+}
+
+/**
+ * 按校验文案找到要高亮的字段框；教育类落到整块分区。
+ */
+function findRequiredTarget(label: string): HTMLElement | null {
+  if (label.includes('头像')) {
+    return document.getElementById('avatarAttachmentHost');
+  }
+  if (label.includes('教育') || label.includes('双学位')) {
+    return document.getElementById('section-education');
+  }
+  const selector = REQUIRED_FIELD_SELECTOR[label];
+  if (!selector) {
+    return null;
+  }
+  const control = profileEditorForm.querySelector(selector);
+  const field = control?.closest('.field');
+  return field instanceof HTMLElement ? field : null;
+}
+
+/**
+ * 清掉上次保存失败留下的红框和底栏红字。
+ */
+function clearRequiredAlerts(): void {
+  stickySaveStatus.classList.remove('is-alert');
+  for (const marked of profileEditorForm.querySelectorAll('.is-required-missing')) {
+    marked.classList.remove('is-required-missing');
+  }
+}
+
+/**
+ * 未填必填全部加红框，并滚到校验名单里最靠上的那一项。
+ */
+function focusFirstMissingRequired(labels: string[]): string {
+  clearRequiredAlerts();
+  const targets: HTMLElement[] = [];
+  for (const label of labels) {
+    const target = findRequiredTarget(label);
+    if (!target) {
+      continue;
+    }
+    target.classList.add('is-required-missing');
+    targets.push(target);
+  }
+  const firstTarget = targets[0];
+  const firstLabel = labels[0] ?? '必填项';
+  if (firstTarget) {
+    jumpToEditorTarget(firstTarget);
+  }
+  return shortMissingLabel(firstLabel);
+}
+
+/**
+ * 填上内容后立刻去掉这一格的红框。
+ */
+function bindRequiredMissingClear(): void {
+  const clearFilledField = (event: Event) => {
+    const eventTarget = event.target;
+    if (!(eventTarget instanceof HTMLElement)) {
+      return;
+    }
+    const field = eventTarget.closest('.field');
+    if (!(field instanceof HTMLElement) || !field.classList.contains('is-required-missing')) {
+      return;
+    }
+    const controls = field.querySelectorAll('input, textarea, select');
+    for (const control of controls) {
+      if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement)) {
+        continue;
+      }
+      if (control instanceof HTMLInputElement && control.type === 'hidden') {
+        continue;
+      }
+      if (control.value.trim()) {
+        field.classList.remove('is-required-missing');
+        return;
+      }
+    }
+  };
+  profileEditorForm.addEventListener('input', clearFilledField);
+  profileEditorForm.addEventListener('change', clearFilledField);
+}
+
+/**
  * 把当前草稿写入本机。
  * @param options.requireComplete 为 true 时校验硬必填与头像（「保存档案/关闭」）
  * @param options.closeAfterSave 保存成功后关闭编辑区
@@ -1138,18 +1257,21 @@ async function persistDraftProfile(options: {
   if (options.requireComplete) {
     const validation = validateProfileData(draftProfileData);
     if (!validation.ok) {
-      showStatus(`无法保存：${validation.missingRequired.join('；')}`, 'error');
-      stickySaveStatus.textContent = '必填未齐';
+      const jumpedLabel = focusFirstMissingRequired(validation.missingRequired);
+      stickySaveStatus.textContent = `还不能保存，已跳到${jumpedLabel}`;
+      stickySaveStatus.classList.add('is-alert');
       return;
     }
     try {
       await assertAvatarUploaded(editingProfileId);
     } catch (error) {
+      const jumpedLabel = focusFirstMissingRequired(['头像']);
       showStatus(
         error instanceof Error ? error.message : '请先上传头像',
         'error',
       );
-      stickySaveStatus.textContent = '缺头像';
+      stickySaveStatus.textContent = `还不能保存，已跳到${jumpedLabel}`;
+      stickySaveStatus.classList.add('is-alert');
       return;
     }
   }
@@ -1169,6 +1291,7 @@ async function persistDraftProfile(options: {
     draftProfileData = structuredClone(updated.data);
     fillEditorForm(draftProfileData);
     remountDistributedAttachments(updated.id);
+    clearRequiredAlerts();
     stickySaveStatus.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
     const validation = validateProfileData(draftProfileData);
     const softText =

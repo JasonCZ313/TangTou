@@ -134,7 +134,11 @@ const tokenUsageLine = document.getElementById(
 ) as HTMLParagraphElement;
 
 const EMPTY_MAPPING_HINT =
-  '尚未生成预览。日常请用右上角 Popup「扫描并填写」；也可在此「扫描本页」。';
+  '选好档案后，点下方「扫描本页」。扫完会在这里列出要填的字段，确认后再写入。';
+
+/** 已经扫过，但没有可以填的项 */
+const EMPTY_MAPPING_AFTER_SCAN =
+  '这次没有可填的项。把档案写全，或换一页，再扫一次。';
 
 function showStatus(message: string, kind: StatusKind = 'info'): void {
   statusMessageElement.textContent = message;
@@ -444,7 +448,7 @@ function renderMappingTable(): void {
     emptyRow.className = 'empty-row';
     const emptyCell = document.createElement('td');
     emptyCell.colSpan = 3;
-    emptyCell.textContent = EMPTY_MAPPING_HINT;
+    emptyCell.textContent = currentSession ? EMPTY_MAPPING_AFTER_SCAN : EMPTY_MAPPING_HINT;
     emptyRow.appendChild(emptyCell);
     mappingTableBody.appendChild(emptyRow);
     skippedSummaryElement.hidden = true;
@@ -1073,7 +1077,7 @@ async function bootstrapSidePanel(): Promise<void> {
     renderMappingTable();
 
     if (cachedProfiles.length === 0) {
-      showStatus('请先在上方「设置与新建档案」创建档案并填写 API', 'info');
+      showStatus('请先在上方「设置与新建/编辑档案」创建档案并填写 API', 'info');
     } else if (currentSession && currentSession.plan.items.length > 0) {
       if (currentSession.notice) {
         showError(currentSession.notice);

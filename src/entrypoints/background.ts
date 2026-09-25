@@ -11,6 +11,8 @@ import { listProfiles, getProfile } from '../shared/storage/profileStore';
 import { getSettings } from '../shared/storage/settingsStore';
 import { listAttachments, readAttachmentFile } from '../shared/storage/attachmentStore';
 import { normalizeProfileData } from '../shared/storage/normalize';
+import { restoreResumePatchLineBreaks } from '../shared/resume/restoreListBreaks';
+import { overlayResumeSections } from '../shared/resume/resumeSections';
 import {
   getTokenUsageStats,
   recordTokenUsage,
@@ -455,7 +457,11 @@ async function handleParseResume(
   return {
     type: 'PARSE_RESUME_RESULT',
     requestId: message.requestId,
-    profilePatch: normalizeProfileData(profilePatch),
+    profilePatch: normalizeProfileData(
+      restoreResumePatchLineBreaks(
+        overlayResumeSections(profilePatch, message.resumeText),
+      ),
+    ),
     usage,
   };
 }
@@ -509,6 +515,18 @@ async function handlePolishText(
     fieldName: message.fieldName,
     sourceText,
     customRequirement,
+    onProgress: (percent) => {
+      void chrome.runtime
+        .sendMessage({
+          type: 'POLISH_PROGRESS',
+          requestId: message.requestId,
+          percent,
+        } satisfies ExtensionMessage)
+        .then(
+          () => undefined,
+          () => undefined,
+        );
+    },
   });
   if (usage) {
     await recordTokenUsage(usage);
@@ -600,6 +618,8 @@ async function dispatchMessage(
       return handleParseResume(message);
     case 'POLISH_TEXT':
       return handlePolishText(message);
+    case 'POLISH_PROGRESS':
+      return message;
     case 'SCAN_PROGRESS':
     case 'SCAN_FIELDS_RESULT':
       return message;
@@ -611,7 +631,7 @@ async function dispatchMessage(
         type: 'ERROR',
         requestId: 'requestId' in message ? message.requestId : '',
         code: 'UNKNOWN_MESSAGE',
-        message: `未处理的消息类型: ${message.type}`,
+        message: '扩展还在用旧版本。请在扩展管理页对躺投点一次重新加载后再试。',
       };
   }
 }

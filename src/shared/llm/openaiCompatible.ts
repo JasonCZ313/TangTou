@@ -123,6 +123,18 @@ function isResponseFormatRejection(
 }
 
 /**
+ * 判断 HTTP 错误是不是拒绝了 stream 参数。只在这种拒绝时才去掉 stream 再发一次。
+ */
+function isStreamRejection(statusCode: number, errorBodyText: string): boolean {
+  if (statusCode !== 400 && statusCode !== 422) {
+    return false;
+  }
+  return /stream/i.test(errorBodyText) && /unsupported|unknown|not support|invalid|unrecognized/i.test(
+    errorBodyText,
+  );
+}
+
+/**
  * 向 OpenAI 兼容端点发起一次 Chat Completions 请求。
  * useJsonObjectFormat 为 true 时附带 response_format；部分本地/兼容服务不支持该字段。
  */
@@ -133,6 +145,7 @@ async function postChatCompletions(args: {
   messages: ChatMessage[];
   temperature: number;
   useJsonObjectFormat: boolean;
+  useStream?: boolean;
   maxTokens?: number;
   signal: AbortSignal;
 }): Promise<Response> {
@@ -143,6 +156,9 @@ async function postChatCompletions(args: {
   };
   if (args.useJsonObjectFormat) {
     requestBody.response_format = { type: 'json_object' };
+  }
+  if (args.useStream) {
+    requestBody.stream = true;
   }
   if (args.maxTokens !== undefined) {
     requestBody.max_tokens = args.maxTokens;
@@ -296,7 +312,7 @@ export async function testApiConnection(options: {
 
 /**
  * 按固定润色标准改写一段长文。apiKey 只在 background 里使用。
- * 附加要求超过调用方限制时不应传到这里。
+ * 只为参数被拒绝再发一次；结果格式不好时在本地修复，不再重叫模型。
  */
 export async function requestTextPolish(options: {
   apiBaseUrl: string;
@@ -306,6 +322,7 @@ export async function requestTextPolish(options: {
   sourceText: string;
   customRequirement: string;
   timeoutMs?: number;
+  onProgress?: (percent: number) => void;
 }): Promise<{ passage: PolishedPassage; usage: LlmTokenUsage | null }> {
   const baseUrl = options.apiBaseUrl.replace(/\/$/, '');
   const endpointUrl = `${baseUrl}/chat/completions`;
@@ -325,52 +342,73 @@ export async function requestTextPolish(options: {
       ),
     },
   ];
+  const expectedCharacters = Math.min(
+    Math.ceil([...options.sourceText.trim()].length * 1.7),
+    320,
+  ) + 16;
+  const reportPartial = (fullText: string): void => {
+    if (!options.onProgress) {
+      return;
+    }
+    const receivedCharacters = [...fullText].length;
+    const percent = Math.max(
+      8,
+      Math.min(92, Math.round((receivedCharacters / expectedCharacters) * 100)),
+    );
+    options.onProgress(percent);
+  };
+
   try {
+    let useJsonObjectFormat = true;
+    let useStream = true;
     let response = await postChatCompletions({
       endpointUrl,
       apiKey: options.apiKey,
       model: options.model,
       messages,
-      temperature: 0.3,
-      useJsonObjectFormat: true,
-      maxTokens: 800,
+      temperature: 0.2,
+      useJsonObjectFormat,
+      useStream,
+      maxTokens: 1600,
       signal: controller.signal,
     });
     if (!response.ok) {
       const firstErrorText = await response.text();
-      if (isResponseFormatRejection(response.status, firstErrorText)) {
-        response = await postChatCompletions({
-          endpointUrl,
-          apiKey: options.apiKey,
-          model: options.model,
-          messages,
-          temperature: 0.3,
-          useJsonObjectFormat: false,
-          maxTokens: 800,
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          const retryErrorText = await response.text();
-          throw new Error(
-            `LLM_HTTP_${response.status}: ${retryErrorText.slice(0, 200)}`,
-          );
-        }
-      } else {
+      const rejectFormat = isResponseFormatRejection(response.status, firstErrorText);
+      const rejectStream = isStreamRejection(response.status, firstErrorText);
+      if (!rejectFormat && !rejectStream) {
         throw new Error(
           `LLM_HTTP_${response.status}: ${firstErrorText.slice(0, 200)}`,
         );
       }
+      useJsonObjectFormat = rejectFormat ? false : useJsonObjectFormat;
+      useStream = rejectStream ? false : useStream;
+      response = await postChatCompletions({
+        endpointUrl,
+        apiKey: options.apiKey,
+        model: options.model,
+        messages,
+        temperature: 0.2,
+        useJsonObjectFormat,
+        useStream,
+        maxTokens: 1600,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const retryErrorText = await response.text();
+        throw new Error(
+          `LLM_HTTP_${response.status}: ${retryErrorText.slice(0, 200)}`,
+        );
+      }
     }
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown } }>;
-    };
-    const content = payload.choices?.[0]?.message?.content;
-    if (typeof content !== 'string' || content.trim().length === 0) {
+    const collected = await collectChatCompletionText(response, reportPartial);
+    const content = collected.content;
+    if (content.trim().length === 0) {
       throw new Error('模型没有返回能用的润色结果。请再试一次。');
     }
     return {
       passage: parsePolishedPassage(content),
-      usage: parseUsageFromPayload(payload),
+      usage: parseUsageFromPayload(collected.usagePayload),
     };
   } catch (error: unknown) {
     if (error instanceof SyntaxError) {
@@ -382,9 +420,135 @@ export async function requestTextPolish(options: {
   }
 }
 
+/**
+ * 把 message.content 收成一段文字。有的接口把正文放在数组里。
+ */
+function messageText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  const textParts: string[] = [];
+  for (const part of content) {
+    if (typeof part === 'string') {
+      textParts.push(part);
+      continue;
+    }
+    if (
+      part &&
+      typeof part === 'object' &&
+      typeof (part as { text?: unknown }).text === 'string'
+    ) {
+      textParts.push((part as { text: string }).text);
+    }
+  }
+  return textParts.join('');
+}
+
+/**
+ * 从非流式响应里取出正文。正文为空时再看思考字段里有没有结果。
+ */
+function extractMessageContent(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+  const message = (
+    payload as {
+      choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown } }>;
+    }
+  ).choices?.[0]?.message;
+  const directText = messageText(message?.content);
+  if (directText.trim()) {
+    return directText;
+  }
+  return typeof message?.reasoning_content === 'string' ? message.reasoning_content : '';
+}
+
+/**
+ * 读完一次 Chat Completions。流式时按已收到的文字回调。
+ */
+async function collectChatCompletionText(
+  response: Response,
+  onPartial: (fullText: string) => void,
+): Promise<{ content: string; usagePayload: unknown }> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/event-stream') || !response.body) {
+    const payload = (await response.json()) as unknown;
+    const content = extractMessageContent(payload);
+    onPartial(content);
+    return { content, usagePayload: payload };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pendingText = '';
+  let visibleText = '';
+  let reasoningText = '';
+  let usagePayload: unknown = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    pendingText += decoder.decode(value, { stream: true });
+    const lines = pendingText.split(/\r?\n/);
+    pendingText = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine.startsWith('data:')) {
+        continue;
+      }
+      const dataText = trimmedLine.slice(5).trim();
+      if (!dataText || dataText === '[DONE]') {
+        continue;
+      }
+      let eventPayload: {
+        choices?: Array<{
+          delta?: { content?: unknown; reasoning_content?: unknown };
+          message?: { content?: unknown };
+        }>;
+        usage?: unknown;
+      };
+      try {
+        eventPayload = JSON.parse(dataText) as typeof eventPayload;
+      } catch {
+        continue;
+      }
+      const delta = eventPayload.choices?.[0]?.delta;
+      const visiblePiece = messageText(
+        delta?.content ?? eventPayload.choices?.[0]?.message?.content,
+      );
+      const reasoningPiece =
+        typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : '';
+      if (visiblePiece) {
+        visibleText += visiblePiece;
+      }
+      if (reasoningPiece) {
+        reasoningText += reasoningPiece;
+      }
+      if (eventPayload.usage) {
+        usagePayload = eventPayload;
+      }
+      onPartial(visibleText || reasoningText);
+    }
+  }
+
+  const content = visibleText.trim() ? visibleText : reasoningText;
+  return { content, usagePayload };
+}
+
 const RESUME_PARSE_SYSTEM = `你是简历结构化助手。根据用户给出的简历纯文本，输出一个 JSON 对象，结构尽量接近：
-{"basic":{"fullName":"","phone":"","email":"","currentCity":"","nationality":"","nativePlace":"","gender":"","birthday":""},"jobIntent":{"targetRole":""},"education":[{"school":"","degreeLevel":"","major":"","startDate":"","endDate":""}],"experience":[{"company":"","title":"","startDate":"","endDate":"","description":""}],"projects":[{"name":"","description":""}],"skills":[{"name":""}]}
-规则：只填写简历里明确出现的信息；没有的字段省略或留空字符串；日期尽量 YYYY-MM-DD；不要编造；不要 markdown。`;
+{"basic":{"fullName":"","phone":"","email":"","currentCity":"","nationality":"","nativePlace":"","gender":"","birthday":""},"jobIntent":{"targetRole":""},"education":[{"school":"","degreeLevel":"","major":"","startDate":"","endDate":"","description":""}],"experience":[{"company":"","title":"","startDate":"","endDate":"","description":"","responsibilities":"","workContent":"","achievements":""}],"projects":[{"name":"","description":"","content":"","value":""}],"skills":[{"name":""}],"certificates":[{"name":"","level":""}],"awards":[{"name":"","level":""}],"essays":{"selfEvaluation":""}}
+规则：只填写简历里明确出现的信息；没有的字段省略或留空字符串；日期尽量 YYYY-MM-DD；不要编造；不要 markdown。
+标题用词不同也要归类，不要因为不是完全相同的四个字就丢掉：
+- 「证书」「资格证书」「专业证书」「技能证书」写入 certificates，每个名称一条。
+- 「获奖」「获奖情况」「奖项」「荣誉」写入 awards，名称和等第分开，等第放 level。
+- 「我的价值」「个人优势」「自我评价」「个人介绍」整段写入 essays.selfEvaluation，保留原文换行。
+姓名、电话、邮箱、日期、学校、公司、职位各占一行，字符串里不要加换行。
+description、responsibilities、workContent、achievements、content、value 里，简历中每一条要点单独一行，用换行符 \\n 分隔。同一条在栏宽处折行的后半句要接回这一条，不要拆开。禁止把多条要点并成一整段。`;
 
 /**
  * 把简历纯文本交给模型，解析成可合并的档案 JSON，并带回 usage。
