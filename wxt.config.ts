@@ -1,4 +1,5 @@
 import { defineConfig } from 'wxt';
+import { appVersionForManifest } from './src/shared/appVersion';
 
 // WXT 扩展构建配置：声明权限、内容脚本匹配范围与侧边栏
 export default defineConfig({
@@ -9,6 +10,7 @@ export default defineConfig({
   modules: [],
   manifest: {
     name: '躺投',
+    version: appVersionForManifest(),
     description:
       '躺投：本机档案 + 用户自备 API Key，通用站点智能填写简历表单（不自动提交）。',
     permissions: ['storage', 'sidePanel', 'scripting'],

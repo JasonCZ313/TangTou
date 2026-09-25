@@ -15,6 +15,7 @@ import {
   scanActivePage,
 } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import { mountAppVersionLabel } from '../../shared/appVersion';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
 import type { AppSettings, Profile } from '../../shared/types/profile';
@@ -443,6 +444,7 @@ function bindEvents(): void {
  * Popup 入口：绑定事件后拉取 GET_STATE 渲染档案下拉。
  */
 async function bootstrapPopup(): Promise<void> {
+  mountAppVersionLabel();
   bindEvents();
   syncBusyUi();
   try {
