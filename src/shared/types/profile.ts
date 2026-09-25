@@ -162,8 +162,22 @@ export interface EducationItem {
   secondDegree?: SecondDegreeInfo;
 }
 
+/**
+ * 可锁定编辑的列表条目公共字段：稳定 id、只读态、附件备注与网盘。
+ */
+export interface LockableListItemFields {
+  /** 稳定主键，绑定附件与「保存本条」状态 */
+  id: string;
+  /** true 时卡片只读展示全貌，点「编辑」再开 */
+  editingLocked?: boolean;
+  /** 本条附件说明（如发证机关、有效期提示） */
+  attachmentNote?: string;
+  /** 本条相关网盘/外链 */
+  cloudLink?: string;
+}
+
 /** 单条实习/工作经历 */
-export interface ExperienceItem {
+export interface ExperienceItem extends LockableListItemFields {
   company: string;
   title: string;
   startDate: string;
@@ -192,7 +206,7 @@ export interface ExperienceItem {
 }
 
 /** 单条项目经历 */
-export interface ProjectItem {
+export interface ProjectItem extends LockableListItemFields {
   name: string;
   role?: string;
   startDate?: string;
@@ -236,7 +250,7 @@ export interface LanguageItem {
 }
 
 /** 证书/资格 */
-export interface CertificateItem {
+export interface CertificateItem extends LockableListItemFields {
   name: string;
   level?: string;
   issuer?: string;
@@ -248,7 +262,7 @@ export interface CertificateItem {
 }
 
 /** 奖项 */
-export interface AwardItem {
+export interface AwardItem extends LockableListItemFields {
   name: string;
   level?: string;
   date?: string;

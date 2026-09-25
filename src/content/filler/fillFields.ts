@@ -1,4 +1,5 @@
 import type { FillPlan } from '../../shared/types/fill';
+import type { FileUploadPayload } from '../../shared/types/messages';
 import { resolveFieldElement } from '../scanner/scanFields';
 import { setNativeValue } from './setNativeValue';
 
@@ -168,6 +169,9 @@ function writeValueToElement(element: Element, nextValue: string): boolean {
   }
 
   if (element instanceof HTMLInputElement) {
+    if (element.type === 'file') {
+      return false;
+    }
     if (element.type === 'checkbox' || element.type === 'radio') {
       return fillCheckableInput(element, nextValue);
     }
@@ -184,11 +188,40 @@ function writeValueToElement(element: Element, nextValue: string): boolean {
 }
 
 /**
- * 按 FillPlan 将映射值安全写入页面控件：
- * 写入前记录旧值快照，成功后加高亮；无法定位或写入失败计入 skipped。
- * 明确不提交表单、不点击提交按钮。
+ * 把 Base64 文件写入原生 file 控件。
  */
-export function applyFillPlan(plan: FillPlan): {
+function assignFilePayload(
+  inputElement: HTMLInputElement,
+  payload: FileUploadPayload,
+): boolean {
+  try {
+    const binaryText = atob(payload.dataBase64);
+    const bytes = new Uint8Array(binaryText.length);
+    for (let index = 0; index < binaryText.length; index += 1) {
+      bytes[index] = binaryText.charCodeAt(index);
+    }
+    const file = new File([bytes], payload.fileName, {
+      type: payload.mimeType || 'application/octet-stream',
+    });
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+    inputElement.files = dataTransfer.files;
+    inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+    inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+    return inputElement.files.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 按 FillPlan 将映射值安全写入页面控件。
+ * file 控件只接受 filePayloads 中对应的本机附件。
+ */
+export function applyFillPlan(
+  plan: FillPlan,
+  filePayloads: FileUploadPayload[] = [],
+): {
   filled: number;
   skipped: number;
 } {
@@ -202,6 +235,26 @@ export function applyFillPlan(plan: FillPlan): {
     const targetElement = resolveFieldElement(mappingItem.fieldId);
     if (!targetElement) {
       skipped += 1;
+      continue;
+    }
+
+    if (
+      targetElement instanceof HTMLInputElement &&
+      targetElement.type === 'file'
+    ) {
+      const payload = filePayloads.find(
+        (item) => item.fieldId === mappingItem.fieldId,
+      );
+      if (!payload || !assignFilePayload(targetElement, payload)) {
+        skipped += 1;
+        continue;
+      }
+      lastUndoSnapshots.push({
+        fieldId: mappingItem.fieldId,
+        previousValue: '',
+      });
+      targetElement.classList.add(FILLED_HIGHLIGHT_CLASS);
+      filled += 1;
       continue;
     }
 
@@ -227,7 +280,7 @@ export function applyFillPlan(plan: FillPlan): {
 }
 
 /**
- * 撤销上一轮 applyFillPlan：按快照恢复旧值并移除高亮，返回成功恢复数量。
+ * 撤销时清空已写入的 file 控件（浏览器不允许恢复用户原先选的文件）。
  */
 export function undoLastFill(): { restored: number } {
   let restored = 0;
@@ -235,6 +288,15 @@ export function undoLastFill(): { restored: number } {
   for (const snapshot of lastUndoSnapshots) {
     const targetElement = resolveFieldElement(snapshot.fieldId);
     if (!targetElement) {
+      continue;
+    }
+    if (
+      targetElement instanceof HTMLInputElement &&
+      targetElement.type === 'file'
+    ) {
+      targetElement.value = '';
+      targetElement.classList.remove(FILLED_HIGHLIGHT_CLASS);
+      restored += 1;
       continue;
     }
 

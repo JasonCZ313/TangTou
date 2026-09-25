@@ -175,6 +175,16 @@
             珊瑚色星号为硬必填；分区标题为青绿大标题；字段说明为灰色正文。日期精确到日。
           </p>
 
+          <!-- 简历置顶：上传 + 识别进度，识别结果只填空白项 -->
+          <details class="editor-block" open id="section-resume">
+            <summary>简历文件与识别</summary>
+            <div id="resumeAttachmentHost"></div>
+            <div class="form-grid" style="margin-top: 10px">
+              <label class="field field-span-2"><span class="field-label">简历文件备注</span><input data-path="attachmentNotes.resumeFileNote" type="text" /></label>
+              <label class="field"><span class="field-label">作品集网盘</span><input data-path="attachmentNotes.portfolioCloudLink" type="url" /></label>
+            </div>
+          </details>
+
           <details class="editor-block" open id="section-basic">
             <summary>基本信息</summary>
             <div class="form-grid">
@@ -214,6 +224,8 @@
               <label class="field"><span class="field-label">作品集</span><input data-path="basic.portfolioUrl" type="url" /></label>
               <label class="field"><span class="field-label">微信号</span><input data-path="basic.wechatId" type="text" /></label>
             </div>
+            <!-- 头像挂在基本信息末尾，硬必填 -->
+            <div class="avatar-block" id="avatarAttachmentHost"></div>
           </details>
 
           <details class="editor-block" open id="section-jobIntent">
@@ -388,15 +400,6 @@
             </div>
           </details>
 
-          <details class="editor-block" id="section-attachment">
-            <summary>附件备注（不存文件，可选）</summary>
-            <div class="form-grid">
-              <label class="field field-span-2"><span class="field-label">简历文件备注</span><input data-path="attachmentNotes.resumeFileNote" type="text" /></label>
-              <label class="field"><span class="field-label">证件照已备</span><select data-path="attachmentNotes.photoReady" data-catalog="yesNo"></select></label>
-              <label class="field"><span class="field-label">作品集网盘</span><input data-path="attachmentNotes.portfolioCloudLink" type="url" /></label>
-            </div>
-          </details>
-
           <details class="editor-block" open id="section-notes">
             <summary>自由补充</summary>
             <label class="field">
@@ -405,11 +408,20 @@
             </label>
           </details>
 
-          <div class="button-row">
-            <button type="submit" class="btn btn-primary">保存档案</button>
-            <button type="button" id="closeEditorButton" class="btn btn-secondary">关闭编辑</button>
-          </div>
           </form>
+          <!-- 常驻底栏：保存进度不关编辑；保存档案/关闭才退出 -->
+          <div class="sticky-save-bar" id="stickySaveBar">
+            <button type="button" id="saveProgressButton" class="btn btn-secondary">
+              保存进度
+            </button>
+            <button type="button" id="saveAndCloseButton" class="btn btn-primary">
+              保存档案 / 关闭编辑
+            </button>
+            <button type="button" id="closeEditorButton" class="btn btn-ghost">
+              关闭编辑
+            </button>
+            <span id="stickySaveStatus" class="sticky-save-status" role="status"></span>
+          </div>
         </div>
       </section>
 

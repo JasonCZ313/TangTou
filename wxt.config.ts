@@ -36,6 +36,10 @@ export default defineConfig({
     side_panel: {
       default_path: 'sidepanel.html',
     },
+    // 本机识字需要在扩展页里编译 WASM
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+    },
   },
   /**
    * WXT 生成 options_ui.page 后补上 open_in_tab，

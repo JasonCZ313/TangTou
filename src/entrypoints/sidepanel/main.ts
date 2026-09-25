@@ -64,9 +64,15 @@ const fillModeDirect = document.getElementById(
 const testApiButton = document.getElementById(
   'testApiButton',
 ) as HTMLButtonElement;
+const apiSettingsFeedback = document.getElementById(
+  'apiSettingsFeedback',
+) as HTMLParagraphElement;
 const createProfileForm = document.getElementById(
   'createProfileForm',
 ) as HTMLFormElement;
+const createProfileFeedback = document.getElementById(
+  'createProfileFeedback',
+) as HTMLParagraphElement;
 const newProfileNameInput = document.getElementById(
   'newProfileNameInput',
 ) as HTMLInputElement;
@@ -117,6 +123,154 @@ function showStatus(message: string, kind: StatusKind = 'info'): void {
 
 function showError(message: string): void {
   showStatus(message, 'error');
+}
+
+/** 表单旁提示的语气：成功、失败、进行中 */
+type InlineTone = 'ok' | 'bad' | 'pending';
+
+/** 成功后自动收起设置区的等待毫秒数 */
+const SETTINGS_COLLAPSE_DELAY_MS = 2500;
+
+/** 待执行的自动折叠计时器；用户中途操作时取消 */
+let settingsCollapseTimer: number | null = null;
+
+/**
+ * 取消「成功后自动折叠」。用户改输入、再点按钮或手动收起时调用。
+ */
+function cancelSettingsAutoCollapse(): void {
+  if (settingsCollapseTimer !== null) {
+    window.clearTimeout(settingsCollapseTimer);
+    settingsCollapseTimer = null;
+  }
+}
+
+/**
+ * 清掉一张表单上的绿/红框，以及字段上的红框。
+ */
+function clearFormFlash(form: HTMLFormElement): void {
+  form.classList.remove('is-flash-ok', 'is-flash-bad');
+  const invalidFields = form.querySelectorAll('.field.is-invalid');
+  for (const fieldElement of invalidFields) {
+    fieldElement.classList.remove('is-invalid');
+  }
+}
+
+/**
+ * 在指定表单旁显示结果。
+ * 失败时：传入 invalidInputs 只标红那几项；不传则整张表单红框。
+ */
+function showInlineFeedback(
+  form: HTMLFormElement,
+  feedbackElement: HTMLParagraphElement,
+  tone: InlineTone,
+  message: string,
+  invalidInputs: HTMLInputElement[] = [],
+): void {
+  clearFormFlash(form);
+  feedbackElement.hidden = false;
+  feedbackElement.textContent = message;
+  feedbackElement.classList.remove('is-ok', 'is-bad', 'is-pending');
+  if (tone === 'ok') {
+    feedbackElement.classList.add('is-ok');
+    form.classList.add('is-flash-ok');
+    return;
+  }
+  if (tone === 'pending') {
+    feedbackElement.classList.add('is-pending');
+    return;
+  }
+  feedbackElement.classList.add('is-bad');
+  if (invalidInputs.length > 0) {
+    for (const inputElement of invalidInputs) {
+      inputElement.closest('.field')?.classList.add('is-invalid');
+    }
+    return;
+  }
+  form.classList.add('is-flash-bad');
+}
+
+/**
+ * 保存或建档成功后闪绿，几秒后收起「设置与新建档案」。
+ * 倒计时内若用户再操作，由 cancelSettingsAutoCollapse 取消。
+ */
+function scheduleSettingsCollapse(): void {
+  cancelSettingsAutoCollapse();
+  settingsCollapseTimer = window.setTimeout(() => {
+    settingsCollapseTimer = null;
+    settingsDetails.open = false;
+    clearFormFlash(apiSettingsForm);
+    clearFormFlash(createProfileForm);
+    apiSettingsFeedback.hidden = true;
+    createProfileFeedback.hidden = true;
+  }, SETTINGS_COLLAPSE_DELAY_MS);
+}
+
+/**
+ * 判断 Base URL 是否为 http(s) 地址。
+ */
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsedUrl = new URL(value);
+    return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 把测连失败原文收成短句，并指出该标红地址、钥匙、模型还是整张表单。
+ */
+function describeConnectionFailure(detail: string): {
+  message: string;
+  target: 'url' | 'key' | 'model' | 'form';
+} {
+  if (detail.includes('API Base URL')) {
+    return {
+      message: '还差接口地址。填上 Base URL，像 https://api.deepseek.com 这样。',
+      target: 'url',
+    };
+  }
+  if (detail.includes('API Key')) {
+    return {
+      message: '还没放钥匙。把 API Key 贴上再测一次。',
+      target: 'key',
+    };
+  }
+  if (detail.includes('权限')) {
+    return {
+      message: '浏览器还没允许访问这个网址。弹出权限时点允许，再测一次。',
+      target: 'form',
+    };
+  }
+  if (/401|403|unauthorized|invalid api key|authentication/i.test(detail)) {
+    return {
+      message: '对方不认这把钥匙。核对 Key 是否完整，去掉首尾空格后再试。',
+      target: 'key',
+    };
+  }
+  if (/model/i.test(detail) && /404|not found|does not exist|不存在/.test(detail)) {
+    return {
+      message: '这个模型名对方没有。换成服务商文档里的名字再测。',
+      target: 'model',
+    };
+  }
+  if (/404/.test(detail)) {
+    return {
+      message: '这个地址对不上接口。Base URL 一般写到 /v1 为止，不要多接路径。',
+      target: 'url',
+    };
+  }
+  if (/abort|timeout|超时|failed to fetch|network/i.test(detail)) {
+    return {
+      message: '暂时没连上。检查网络，以及地址是否以 https:// 开头。',
+      target: 'form',
+    };
+  }
+  const briefDetail = detail.replace(/\s+/g, ' ').slice(0, 72);
+  return {
+    message: `没连上。${briefDetail}。核对地址、钥匙和模型名后再试。`,
+    target: 'form',
+  };
 }
 
 /**
@@ -282,6 +436,10 @@ function renderMappingTable(): void {
     valueInput.className = 'value-input';
     valueInput.value = mappingItem.value;
     valueInput.dataset.fieldId = mappingItem.fieldId;
+    if (mappingItem.attachmentId) {
+      valueInput.readOnly = true;
+      valueInput.title = '将上传此附件';
+    }
     valueInput.setAttribute(
       'aria-label',
       `${resolveFieldLabel(mappingItem.fieldId, fields)} 填写值`,
@@ -392,66 +550,256 @@ async function maybeFocusSettingsFromPopup(): Promise<void> {
 }
 
 /**
- * 保存 API / 填写模式到本机。
+ * 读取设置表单当前值。模型留空时沿用默认名，避免存进空字符串。
  */
-async function handleSaveSettings(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
+function readSettingsDraft(): {
+  apiBaseUrl: string;
+  apiKey: string;
+  model: string;
+  fillMode: FillMode;
+} {
   const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
-  await saveSettings({
+  return {
     apiBaseUrl: apiBaseUrlInput.value.trim(),
     apiKey: apiKeyInput.value.trim(),
     model: modelInput.value.trim() || 'gpt-4o-mini',
     fillMode,
-  });
-  showStatus('设置已保存到本机', 'success');
+  };
+}
+
+/**
+ * 保存前只拦明显写错的地址；空地址仍允许保存填写模式。
+ * 返回 true 表示可以写入。
+ */
+function validateSettingsDraftForSave(draft: {
+  apiBaseUrl: string;
+}): boolean {
+  if (draft.apiBaseUrl && !isHttpUrl(draft.apiBaseUrl)) {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '地址看起来不像网址。请以 https:// 开头，例如 https://api.deepseek.com。',
+      [apiBaseUrlInput],
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 测连前检查地址和钥匙是否齐、地址是否合法。
+ */
+function validateSettingsDraftForTest(draft: {
+  apiBaseUrl: string;
+  apiKey: string;
+}): boolean {
+  if (!draft.apiBaseUrl) {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '还差接口地址。填上 Base URL，像 https://api.deepseek.com 这样。',
+      [apiBaseUrlInput],
+    );
+    return false;
+  }
+  if (!isHttpUrl(draft.apiBaseUrl)) {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '地址看起来不像网址。请以 https:// 开头，不要漏掉协议。',
+      [apiBaseUrlInput],
+    );
+    return false;
+  }
+  if (!draft.apiKey) {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '还没放钥匙。把 API Key 贴上再测一次。',
+      [apiKeyInput],
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 保存 API / 填写模式到本机。成功后绿框，稍后自动折叠设置区。
+ */
+async function handleSaveSettings(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  cancelSettingsAutoCollapse();
+  const draft = readSettingsDraft();
+  if (!validateSettingsDraftForSave(draft)) {
+    return;
+  }
+  showInlineFeedback(
+    apiSettingsForm,
+    apiSettingsFeedback,
+    'pending',
+    '正在把设置收进本机…',
+  );
+  try {
+    await saveSettings(draft);
+  } catch {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '没能写进本机。稍等几秒再保存一次。',
+    );
+    return;
+  }
+  modelInput.value = draft.model;
+  showInlineFeedback(
+    apiSettingsForm,
+    apiSettingsFeedback,
+    'ok',
+    '设置已收好，下次直接用。',
+  );
+  scheduleSettingsCollapse();
 }
 
 /**
  * 经 Background 测试 API 连通性（先保存当前表单值再测）。
+ * 成功只闪绿，不折叠，方便接着看结果。
  */
 async function handleTestApi(): Promise<void> {
-  const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
-  await saveSettings({
-    apiBaseUrl: apiBaseUrlInput.value.trim(),
-    apiKey: apiKeyInput.value.trim(),
-    model: modelInput.value.trim() || 'gpt-4o-mini',
-    fillMode,
-  });
-  showStatus('正在测试连接…', 'info');
-  const response = await requestBackground({
-    type: 'TEST_API',
-    requestId: createRequestId(),
-  });
-  if (response.type !== 'TEST_API_RESULT') {
-    throw new Error('测试连接失败');
+  cancelSettingsAutoCollapse();
+  const draft = readSettingsDraft();
+  if (!validateSettingsDraftForTest(draft)) {
+    return;
   }
-  showStatus(
-    response.ok ? `连接成功：${response.detail}` : `连接失败：${response.detail}`,
-    response.ok ? 'success' : 'error',
+  showInlineFeedback(
+    apiSettingsForm,
+    apiSettingsFeedback,
+    'pending',
+    '正在敲门确认能不能连上…',
+  );
+  try {
+    await saveSettings(draft);
+  } catch {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '设置还没写进本机，所以先不测。稍等再点一次。',
+    );
+    return;
+  }
+  modelInput.value = draft.model;
+  let response: ExtensionMessage;
+  try {
+    response = await requestBackground({
+      type: 'TEST_API',
+      requestId: createRequestId(),
+    });
+  } catch {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '测连中断了。确认扩展还在运行，再点一次。',
+    );
+    return;
+  }
+  if (response.type !== 'TEST_API_RESULT') {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      '测连没有返回结果。再点一次；若仍如此，重新打开侧栏。',
+    );
+    return;
+  }
+  if (!response.ok) {
+    const failure = describeConnectionFailure(response.detail);
+    const invalidInputs: HTMLInputElement[] = [];
+    if (failure.target === 'url') {
+      invalidInputs.push(apiBaseUrlInput);
+    } else if (failure.target === 'key') {
+      invalidInputs.push(apiKeyInput);
+    } else if (failure.target === 'model') {
+      invalidInputs.push(modelInput);
+    }
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      failure.message,
+      invalidInputs,
+    );
+    return;
+  }
+  showInlineFeedback(
+    apiSettingsForm,
+    apiSettingsFeedback,
+    'ok',
+    '连上啦，可以开始填表。',
   );
 }
 
 /**
  * 在侧栏直接新建档案（不打开 Options）。
+ * 成功后绿框，稍后自动折叠设置区。
  */
 async function handleCreateProfile(event: SubmitEvent): Promise<void> {
   event.preventDefault();
+  cancelSettingsAutoCollapse();
   const name = newProfileNameInput.value.trim();
   if (!name) {
-    showError('请填写档案名称');
+    showInlineFeedback(
+      createProfileForm,
+      createProfileFeedback,
+      'bad',
+      '还差一个名字。例如「校招主投」，方便以后切换。',
+      [newProfileNameInput],
+    );
     return;
   }
   if (cachedProfiles.length >= MAX_PROFILES) {
-    showError(`最多 ${MAX_PROFILES} 份档案`);
+    showInlineFeedback(
+      createProfileForm,
+      createProfileFeedback,
+      'bad',
+      `已经有 ${MAX_PROFILES} 份了。先到完整编辑页删一份，再来新建。`,
+    );
     return;
   }
-  const created = await createProfile({ name });
+  showInlineFeedback(
+    createProfileForm,
+    createProfileFeedback,
+    'pending',
+    '正在建立这份档案…',
+  );
+  let created: Profile;
+  try {
+    created = await createProfile({ name });
+  } catch {
+    showInlineFeedback(
+      createProfileForm,
+      createProfileFeedback,
+      'bad',
+      '这份档案没建成。确认还没到 5 份上限，再试一次。',
+    );
+    return;
+  }
   newProfileNameInput.value = '';
   const profiles = await listProfiles();
   const settings = await getSettings();
   renderProfileOptions(profiles, settings.activeProfileId ?? created.id);
   profileSelect.value = created.id;
-  showStatus(`已创建档案「${created.name}」，可点下方按钮编辑完整简历`, 'success');
+  showInlineFeedback(
+    createProfileForm,
+    createProfileFeedback,
+    'ok',
+    `「${created.name}」建好了。需要细填时再打开完整编辑页。`,
+  );
+  scheduleSettingsCollapse();
 }
 
 /**
@@ -555,6 +903,19 @@ async function withBusy(action: () => Promise<void>): Promise<void> {
 }
 
 function bindEvents(): void {
+  // 倒计时期间改内容、再点或手动收起，都取消自动折叠
+  settingsDetails.addEventListener('input', () => {
+    cancelSettingsAutoCollapse();
+  });
+  settingsDetails.addEventListener('click', () => {
+    cancelSettingsAutoCollapse();
+  });
+  settingsDetails.addEventListener('toggle', () => {
+    if (!settingsDetails.open) {
+      cancelSettingsAutoCollapse();
+    }
+  });
+
   profileSelect.addEventListener('change', () => {
     syncDefaultCheckboxFromSelection();
     syncBusyUi();
@@ -580,6 +941,7 @@ function bindEvents(): void {
   });
 
   apiSettingsForm.addEventListener('submit', (event) => {
+    event.preventDefault();
     void withBusy(async () => {
       await handleSaveSettings(event);
     });
@@ -592,6 +954,7 @@ function bindEvents(): void {
   });
 
   createProfileForm.addEventListener('submit', (event) => {
+    event.preventDefault();
     void withBusy(async () => {
       await handleCreateProfile(event);
     });

@@ -36,7 +36,7 @@
       <details id="settingsDetails" class="sidepanel-section settings-details">
         <summary class="settings-summary">设置与新建档案</summary>
         <div class="settings-body">
-          <form id="apiSettingsForm" class="settings-form" autocomplete="off">
+          <form id="apiSettingsForm" class="settings-form" autocomplete="off" novalidate>
             <label class="field">
               <span class="field-label">API Base URL</span>
               <input
@@ -89,9 +89,11 @@
                 测试连接
               </button>
             </div>
+            <!-- 保存/测连的结果贴在按钮下方，避免被挤到侧栏最底部看不见 -->
+            <p id="apiSettingsFeedback" class="inline-feedback" hidden></p>
           </form>
 
-          <form id="createProfileForm" class="settings-form create-profile-form">
+          <form id="createProfileForm" class="settings-form create-profile-form" novalidate>
             <label class="field">
               <span class="field-label">新建档案名称</span>
               <input
@@ -105,6 +107,7 @@
             <button type="submit" class="btn btn-secondary" id="createProfileButton">
               创建档案
             </button>
+            <p id="createProfileFeedback" class="inline-feedback" hidden></p>
             <p id="profileLimitTip" class="hint-text" hidden>
               已达上限 5 份档案，请先在完整编辑页删除后再建。
             </p>

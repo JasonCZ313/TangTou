@@ -17,7 +17,9 @@ import {
   SKILL_LEVEL_OPTIONS,
   STUDY_MODE_OPTIONS,
 } from '../../shared/catalogs/enums';
+import { deleteAttachmentsForItem } from '../../shared/storage/attachmentStore';
 import { isDualAcademicDegree } from '../../shared/storage/normalize';
+import type { AttachmentKind } from '../../shared/types/attachment';
 import type {
   AwardItem,
   CampusActivityItem,
@@ -27,26 +29,135 @@ import type {
   ExperienceItem,
   FamilyMemberItem,
   LanguageItem,
+  LockableListItemFields,
   ProfileData,
   ProjectItem,
   PublicationItem,
   SkillItem,
   TrainingItem,
 } from '../../shared/types/profile';
+import { mountItemAttachmentSlot } from './attachmentPanel';
 import {
   createBoundCheckbox,
   createBoundInput,
   createBoundSelect,
   createBoundTextarea,
   createListItemCard,
+  createLockableListItemCard,
 } from './editorWidgets';
 import { createBoundRegionField } from './regionCascader';
+
+/**
+ * 列表条目挂附件时需要的档案上下文（由 Options 主逻辑传入）。
+ */
+export interface ListAttachmentContext {
+  profileId: string;
+  notify: (message: string, kind: 'info' | 'success' | 'error') => void;
+}
 
 /** 创建网格容器 */
 function createCardGrid(): HTMLDivElement {
   const grid = document.createElement('div');
   grid.className = 'form-grid';
   return grid;
+}
+
+/**
+ * 确保列表条目有稳定 id（旧档案归一化后也应已有）。
+ */
+function ensureItemId(item: LockableListItemFields): string {
+  if (!item.id) {
+    item.id = crypto.randomUUID();
+  }
+  return item.id;
+}
+
+/**
+ * 删除条目时同步清掉绑定附件。
+ */
+function removeLockableItem<T extends LockableListItemFields>(
+  items: T[],
+  itemIndex: number,
+  attachmentContext: ListAttachmentContext | undefined,
+  onRefresh: () => void,
+): void {
+  const target = items[itemIndex];
+  const itemId = target?.id;
+  items.splice(itemIndex, 1);
+  if (attachmentContext && itemId) {
+    void deleteAttachmentsForItem(attachmentContext.profileId, itemId);
+  }
+  onRefresh();
+}
+
+/**
+ * 只读全貌：把若干「标签：值」行展示出来。
+ */
+function createReadonlySummary(
+  rows: Array<{ label: string; value: string }>,
+): HTMLDivElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'item-readonly-summary';
+  for (const row of rows) {
+    if (!row.value.trim()) {
+      continue;
+    }
+    const line = document.createElement('p');
+    line.className = 'item-readonly-line';
+    line.textContent = `${row.label}：${row.value}`;
+    wrap.appendChild(line);
+  }
+  if (wrap.childElementCount === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = '本条暂无内容';
+    wrap.appendChild(empty);
+  }
+  return wrap;
+}
+
+/**
+ * 条目附件备注 + 网盘字段（编辑态）。
+ */
+function appendItemNoteFields(
+  grid: HTMLElement,
+  item: LockableListItemFields,
+): void {
+  grid.append(
+    createBoundInput('附件备注', item.attachmentNote ?? '', (value) => {
+      item.attachmentNote = value;
+    }),
+    createBoundInput('网盘/外链', item.cloudLink ?? '', (value) => {
+      item.cloudLink = value;
+    }, 'url'),
+  );
+}
+
+/**
+ * 在卡片底部挂上按条附件槽。
+ */
+function appendItemAttachmentSlot(
+  card: HTMLElement,
+  attachmentContext: ListAttachmentContext | undefined,
+  kind: AttachmentKind,
+  itemId: string,
+  readOnly: boolean,
+  accept = '',
+): void {
+  if (!attachmentContext) {
+    return;
+  }
+  const slotHost = document.createElement('div');
+  mountItemAttachmentSlot({
+    host: slotHost,
+    profileId: attachmentContext.profileId,
+    kind,
+    itemId,
+    notify: attachmentContext.notify,
+    readOnly,
+    accept,
+  });
+  card.appendChild(slotHost);
 }
 
 /** 空白教育条目 */
@@ -77,6 +188,10 @@ export function createEmptyEducationItem(): EducationItem {
 
 export function createEmptyExperienceItem(): ExperienceItem {
   return {
+    id: crypto.randomUUID(),
+    editingLocked: false,
+    attachmentNote: '',
+    cloudLink: '',
     company: '',
     title: '',
     startDate: '',
@@ -92,6 +207,10 @@ export function createEmptyExperienceItem(): ExperienceItem {
 
 export function createEmptyProjectItem(): ProjectItem {
   return {
+    id: crypto.randomUUID(),
+    editingLocked: false,
+    attachmentNote: '',
+    cloudLink: '',
     name: '',
     role: '',
     startDate: '',
@@ -100,6 +219,39 @@ export function createEmptyProjectItem(): ProjectItem {
     content: '',
     value: '',
     link: '',
+  };
+}
+
+/** 空白证书条目 */
+export function createEmptyCertificateItem(): CertificateItem {
+  return {
+    id: crypto.randomUUID(),
+    editingLocked: false,
+    attachmentNote: '',
+    cloudLink: '',
+    name: '',
+    level: '',
+    issuer: '',
+    date: '',
+    expireDate: '',
+    number: '',
+    major: '',
+    description: '',
+  };
+}
+
+/** 空白奖项条目 */
+export function createEmptyAwardItem(): AwardItem {
+  return {
+    id: crypto.randomUUID(),
+    editingLocked: false,
+    attachmentNote: '',
+    cloudLink: '',
+    name: '',
+    level: '',
+    date: '',
+    issuer: '',
+    description: '',
   };
 }
 
@@ -131,15 +283,31 @@ export function renderAllDynamicLists(
     emergency: HTMLDivElement;
   },
   onRefresh: () => void,
+  attachmentContext?: ListAttachmentContext,
 ): void {
   renderEducationRows(data.education, hosts.education, onRefresh);
-  renderExperienceRows(data.experience, hosts.experience, onRefresh);
-  renderProjectRows(data.projects, hosts.projects, onRefresh);
+  renderExperienceRows(
+    data.experience,
+    hosts.experience,
+    onRefresh,
+    attachmentContext,
+  );
+  renderProjectRows(
+    data.projects,
+    hosts.projects,
+    onRefresh,
+    attachmentContext,
+  );
   renderCampusRows(data.campusActivities, hosts.campus, onRefresh);
   renderSkillRows(data.skills, hosts.skills, onRefresh);
   renderLanguageRows(data.languages, hosts.language, onRefresh);
-  renderCertificateRows(data.certificates, hosts.certificate, onRefresh);
-  renderAwardRows(data.awards, hosts.award, onRefresh);
+  renderCertificateRows(
+    data.certificates,
+    hosts.certificate,
+    onRefresh,
+    attachmentContext,
+  );
+  renderAwardRows(data.awards, hosts.award, onRefresh, attachmentContext);
   renderPublicationRows(data.publications, hosts.publication, onRefresh);
   renderTrainingRows(data.trainings, hosts.training, onRefresh);
   renderFamilyRows(data.familyMembers, hosts.family, onRefresh);
@@ -316,13 +484,55 @@ function renderExperienceRows(
   items: ExperienceItem[],
   host: HTMLDivElement,
   onRefresh: () => void,
+  attachmentContext?: ListAttachmentContext,
 ): void {
   host.replaceChildren();
   items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`工作/实习 ${itemIndex + 1}`, () => {
-      items.splice(itemIndex, 1);
-      onRefresh();
+    const itemId = ensureItemId(item);
+    const locked = Boolean(item.editingLocked);
+    const card = createLockableListItemCard({
+      titleText: `工作/实习 ${itemIndex + 1}`,
+      locked,
+      onSaveItem: () => {
+        item.editingLocked = true;
+        onRefresh();
+      },
+      onEditItem: () => {
+        item.editingLocked = false;
+        onRefresh();
+      },
+      onRemove: () => {
+        removeLockableItem(items, itemIndex, attachmentContext, onRefresh);
+      },
     });
+
+    if (locked) {
+      card.appendChild(
+        createReadonlySummary([
+          { label: '公司', value: item.company },
+          { label: '职位', value: item.title },
+          { label: '起止', value: `${item.startDate || '—'} ~ ${item.isCurrent ? '至今' : item.endDate || '—'}` },
+          { label: '行业', value: item.industry ?? '' },
+          { label: '城市', value: item.city ?? '' },
+          { label: '职责', value: item.responsibilities ?? '' },
+          { label: '内容', value: item.workContent ?? '' },
+          { label: '业绩', value: item.achievements ?? '' },
+          { label: '总述', value: item.description },
+          { label: '附件备注', value: item.attachmentNote ?? '' },
+          { label: '网盘', value: item.cloudLink ?? '' },
+        ]),
+      );
+      appendItemAttachmentSlot(
+        card,
+        attachmentContext,
+        'internship',
+        itemId,
+        true,
+      );
+      host.appendChild(card);
+      return;
+    }
+
     const grid = createCardGrid();
     grid.append(
       createBoundInput('公司/单位', item.company, (value) => {
@@ -388,7 +598,16 @@ function renderExperienceRows(
         item.description = value;
       }),
     );
+    appendItemNoteFields(grid, item);
     card.appendChild(grid);
+    appendItemAttachmentSlot(
+      card,
+      attachmentContext,
+      'internship',
+      itemId,
+      false,
+      '.pdf,.jpg,.jpeg,.png,image/*,application/pdf',
+    );
     host.appendChild(card);
   });
 }
@@ -397,13 +616,48 @@ function renderProjectRows(
   items: ProjectItem[],
   host: HTMLDivElement,
   onRefresh: () => void,
+  attachmentContext?: ListAttachmentContext,
 ): void {
   host.replaceChildren();
   items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`项目 ${itemIndex + 1}`, () => {
-      items.splice(itemIndex, 1);
-      onRefresh();
+    const itemId = ensureItemId(item);
+    const locked = Boolean(item.editingLocked);
+    const card = createLockableListItemCard({
+      titleText: `项目 ${itemIndex + 1}`,
+      locked,
+      onSaveItem: () => {
+        item.editingLocked = true;
+        onRefresh();
+      },
+      onEditItem: () => {
+        item.editingLocked = false;
+        onRefresh();
+      },
+      onRemove: () => {
+        removeLockableItem(items, itemIndex, attachmentContext, onRefresh);
+      },
     });
+
+    if (locked) {
+      card.appendChild(
+        createReadonlySummary([
+          { label: '名称', value: item.name },
+          { label: '角色', value: item.role ?? '' },
+          { label: '起止', value: `${item.startDate || '—'} ~ ${item.isCurrent ? '进行中' : item.endDate || '—'}` },
+          { label: '技术栈', value: item.techStack ?? '' },
+          { label: '内容', value: item.content ?? '' },
+          { label: '价值', value: item.value ?? '' },
+          { label: '总述', value: item.description },
+          { label: '链接', value: item.link ?? '' },
+          { label: '附件备注', value: item.attachmentNote ?? '' },
+          { label: '网盘', value: item.cloudLink ?? '' },
+        ]),
+      );
+      appendItemAttachmentSlot(card, attachmentContext, 'project', itemId, true);
+      host.appendChild(card);
+      return;
+    }
+
     const grid = createCardGrid();
     grid.append(
       createBoundInput('项目名称', item.name, (value) => {
@@ -440,7 +694,16 @@ function renderProjectRows(
         item.description = value;
       }),
     );
+    appendItemNoteFields(grid, item);
     card.appendChild(grid);
+    appendItemAttachmentSlot(
+      card,
+      attachmentContext,
+      'project',
+      itemId,
+      false,
+      '.pdf,.doc,.docx,.zip,.jpg,.jpeg,.png,application/pdf',
+    );
     host.appendChild(card);
   });
 }
@@ -548,13 +811,53 @@ function renderCertificateRows(
   items: CertificateItem[],
   host: HTMLDivElement,
   onRefresh: () => void,
+  attachmentContext?: ListAttachmentContext,
 ): void {
   host.replaceChildren();
   items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`证书 ${itemIndex + 1}`, () => {
-      items.splice(itemIndex, 1);
-      onRefresh();
+    const itemId = ensureItemId(item);
+    const locked = Boolean(item.editingLocked);
+    const card = createLockableListItemCard({
+      titleText: `证书 ${itemIndex + 1}`,
+      locked,
+      onSaveItem: () => {
+        item.editingLocked = true;
+        onRefresh();
+      },
+      onEditItem: () => {
+        item.editingLocked = false;
+        onRefresh();
+      },
+      onRemove: () => {
+        removeLockableItem(items, itemIndex, attachmentContext, onRefresh);
+      },
     });
+
+    if (locked) {
+      card.appendChild(
+        createReadonlySummary([
+          { label: '名称', value: item.name },
+          { label: '等级', value: item.level ?? '' },
+          { label: '颁发机构', value: item.issuer ?? '' },
+          { label: '获证日期', value: item.date ?? '' },
+          { label: '有效期至', value: item.expireDate ?? '' },
+          { label: '编号', value: item.number ?? '' },
+          { label: '说明', value: item.description ?? '' },
+          { label: '附件备注', value: item.attachmentNote ?? '' },
+          { label: '网盘', value: item.cloudLink ?? '' },
+        ]),
+      );
+      appendItemAttachmentSlot(
+        card,
+        attachmentContext,
+        'certificate',
+        itemId,
+        true,
+      );
+      host.appendChild(card);
+      return;
+    }
+
     const grid = createCardGrid();
     grid.append(
       createBoundSelect('证书名称', item.name, COMMON_CERTIFICATE_OPTIONS, (value) => {
@@ -582,7 +885,16 @@ function renderCertificateRows(
         item.description = value;
       }),
     );
+    appendItemNoteFields(grid, item);
     card.appendChild(grid);
+    appendItemAttachmentSlot(
+      card,
+      attachmentContext,
+      'certificate',
+      itemId,
+      false,
+      '.pdf,.jpg,.jpeg,.png,image/*,application/pdf',
+    );
     host.appendChild(card);
   });
 }
@@ -591,13 +903,45 @@ function renderAwardRows(
   items: AwardItem[],
   host: HTMLDivElement,
   onRefresh: () => void,
+  attachmentContext?: ListAttachmentContext,
 ): void {
   host.replaceChildren();
   items.forEach((item, itemIndex) => {
-    const card = createListItemCard(`奖项 ${itemIndex + 1}`, () => {
-      items.splice(itemIndex, 1);
-      onRefresh();
+    const itemId = ensureItemId(item);
+    const locked = Boolean(item.editingLocked);
+    const card = createLockableListItemCard({
+      titleText: `奖项 ${itemIndex + 1}`,
+      locked,
+      onSaveItem: () => {
+        item.editingLocked = true;
+        onRefresh();
+      },
+      onEditItem: () => {
+        item.editingLocked = false;
+        onRefresh();
+      },
+      onRemove: () => {
+        removeLockableItem(items, itemIndex, attachmentContext, onRefresh);
+      },
     });
+
+    if (locked) {
+      card.appendChild(
+        createReadonlySummary([
+          { label: '名称', value: item.name },
+          { label: '级别', value: item.level ?? '' },
+          { label: '日期', value: item.date ?? '' },
+          { label: '颁发单位', value: item.issuer ?? '' },
+          { label: '说明', value: item.description ?? '' },
+          { label: '附件备注', value: item.attachmentNote ?? '' },
+          { label: '网盘', value: item.cloudLink ?? '' },
+        ]),
+      );
+      appendItemAttachmentSlot(card, attachmentContext, 'award', itemId, true);
+      host.appendChild(card);
+      return;
+    }
+
     const grid = createCardGrid();
     grid.append(
       createBoundInput('奖项名称', item.name, (value) => {
@@ -616,7 +960,16 @@ function renderAwardRows(
         item.description = value;
       }),
     );
+    appendItemNoteFields(grid, item);
     card.appendChild(grid);
+    appendItemAttachmentSlot(
+      card,
+      attachmentContext,
+      'award',
+      itemId,
+      false,
+      '.pdf,.jpg,.jpeg,.png,image/*,application/pdf',
+    );
     host.appendChild(card);
   });
 }
@@ -804,25 +1157,10 @@ export function appendListItem(
       });
       break;
     case 'certificate':
-      draft.certificates.push({
-        name: '',
-        level: '',
-        issuer: '',
-        date: '',
-        expireDate: '',
-        number: '',
-        major: '',
-        description: '',
-      });
+      draft.certificates.push(createEmptyCertificateItem());
       break;
     case 'award':
-      draft.awards.push({
-        name: '',
-        level: '',
-        date: '',
-        issuer: '',
-        description: '',
-      });
+      draft.awards.push(createEmptyAwardItem());
       break;
     case 'publication':
       draft.publications.push({

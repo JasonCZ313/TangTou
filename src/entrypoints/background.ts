@@ -3,10 +3,13 @@ import { buildFillPrompt } from '../shared/llm/prompt';
 import {
   ensureHostPermission,
   requestFillPlan,
+  requestResumeProfilePatch,
   testApiConnection,
 } from '../shared/llm/openaiCompatible';
 import { listProfiles, getProfile } from '../shared/storage/profileStore';
 import { getSettings } from '../shared/storage/settingsStore';
+import { listAttachments, readAttachmentFile } from '../shared/storage/attachmentStore';
+import { normalizeProfileData } from '../shared/storage/normalize';
 import {
   getTokenUsageStats,
   recordTokenUsage,
@@ -184,7 +187,12 @@ function mergeHeuristicAndLlmPlan(
   );
   return {
     items: [...heuristicPlan.items, ...llmItemsWithoutHeuristicOverlap],
-    skippedFieldIds: llmPlan.skippedFieldIds,
+    skippedFieldIds: [
+      ...new Set([
+        ...heuristicPlan.skippedFieldIds,
+        ...llmPlan.skippedFieldIds,
+      ]),
+    ],
   };
 }
 
@@ -206,9 +214,11 @@ async function handleBuildFillPlan(
   }
 
   // 先本地高置信映射，降低 Token；未命中字段再考虑调模型
+  const attachments = await listAttachments(message.profileId);
   const { partialPlan, remainingFields } = applyLocalHeuristics(
     profile.data,
     message.fields,
+    attachments,
   );
 
   const settings = await getSettings();
@@ -331,8 +341,92 @@ async function handleResetTokenUsage(
 }
 
 /**
- * 将 SCAN_FIELDS / APPLY_FILL_PLAN / UNDO_LAST_FILL 转发到活动标签页 content script。
- * 供 Popup 等无法直接 tabs.sendMessage 时经 background 中转（也可直接用 shared sendToActiveTab）。
+ * 把 ArrayBuffer 转成 Base64，分块避免展开大数组撑爆调用栈。
+ */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binaryText = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const slice = bytes.subarray(offset, offset + chunkSize);
+    binaryText += String.fromCharCode(...slice);
+  }
+  return btoa(binaryText);
+}
+
+/**
+ * 给填写计划附上附件字节后再转发到页面。
+ */
+async function forwardApplyWithFiles(
+  message: Extract<ExtensionMessage, { type: 'APPLY_FILL_PLAN' }>,
+): Promise<ExtensionMessage> {
+  const filePayloads: NonNullable<
+    Extract<ExtensionMessage, { type: 'APPLY_FILL_PLAN' }>['filePayloads']
+  > = [];
+  for (const mappingItem of message.plan.items) {
+    if (!mappingItem.attachmentId) {
+      continue;
+    }
+    const stored = await readAttachmentFile(mappingItem.attachmentId);
+    if (!stored) {
+      continue;
+    }
+    filePayloads.push({
+      fieldId: mappingItem.fieldId,
+      fileName: stored.meta.fileName,
+      mimeType: stored.meta.mimeType,
+      dataBase64: arrayBufferToBase64(stored.buffer),
+    });
+  }
+  return sendToActiveTab({
+    ...message,
+    filePayloads,
+  });
+}
+
+/**
+ * 用简历纯文本识别档案补丁（只返回结构，由选项页合并空白项）。
+ */
+async function handleParseResume(
+  message: Extract<ExtensionMessage, { type: 'PARSE_RESUME' }>,
+): Promise<ExtensionMessage> {
+  const settings = await getSettings();
+  if (!settings.apiBaseUrl.trim() || !settings.apiKey.trim()) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'API_NOT_CONFIGURED',
+      message: '请先配置 API 后再识别简历',
+    };
+  }
+  const permissionGranted = await ensureHostPermission(settings.apiBaseUrl);
+  if (!permissionGranted) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'HOST_PERMISSION_DENIED',
+      message: '未获得 API 主机访问权限',
+    };
+  }
+  const { profilePatch, usage } = await requestResumeProfilePatch({
+    apiBaseUrl: settings.apiBaseUrl,
+    apiKey: settings.apiKey,
+    model: settings.model,
+    resumeText: message.resumeText,
+  });
+  if (usage) {
+    await recordTokenUsage(usage);
+  }
+  return {
+    type: 'PARSE_RESUME_RESULT',
+    requestId: message.requestId,
+    profilePatch: normalizeProfileData(profilePatch),
+    usage,
+  };
+}
+
+/**
+ * 将 SCAN_FIELDS / UNDO_LAST_FILL 转发到活动标签页 content script。
  */
 async function forwardToActiveTab(
   message: ExtensionMessage,
@@ -358,8 +452,11 @@ async function dispatchMessage(
       return handleOpenSidePanel(message.requestId, sender.tab?.id);
     case 'RESET_TOKEN_USAGE':
       return handleResetTokenUsage(message.requestId);
-    case 'SCAN_FIELDS':
     case 'APPLY_FILL_PLAN':
+      return forwardApplyWithFiles(message);
+    case 'PARSE_RESUME':
+      return handleParseResume(message);
+    case 'SCAN_FIELDS':
     case 'UNDO_LAST_FILL':
       return forwardToActiveTab(message);
     default:

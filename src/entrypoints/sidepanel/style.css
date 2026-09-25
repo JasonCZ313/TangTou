@@ -258,3 +258,47 @@ body {
   width: 100%;
   font-size: 12px;
 }
+
+/* 设置区即时反馈：绿框成功、红框失败；框内留白，避免贴着输入框和提示 */
+.inline-feedback {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  font-weight: 600;
+}
+
+.inline-feedback.is-ok {
+  color: var(--tt-success);
+}
+
+.inline-feedback.is-bad {
+  color: var(--tt-danger);
+}
+
+.inline-feedback.is-pending {
+  color: var(--tt-primary);
+}
+
+.settings-form.is-flash-ok,
+.settings-form.is-flash-bad {
+  margin-top: 4px;
+  margin-bottom: 4px;
+  padding: 16px 16px 14px;
+  border-radius: 14px;
+  border: 2px solid transparent;
+}
+
+.settings-form.is-flash-ok {
+  border-color: var(--tt-success);
+  background: color-mix(in srgb, #ecfdf5 70%, #fff);
+}
+
+.settings-form.is-flash-bad {
+  border-color: var(--tt-danger);
+  background: #fef2f2;
+}
+
+.settings-form .field.is-invalid input {
+  border-color: var(--tt-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-danger) 22%, transparent);
+}

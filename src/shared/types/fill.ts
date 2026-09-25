@@ -23,6 +23,8 @@ export interface FillMappingItem {
   /** 置信度 0..1 */
   confidence: number;
   reason?: string;
+  /** 若为本机附件，填写时按此 id 取文件写入 file 控件 */
+  attachmentId?: string;
 }
 
 /** 一轮填写计划：待写入项与明确跳过的字段 */

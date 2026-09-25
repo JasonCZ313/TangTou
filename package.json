@@ -16,5 +16,10 @@
     "element-china-area-data": "^6.1.0",
     "typescript": "^5.7.3",
     "wxt": "^0.19.25"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^3.11.174",
+    "tesseract.js": "^5.1.1"
   }
 }

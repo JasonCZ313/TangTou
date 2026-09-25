@@ -47,6 +47,16 @@ import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import { fillStaticSelectsByCatalog } from './editorWidgets';
 import { appendListItem, renderAllDynamicLists } from './editorLists';
+import {
+  assertAvatarUploaded,
+  mountAvatarBlock,
+  mountResumeBlock,
+} from './attachmentPanel';
+import {
+  deleteAttachmentsForProfile,
+  profileHasAvatar,
+} from '../../shared/storage/attachmentStore';
+import { clearResumeRecognition } from '../../shared/storage/resumeRecognitionStore';
 import { upgradeStaticCatalogSelects } from './searchableSelect';
 import {
   syncRegionBoundDisplays,
@@ -72,6 +82,7 @@ interface ExportPayload {
 
 /** 侧栏目录项：锚点 id → 显示名 */
 const TOC_SECTIONS: Array<{ id: string; label: string }> = [
+  { id: 'section-resume', label: '简历识别' },
   { id: 'section-basic', label: '基本信息' },
   { id: 'section-jobIntent', label: '求职意向' },
   { id: 'section-education', label: '教育经历' },
@@ -90,7 +101,6 @@ const TOC_SECTIONS: Array<{ id: string; label: string }> = [
   { id: 'section-workAuth', label: '外企工签' },
   { id: 'section-industry', label: '行业补充' },
   { id: 'section-essays', label: '问答素材' },
-  { id: 'section-attachment', label: '附件备注' },
   { id: 'section-notes', label: '自由补充' },
 ];
 
@@ -258,6 +268,15 @@ const notesTextarea = document.getElementById(
 const closeEditorButton = document.getElementById(
   'closeEditorButton',
 ) as HTMLButtonElement;
+const saveProgressButton = document.getElementById(
+  'saveProgressButton',
+) as HTMLButtonElement;
+const saveAndCloseButton = document.getElementById(
+  'saveAndCloseButton',
+) as HTMLButtonElement;
+const stickySaveStatus = document.getElementById(
+  'stickySaveStatus',
+) as HTMLSpanElement;
 const exportButton = document.getElementById(
   'exportButton',
 ) as HTMLButtonElement;
@@ -740,6 +759,8 @@ async function handleDelete(profile: Profile): Promise<void> {
   }
   try {
     await deleteProfile(profile.id);
+    await deleteAttachmentsForProfile(profile.id);
+    await clearResumeRecognition(profile.id);
     if (editingProfileId === profile.id) {
       closeEditor();
     }
@@ -757,7 +778,42 @@ function openEditor(profile: Profile): void {
   editorSection.classList.remove('hidden');
   ensureStaticCatalogsReady();
   fillEditorForm(draftProfileData);
+  remountDistributedAttachments(profile.id);
+  void refreshAvatarHint(profile.id);
+  stickySaveStatus.textContent = '';
   editorSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * 挂载分散附件：简历置顶、头像进基本信息；列表条目附件由 render 时挂。
+ */
+function remountDistributedAttachments(profileId: string): void {
+  const resumeHost = document.getElementById('resumeAttachmentHost');
+  if (resumeHost) {
+    mountResumeBlock({
+      host: resumeHost,
+      profileId,
+      readDraft: () => draftProfileData,
+      applyDraft: (nextDraft) => {
+        draftProfileData = nextDraft;
+        fillEditorForm(nextDraft);
+        updateValidationHint(nextDraft);
+        remountDistributedAttachments(profileId);
+      },
+      notify: (message, kind) => showStatus(message, kind),
+    });
+  }
+  const avatarHost = document.getElementById('avatarAttachmentHost');
+  if (avatarHost) {
+    mountAvatarBlock({
+      host: avatarHost,
+      profileId,
+      notify: (message, kind) => showStatus(message, kind),
+      onChanged: () => {
+        void refreshAvatarHint(profileId);
+      },
+    });
+  }
 }
 
 function closeEditor(): void {
@@ -791,6 +847,12 @@ function refreshDynamicLists(): void {
       emergency: emergencyListElement,
     },
     refreshDynamicLists,
+    editingProfileId
+      ? {
+          profileId: editingProfileId,
+          notify: (message, kind) => showStatus(message, kind),
+        }
+      : undefined,
   );
   updateValidationHint(draftProfileData);
 }
@@ -1032,8 +1094,32 @@ function updateValidationHint(data: ProfileData): void {
   editorValidationHint.textContent = hintParts.join(' —— ');
 }
 
-async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
+/**
+ * 把「缺头像」并进校验提示。
+ */
+async function refreshAvatarHint(profileId: string): Promise<void> {
+  const hasAvatar = await profileHasAvatar(profileId);
+  if (hasAvatar || !draftProfileData) {
+    return;
+  }
+  const current = editorValidationHint.textContent ?? '';
+  if (current.includes('头像')) {
+    return;
+  }
+  editorValidationHint.textContent = current
+    ? `${current} —— 硬必填未完成：头像`
+    : '硬必填未完成：头像';
+}
+
+/**
+ * 把当前草稿写入本机。
+ * @param options.requireComplete 为 true 时校验硬必填与头像（「保存档案/关闭」）
+ * @param options.closeAfterSave 保存成功后关闭编辑区
+ */
+async function persistDraftProfile(options: {
+  requireComplete: boolean;
+  closeAfterSave: boolean;
+}): Promise<void> {
   if (!editingProfileId || !draftProfileData) {
     showStatus('当前没有正在编辑的档案', 'error');
     return;
@@ -1042,10 +1128,23 @@ async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
   collectStaticFieldsIntoDraft(draftProfileData);
   updateValidationHint(draftProfileData);
 
-  const validation = validateProfileData(draftProfileData);
-  if (!validation.ok) {
-    showStatus(`无法保存：${validation.missingRequired.join('；')}`, 'error');
-    return;
+  if (options.requireComplete) {
+    const validation = validateProfileData(draftProfileData);
+    if (!validation.ok) {
+      showStatus(`无法保存：${validation.missingRequired.join('；')}`, 'error');
+      stickySaveStatus.textContent = '必填未齐';
+      return;
+    }
+    try {
+      await assertAvatarUploaded(editingProfileId);
+    } catch (error) {
+      showStatus(
+        error instanceof Error ? error.message : '请先上传头像',
+        'error',
+      );
+      stickySaveStatus.textContent = '缺头像';
+      return;
+    }
   }
 
   try {
@@ -1054,17 +1153,35 @@ async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
       draftProfileData,
     );
     await refreshProfilesFromStorage();
+    if (options.closeAfterSave) {
+      showStatus('档案已保存并关闭编辑', 'success');
+      closeEditor();
+      return;
+    }
     editingProfileName.textContent = `正在编辑：${updated.name}`;
     draftProfileData = structuredClone(updated.data);
     fillEditorForm(draftProfileData);
+    remountDistributedAttachments(updated.id);
+    stickySaveStatus.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
+    const validation = validateProfileData(draftProfileData);
     const softText =
-      validation.softWarnings.length > 0
+      options.requireComplete && validation.softWarnings.length > 0
         ? `（建议：${validation.softWarnings.join('；')}）`
         : '';
-    showStatus(`档案内容已保存${softText}`, 'success');
+    showStatus(
+      options.requireComplete
+        ? `档案内容已保存${softText}`
+        : `进度已保存到本机${softText}`,
+      'success',
+    );
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   }
+}
+
+async function handleSaveProfileData(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  await persistDraftProfile({ requireComplete: true, closeAfterSave: false });
 }
 
 async function handleExport(): Promise<void> {
@@ -1219,6 +1336,12 @@ function bindEventListeners(): void {
   });
   profileEditorForm.addEventListener('submit', (event) => {
     void handleSaveProfileData(event);
+  });
+  saveProgressButton.addEventListener('click', () => {
+    void persistDraftProfile({ requireComplete: false, closeAfterSave: false });
+  });
+  saveAndCloseButton.addEventListener('click', () => {
+    void persistDraftProfile({ requireComplete: true, closeAfterSave: true });
   });
   closeEditorButton.addEventListener('click', () => {
     closeEditor();

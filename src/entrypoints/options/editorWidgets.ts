@@ -140,6 +140,61 @@ export function createListItemCard(
 }
 
 /**
+ * 可锁定条目卡片：编辑态含「保存本条/删除」；只读态含「编辑/删除」。
+ */
+export function createLockableListItemCard(options: {
+  titleText: string;
+  locked: boolean;
+  onSaveItem: () => void;
+  onEditItem: () => void;
+  onRemove: () => void;
+}): HTMLDivElement {
+  const card = document.createElement('div');
+  card.className = options.locked
+    ? 'item-card item-card-locked'
+    : 'item-card item-card-editing';
+
+  const header = document.createElement('div');
+  header.className = 'item-card-header';
+
+  const title = document.createElement('p');
+  title.className = 'item-card-title';
+  title.textContent = options.locked
+    ? `${options.titleText}（已保存）`
+    : options.titleText;
+
+  const actions = document.createElement('div');
+  actions.className = 'item-card-actions';
+
+  if (options.locked) {
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'btn btn-secondary btn-sm';
+    editButton.textContent = '编辑';
+    editButton.addEventListener('click', options.onEditItem);
+    actions.appendChild(editButton);
+  } else {
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.className = 'btn btn-primary btn-sm';
+    saveButton.textContent = '保存本条';
+    saveButton.addEventListener('click', options.onSaveItem);
+    actions.appendChild(saveButton);
+  }
+
+  const removeButton = document.createElement('button');
+  removeButton.type = 'button';
+  removeButton.className = 'btn btn-danger btn-sm';
+  removeButton.textContent = '删除本条';
+  removeButton.addEventListener('click', options.onRemove);
+  actions.appendChild(removeButton);
+
+  header.append(title, actions);
+  card.appendChild(header);
+  return card;
+}
+
+/**
  * 向单个 select 写入枚举选项（含「请选择」空项），并尽量保留当前值。
  */
 export function populateSelectOptions(

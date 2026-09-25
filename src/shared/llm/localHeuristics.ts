@@ -1,5 +1,7 @@
 import type { FieldDescriptor, FillPlan } from '../types/fill';
 import type { ProfileData } from '../types/profile';
+import type { AttachmentKind, AttachmentMeta } from '../types/attachment';
+import { attachmentKindLabel } from '../types/attachment';
 
 /** 启发式匹配结果：档案取值路径对应的填写值与原因文案 */
 interface HeuristicMatch {
@@ -138,18 +140,77 @@ function matchFieldToProfile(
 }
 
 /**
- * 对扫描字段做本地高置信预填：邮箱/电话/姓名/城市直接映射档案，
- * 未命中或档案值为空的字段放入 remainingFields 交给 LLM。
- * partialPlan.skippedFieldIds 恒为空，跳过列表仅由 LLM 产出后再合并。
+ * 文件框按标签匹配本机附件种类。
+ */
+function detectAttachmentKind(matchText: string): AttachmentKind | null {
+  if (/头像|证件照|照片|photo|avatar|portrait/.test(matchText)) {
+    return 'avatar';
+  }
+  if (/简历|resume|\bcv\b/.test(matchText)) {
+    return 'resume';
+  }
+  if (/实习证明|在职证明|离职证明/.test(matchText)) {
+    return 'internship';
+  }
+  if (/奖状|获奖|荣誉/.test(matchText)) {
+    return 'award';
+  }
+  if (/证书|资格证|证明/.test(matchText)) {
+    return 'certificate';
+  }
+  if (/项目材料|项目文件|项目附件|作品/.test(matchText)) {
+    return 'project';
+  }
+  return null;
+}
+
+/**
+ * 为 file 字段挑选一份附件；标签对不上则返回 null。
+ */
+function matchFileField(
+  field: FieldDescriptor,
+  attachments: AttachmentMeta[],
+): FillPlan['items'][number] | null {
+  const kind = detectAttachmentKind(buildMatchText(field).toLowerCase());
+  if (!kind) {
+    return null;
+  }
+  const matchedAttachment = attachments.find((item) => item.kind === kind);
+  if (!matchedAttachment) {
+    return null;
+  }
+  return {
+    fieldId: field.fieldId,
+    value: matchedAttachment.fileName,
+    attachmentId: matchedAttachment.id,
+    confidence: 0.92,
+    reason: `本地附件：${attachmentKindLabel(kind)}`,
+  };
+}
+
+/**
+ * 对扫描字段做本地高置信预填：邮箱/电话/姓名/城市，以及文件框附件。
+ * 文件框不交给 LLM。未匹配的文件框记入 skippedFieldIds。
  */
 export function applyLocalHeuristics(
   profile: ProfileData,
   fields: FieldDescriptor[],
+  attachments: AttachmentMeta[] = [],
 ): { partialPlan: FillPlan; remainingFields: FieldDescriptor[] } {
   const matchedItems: FillPlan['items'] = [];
   const remainingFields: FieldDescriptor[] = [];
+  const skippedFieldIds: string[] = [];
 
   for (const field of fields) {
+    if (field.type === 'file') {
+      const fileMatch = matchFileField(field, attachments);
+      if (fileMatch) {
+        matchedItems.push(fileMatch);
+      } else {
+        skippedFieldIds.push(field.fieldId);
+      }
+      continue;
+    }
     const matched = matchFieldToProfile(field, profile);
     if (matched) {
       matchedItems.push({
@@ -166,7 +227,7 @@ export function applyLocalHeuristics(
   return {
     partialPlan: {
       items: matchedItems,
-      skippedFieldIds: [],
+      skippedFieldIds,
     },
     remainingFields,
   };

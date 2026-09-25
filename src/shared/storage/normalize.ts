@@ -1,5 +1,7 @@
 import { createEmptyProfileData } from './defaults';
 import type {
+  AwardItem,
+  CertificateItem,
   EducationItem,
   EmergencyContact,
   ExperienceItem,
@@ -220,10 +222,14 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     };
   });
 
-  // 经历：补齐职责/内容/业绩字段
+  // 经历：补齐 id / 锁定态 / 职责字段
   merged.experience = (Array.isArray(merged.experience) ? merged.experience : []).map(
     (item: ExperienceItem) => ({
       ...item,
+      id: item.id?.trim() || crypto.randomUUID(),
+      editingLocked: Boolean(item.editingLocked),
+      attachmentNote: item.attachmentNote ?? '',
+      cloudLink: item.cloudLink ?? '',
       company: item.company ?? '',
       title: item.title ?? '',
       startDate: item.startDate ?? '',
@@ -237,7 +243,7 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     }),
   );
 
-  // 项目：旧 description 可回填 content
+  // 项目：旧 description 可回填 content，并补齐条目 id
   merged.projects = (Array.isArray(merged.projects) ? merged.projects : []).map(
     (item: ProjectItem) => {
       const content =
@@ -246,6 +252,10 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
         '';
       return {
         ...item,
+        id: item.id?.trim() || crypto.randomUUID(),
+        editingLocked: Boolean(item.editingLocked),
+        attachmentNote: item.attachmentNote ?? '',
+        cloudLink: item.cloudLink ?? '',
         name: item.name ?? '',
         description: item.description ?? '',
         content,
@@ -261,10 +271,26 @@ export function normalizeProfileData(rawData: unknown): ProfileData {
     sourceRecord.skills !== undefined ? sourceRecord.skills : merged.skills,
   );
   merged.languages = Array.isArray(merged.languages) ? merged.languages : [];
-  merged.certificates = Array.isArray(merged.certificates)
-    ? merged.certificates
-    : [];
-  merged.awards = Array.isArray(merged.awards) ? merged.awards : [];
+  merged.certificates = (Array.isArray(merged.certificates) ? merged.certificates : []).map(
+    (item: CertificateItem) => ({
+      ...item,
+      id: item.id?.trim() || crypto.randomUUID(),
+      editingLocked: Boolean(item.editingLocked),
+      attachmentNote: item.attachmentNote ?? '',
+      cloudLink: item.cloudLink ?? '',
+      name: item.name ?? '',
+    }),
+  );
+  merged.awards = (Array.isArray(merged.awards) ? merged.awards : []).map(
+    (item: AwardItem) => ({
+      ...item,
+      id: item.id?.trim() || crypto.randomUUID(),
+      editingLocked: Boolean(item.editingLocked),
+      attachmentNote: item.attachmentNote ?? '',
+      cloudLink: item.cloudLink ?? '',
+      name: item.name ?? '',
+    }),
+  );
   merged.publications = Array.isArray(merged.publications)
     ? merged.publications
     : [];

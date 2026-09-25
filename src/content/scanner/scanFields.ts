@@ -6,7 +6,6 @@ const SKIPPED_INPUT_TYPES = new Set([
   'submit',
   'button',
   'image',
-  'file',
   'password',
 ]);
 
@@ -42,9 +41,11 @@ function extractCleanLabelText(labelElement: Element): string {
  */
 function resolveFieldLabel(element: Element): string {
   if (element instanceof HTMLElement && element.id) {
-    const labelForElement = document.querySelector(
-      `label[for="${CSS.escape(element.id)}"]`,
-    );
+    const rootNode = element.getRootNode();
+    const labelForElement =
+      rootNode instanceof Document || rootNode instanceof ShadowRoot
+        ? rootNode.querySelector(`label[for="${CSS.escape(element.id)}"]`)
+        : null;
     if (labelForElement) {
       const labelText = extractCleanLabelText(labelForElement);
       if (labelText) {
@@ -230,15 +231,91 @@ export function resolveFieldElement(fieldId: string): Element | undefined {
   return element;
 }
 
+/** 安静这么久就认为表单加载完了 */
+const SCAN_QUIET_MS = 450;
+/** 后加载表单最多再等这么久 */
+const SCAN_MAX_WAIT_MS = 1500;
+
+/**
+ * 等 DOM 安静一小段时间，或到达上限。用来接住稍后插入的网申表单。
+ */
+export function waitForFormSettle(rootDocument: Document = document): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let quietTimer = window.setTimeout(finish, SCAN_QUIET_MS);
+    const maxTimer = window.setTimeout(finish, SCAN_MAX_WAIT_MS);
+    const observer = new MutationObserver(() => {
+      window.clearTimeout(quietTimer);
+      quietTimer = window.setTimeout(finish, SCAN_QUIET_MS);
+    });
+
+    /**
+     * 结束等待并断开观察，只执行一次。
+     */
+    function finish(): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      observer.disconnect();
+      window.clearTimeout(quietTimer);
+      window.clearTimeout(maxTimer);
+      resolve();
+    }
+
+    observer.observe(rootDocument.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+  });
+}
+
+/**
+ * 收集普通文档、开放 Shadow DOM 和同源 iframe 里的表单控件。
+ */
+function collectFormControls(root: ParentNode): Element[] {
+  const controls: Element[] = [];
+  const visitedRoots = new Set<ParentNode>();
+  const selector = 'input, textarea, select, [contenteditable="true"]';
+
+  /**
+   * 遍历一个根节点，并继续进入其开放影子树和同源框架。
+   */
+  const visit = (node: ParentNode): void => {
+    if (visitedRoots.has(node)) {
+      return;
+    }
+    visitedRoots.add(node);
+    controls.push(...Array.from(node.querySelectorAll(selector)));
+    const elements = node.querySelectorAll('*');
+    for (const element of elements) {
+      if (element.shadowRoot) {
+        visit(element.shadowRoot);
+      }
+      if (element instanceof HTMLIFrameElement) {
+        try {
+          if (element.contentDocument) {
+            visit(element.contentDocument);
+          }
+        } catch {
+          // 跨域框架不允许读取
+        }
+      }
+    }
+  };
+
+  visit(root);
+  return controls;
+}
+
 /**
  * 扫描 root（默认 document）下可见的表单控件，返回 FieldDescriptor 列表，
  * 并刷新本会话的 fieldId → Element 映射供后续回填使用。
  */
 export function scanFields(root: ParentNode = document): FieldDescriptor[] {
   fieldElementById.clear();
-
-  const selector = 'input, textarea, select, [contenteditable="true"]';
-  const candidates = Array.from(root.querySelectorAll(selector));
+  const candidates = collectFormControls(root);
   const fields: FieldDescriptor[] = [];
 
   for (const candidate of candidates) {
@@ -249,4 +326,14 @@ export function scanFields(root: ParentNode = document): FieldDescriptor[] {
   }
 
   return fields;
+}
+
+/**
+ * 先等后加载表单安静下来，再扫描。供内容脚本在收到扫描消息时调用。
+ */
+export async function scanFieldsSettled(
+  rootDocument: Document = document,
+): Promise<FieldDescriptor[]> {
+  await waitForFormSettle(rootDocument);
+  return scanFields(rootDocument);
 }

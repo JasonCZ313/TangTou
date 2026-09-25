@@ -1,4 +1,4 @@
-import { scanFields } from '../content/scanner/scanFields';
+import { scanFieldsSettled } from '../content/scanner/scanFields';
 import { applyFillPlan, undoLastFill } from '../content/filler/fillFields';
 import type { ExtensionMessage } from '../shared/types/messages';
 
@@ -13,17 +13,29 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener(
       (message: ExtensionMessage, _sender, sendResponse) => {
         if (message.type === 'SCAN_FIELDS') {
-          const fields = scanFields(document);
-          sendResponse({
-            type: 'SCAN_FIELDS_RESULT',
-            requestId: message.requestId,
-            fields,
-          } satisfies ExtensionMessage);
+          void scanFieldsSettled(document)
+            .then((fields) => {
+              sendResponse({
+                type: 'SCAN_FIELDS_RESULT',
+                requestId: message.requestId,
+                fields,
+              } satisfies ExtensionMessage);
+            })
+            .catch((error: unknown) => {
+              const detail =
+                error instanceof Error ? error.message : '扫描失败';
+              sendResponse({
+                type: 'ERROR',
+                requestId: message.requestId,
+                code: 'SCAN_FAILED',
+                message: detail,
+              } satisfies ExtensionMessage);
+            });
           return true;
         }
 
         if (message.type === 'APPLY_FILL_PLAN') {
-          const result = applyFillPlan(message.plan);
+          const result = applyFillPlan(message.plan, message.filePayloads ?? []);
           sendResponse({
             type: 'APPLY_FILL_RESULT',
             requestId: message.requestId,

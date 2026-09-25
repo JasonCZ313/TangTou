@@ -287,3 +287,83 @@ export async function testApiConnection(options: {
     clearTimeout(timer);
   }
 }
+
+const RESUME_PARSE_SYSTEM = `你是简历结构化助手。根据用户给出的简历纯文本，输出一个 JSON 对象，结构尽量接近：
+{"basic":{"fullName":"","phone":"","email":"","currentCity":"","nationality":"","nativePlace":"","gender":"","birthday":""},"jobIntent":{"targetRole":""},"education":[{"school":"","degreeLevel":"","major":"","startDate":"","endDate":""}],"experience":[{"company":"","title":"","startDate":"","endDate":"","description":""}],"projects":[{"name":"","description":""}],"skills":[{"name":""}]}
+规则：只填写简历里明确出现的信息；没有的字段省略或留空字符串；日期尽量 YYYY-MM-DD；不要编造；不要 markdown。`;
+
+/**
+ * 把简历纯文本交给模型，解析成可合并的档案 JSON，并带回 usage。
+ */
+export async function requestResumeProfilePatch(options: {
+  apiBaseUrl: string;
+  apiKey: string;
+  model: string;
+  resumeText: string;
+  timeoutMs?: number;
+}): Promise<{ profilePatch: Record<string, unknown>; usage: LlmTokenUsage | null }> {
+  const baseUrl = options.apiBaseUrl.replace(/\/$/, '');
+  const endpointUrl = `${baseUrl}/chat/completions`;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? 60_000,
+  );
+  const messages: ChatMessage[] = [
+    { role: 'system', content: RESUME_PARSE_SYSTEM },
+    { role: 'user', content: options.resumeText },
+  ];
+  try {
+    let response = await postChatCompletions({
+      endpointUrl,
+      apiKey: options.apiKey,
+      model: options.model,
+      messages,
+      temperature: 0.1,
+      useJsonObjectFormat: true,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const firstErrorText = await response.text();
+      if (isResponseFormatRejection(response.status, firstErrorText)) {
+        response = await postChatCompletions({
+          endpointUrl,
+          apiKey: options.apiKey,
+          model: options.model,
+          messages,
+          temperature: 0.1,
+          useJsonObjectFormat: false,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const retryErrorText = await response.text();
+          throw new Error(
+            `LLM_HTTP_${response.status}: ${retryErrorText.slice(0, 200)}`,
+          );
+        }
+      } else {
+        throw new Error(
+          `LLM_HTTP_${response.status}: ${firstErrorText.slice(0, 200)}`,
+        );
+      }
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') {
+      throw new Error('LLM_EMPTY_CONTENT');
+    }
+    const jsonText = content.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+    const parsed = JSON.parse(jsonText) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('LLM_INVALID_SHAPE');
+    }
+    return {
+      profilePatch: parsed as Record<string, unknown>,
+      usage: parseUsageFromPayload(payload),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}

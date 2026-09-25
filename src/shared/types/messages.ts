@@ -1,6 +1,14 @@
 import type { FieldDescriptor, FillPlan } from './fill';
-import type { Profile, AppSettings } from './profile';
+import type { Profile, AppSettings, ProfileData } from './profile';
 import type { LlmTokenUsage, TokenUsageStats } from './usage';
+
+/** 写入页面 file 控件时附带的文件字节（Base64） */
+export interface FileUploadPayload {
+  fieldId: string;
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+}
 
 /** 扩展内部消息联合类型（UI / Background / Content） */
 export type ExtensionMessage =
@@ -19,7 +27,7 @@ export type ExtensionMessage =
       /** 本次 LLM 用量；仅启发式或接口未返回时为 undefined */
       usage?: LlmTokenUsage | null;
     }
-  | { type: 'APPLY_FILL_PLAN'; requestId: string; plan: FillPlan }
+  | { type: 'APPLY_FILL_PLAN'; requestId: string; plan: FillPlan; filePayloads?: FileUploadPayload[] }
   | {
       type: 'APPLY_FILL_RESULT';
       requestId: string;
@@ -46,6 +54,17 @@ export type ExtensionMessage =
       type: 'RESET_TOKEN_USAGE_RESULT';
       requestId: string;
       tokenUsage: TokenUsageStats;
+    }
+  | {
+      type: 'PARSE_RESUME';
+      requestId: string;
+      resumeText: string;
+    }
+  | {
+      type: 'PARSE_RESUME_RESULT';
+      requestId: string;
+      profilePatch: ProfileData;
+      usage?: LlmTokenUsage | null;
     }
   | {
       type: 'ERROR';
