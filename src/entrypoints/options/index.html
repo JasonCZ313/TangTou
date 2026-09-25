@@ -448,12 +448,33 @@
           </label>
         </div>
       </section>
-      <p class="feedback-row">
-        <a id="feedbackMailLink" class="feedback-mail-link">意见反馈</a>
-        <span class="feedback-row-hint">
-          打开邮件后主题为「【躺投】问题反馈」。若主题是空的，请手动写上这句，并在正文说明问题和所在页面。
-        </span>
-      </p>
+      <div class="feedback-spot">
+        <div id="feedbackComposer" class="feedback-composer" hidden>
+          <label class="feedback-field">
+            <span class="feedback-field-label">问题和所在页面</span>
+            <textarea
+              id="feedbackBodyInput"
+              class="feedback-body"
+              rows="4"
+              placeholder="例如：扫描停在半路，页面是某某公司的网申。"
+            ></textarea>
+          </label>
+          <button type="button" id="feedbackCopyButton" class="btn btn-primary feedback-mail-button">
+            复制并打开邮箱
+          </button>
+          <div id="feedbackMailboxRow" class="feedback-mailbox-row" hidden>
+            <button type="button" class="btn btn-secondary" data-webmail="netease163">163 邮箱</button>
+            <button type="button" class="btn btn-secondary" data-webmail="qq">QQ 邮箱</button>
+            <button type="button" class="btn btn-secondary" data-webmail="gmail">Gmail</button>
+            <button type="button" class="btn btn-secondary" data-webmail="outlook">Outlook 网页版</button>
+          </div>
+          <p id="feedbackResult" class="feedback-result" hidden></p>
+          <textarea id="feedbackFallbackLetter" class="feedback-fallback" readonly hidden></textarea>
+        </div>
+        <button type="button" id="feedbackToggleButton" class="btn btn-secondary feedback-mail-button">
+          意见反馈
+        </button>
+      </div>
       <p class="maker-credit">
         本程序由 <span class="maker-credit-name">雪部湾扁橙</span> 编程制作，感谢您的使用！
       </p>

@@ -46,7 +46,7 @@ import type { FillMode, Profile, ProfileData, RegionSelection } from '../../shar
 import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
-import { mountFeedbackMailLink } from '../../shared/feedback/feedbackMail';
+import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { fillStaticSelectsByCatalog } from './editorWidgets';
 import { appendListItem, renderAllDynamicLists } from './editorLists';
 import {
@@ -499,10 +499,7 @@ function renderTokenUsageSummary(stats: TokenUsageStats): void {
 }
 
 async function bootstrapOptionsPage(): Promise<void> {
-  const feedbackMailLink = document.getElementById('feedbackMailLink');
-  if (feedbackMailLink instanceof HTMLAnchorElement) {
-    mountFeedbackMailLink(feedbackMailLink);
-  }
+  mountFeedbackPanel();
   try {
     ensureStaticCatalogsReady();
     setupEditorToc();

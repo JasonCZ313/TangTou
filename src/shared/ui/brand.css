@@ -411,24 +411,86 @@ input[required]:user-invalid {
 }
 
 /* 页脚水印：小字、弱对比，作者名单独强调 */
-.feedback-row {
+.feedback-spot {
   margin: 14px 0 0;
+}
+
+.feedback-composer {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--tt-border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.feedback-field {
+  display: block;
+}
+
+.feedback-field-label {
+  display: block;
+  margin-bottom: 6px;
   font-size: 12px;
-  line-height: 1.55;
-  color: var(--tt-muted);
-}
-
-.feedback-mail-link {
-  display: inline-block;
-  margin-right: 6px;
-  color: var(--tt-primary);
   font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  color: var(--tt-text-secondary);
 }
 
-.feedback-row-hint {
-  color: var(--tt-muted);
+.feedback-body,
+.feedback-fallback {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--tt-border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.feedback-mail-button {
+  width: 100%;
+  margin-top: 8px;
+  font-weight: 700;
+}
+
+.feedback-mailbox-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.feedback-mailbox-row .btn {
+  width: 100%;
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.feedback-result {
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.feedback-result.is-ok {
+  border-color: #34d399;
+  background: #ecfdf5;
+  color: var(--tt-success);
+}
+
+.feedback-result.is-bad {
+  border-color: #f87171;
+  background: #fef2f2;
+  color: var(--tt-danger);
+}
+
+.feedback-fallback {
+  margin-top: 8px;
+  min-height: 96px;
 }
 
 .maker-credit {

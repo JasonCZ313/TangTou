@@ -24,7 +24,7 @@ import {
   scanActivePage,
 } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
-import { mountFeedbackMailLink } from '../../shared/feedback/feedbackMail';
+import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
 import type { FillMode, Profile } from '../../shared/types/profile';
@@ -1061,10 +1061,7 @@ function bindEvents(): void {
 }
 
 async function bootstrapSidePanel(): Promise<void> {
-  const feedbackMailLink = document.getElementById('feedbackMailLink');
-  if (feedbackMailLink instanceof HTMLAnchorElement) {
-    mountFeedbackMailLink(feedbackMailLink);
-  }
+  mountFeedbackPanel();
   bindEvents();
   syncBusyUi();
   try {
