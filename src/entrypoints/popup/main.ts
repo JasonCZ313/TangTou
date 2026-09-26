@@ -15,10 +15,11 @@ import {
   scanActivePage,
 } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import { PENDING_POPUP_SCAN_REQUEST_KEY } from '../../shared/messaging/popupScanHandoff';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
-import type { AppSettings, Profile } from '../../shared/types/profile';
+import type { AppSettings, FillMode, Profile } from '../../shared/types/profile';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
@@ -40,6 +41,22 @@ let cachedProfiles: Profile[] = [];
 /** 当前 settings.activeProfileId 缓存，用于同步「设为默认」勾选 */
 let cachedActiveProfileId: string | null = null;
 
+/**
+ * 打开弹窗时记下的当前标签。
+ * 点击里再去查标签会先 await，浏览器就不再承认这是一次用户点击。
+ */
+let popupTabId: number | undefined;
+
+/** 打开弹窗时读到的填写模式。预览模式要点击当下就打开侧栏。 */
+let cachedFillMode: FillMode = 'preview';
+
+/** 弹窗一出现就记下当前网申标签，供后面的点击同步打开侧栏。 */
+const popupTabReady = chrome.tabs
+  .query({ active: true, currentWindow: true })
+  .then((tabs) => {
+    popupTabId = tabs[0]?.id;
+  });
+
 /** 是否正在执行填写/撤销等异步流程，用于禁用按钮防重复点击 */
 let isBusy = false;
 
@@ -57,6 +74,7 @@ const openOptionsButton = document.getElementById(
   'openOptionsButton',
 ) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
+const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
 const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
@@ -186,6 +204,7 @@ async function loadState(): Promise<{
     throw new Error('无法读取扩展状态');
   }
   renderProfileOptions(response.profiles, response.settings.activeProfileId);
+  cachedFillMode = response.settings.fillMode;
   return { settings: response.settings, profiles: response.profiles };
 }
 
@@ -205,9 +224,11 @@ async function maybePersistDefaultProfile(profileId: string): Promise<void> {
 
 /**
  * 主填写流程：扫描字段 → Background 构建 FillPlan → 按 fillMode 预览或直接写入。
- * preview：写入 session pendingFillSession 并打开 Side Panel；direct：立即 APPLY。
+ * 直接填写在本弹窗里写完。预览模式不走这里打开侧栏：扫完再 open 会丢掉用户点击。
  */
 async function runFillFlow(profileId: string): Promise<void> {
+  stopButton.hidden = false;
+  try {
   const scanResult = await scanActivePage(createRequestId(), (progress) => {
     showScanProgress(progress.percent, progress.message);
   });
@@ -254,15 +275,14 @@ async function runFillFlow(profileId: string): Promise<void> {
       notice: planResponse.notice,
     };
     await chrome.storage.session.set({ pendingFillSession });
-    // 必须在 Popup 内直接 open：经 Background 会丢失「用户手势」导致失败
-    await openSidePanelFromPopup();
     const usageTip = fillPlanResponseUsageText(planResponse.usage);
+    const openHint = '对照已经完成。请点「打开侧边助手」查看预览后再写入。';
     if (planResponse.notice) {
-      showError(`${planResponse.notice} 侧边助手已打开，可以先核对本机配上的项。`);
+      showError(`${planResponse.notice} ${openHint}`);
       return;
     }
     showStatus(
-      `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${fillPlan.items.length} 项可以填。侧边助手已打开，请在那里核对后再写入。${usageTip}`,
+      `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${fillPlan.items.length} 项可以填。${openHint}${usageTip}`,
       'success',
     );
     return;
@@ -272,6 +292,7 @@ async function runFillFlow(profileId: string): Promise<void> {
     type: 'APPLY_FILL_PLAN',
     requestId: createRequestId(),
     plan: fillPlan,
+    profileId,
   });
   if (applyResponse.type !== 'APPLY_FILL_RESULT') {
     throw new Error('写入页面失败');
@@ -287,6 +308,9 @@ async function runFillFlow(profileId: string): Promise<void> {
     `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。${usageTip}`,
     'success',
   );
+  } finally {
+    stopButton.hidden = true;
+  }
 }
 
 /**
@@ -319,27 +343,35 @@ async function runUndoFlow(): Promise<void> {
 }
 
 /**
- * 在 Popup 内直接打开当前标签的 Side Panel。
- * 不可经 Background 转发：chrome.sidePanel.open 要求保留用户点击手势。
+ * 在这次点击里立刻打开侧栏。
+ * 前面不能再 await：浏览器只承认点击处理函数同步发出的 sidePanel.open。
  */
-async function openSidePanelFromPopup(): Promise<void> {
-  const tabs = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-  const tabId = tabs[0]?.id;
-  if (tabId === undefined) {
-    throw new Error('无法确定当前标签页');
+function openSidePanelForCurrentTab(): Promise<void> {
+  if (popupTabId === undefined) {
+    return Promise.reject(new Error('无法确定当前标签页'));
   }
-  await chrome.sidePanel.open({ tabId });
+  return chrome.sidePanel.open({ tabId: popupTabId });
 }
 
 /**
- * 打开与当前标签关联的 Side Panel（不生成新 plan）。
+ * 预览模式：把档案交给侧栏，并在这次点击里打开它。
+ * 扫描放在侧栏里做，弹窗被关掉也不会把对照做一半。
  */
-async function openSidePanel(): Promise<void> {
-  await openSidePanelFromPopup();
-  showStatus('已打开侧边助手', 'success');
+function handScanToSidePanel(profileId: string): void {
+  void maybePersistDefaultProfile(profileId);
+  void chrome.storage.session.set({
+    [PENDING_POPUP_SCAN_REQUEST_KEY]: {
+      profileId,
+      requestId: createRequestId(),
+    },
+  });
+  void openSidePanelForCurrentTab()
+    .then(() => {
+      showStatus('侧边助手已打开，正在那边扫描并对照。', 'info');
+    })
+    .catch((error: unknown) => {
+      showError(describeUserFacingError(error));
+    });
 }
 
 /**
@@ -400,12 +432,17 @@ function bindEvents(): void {
   });
 
   fillButton.addEventListener('click', () => {
+    const selectedProfileId = profileSelect.value;
+    if (!selectedProfileId) {
+      showError('请先选择档案');
+      return;
+    }
+    // 预览模式必须在这次点击里打开侧栏，不能等扫描结束。
+    if (cachedFillMode !== 'direct') {
+      handScanToSidePanel(selectedProfileId);
+      return;
+    }
     void withBusy(async () => {
-      const selectedProfileId = profileSelect.value;
-      if (!selectedProfileId) {
-        showError('请先选择档案');
-        return;
-      }
       showStatus('正在滚动页面，已发现 0 个输入框。', 'info');
       await maybePersistDefaultProfile(selectedProfileId);
       await runFillFlow(selectedProfileId);
@@ -413,14 +450,14 @@ function bindEvents(): void {
   });
 
   openSidePanelButton.addEventListener('click', () => {
-    // 不经 withBusy 前置逻辑拖延：尽快响应点击手势
-    void (async () => {
-      try {
-        await openSidePanel();
-      } catch (error: unknown) {
+    // 同步发出 open，中间不再查标签、不再进 withBusy。
+    void openSidePanelForCurrentTab()
+      .then(() => {
+        showStatus('已打开侧边助手', 'success');
+      })
+      .catch((error: unknown) => {
         showError(describeUserFacingError(error));
-      }
-    })();
+      });
   });
 
   openOptionsButton.addEventListener('click', () => {
@@ -439,6 +476,15 @@ function bindEvents(): void {
       await runUndoFlow();
     });
   });
+
+  stopButton.addEventListener('click', () => {
+    void requestBackground({
+      type: 'STOP_PAGE_WORK',
+      requestId: createRequestId(),
+    }).then(() => {
+      showStatus('已要求停止，当前这一格结束后不再继续。', 'info');
+    });
+  });
 }
 
 /**
@@ -446,6 +492,7 @@ function bindEvents(): void {
  */
 async function bootstrapPopup(): Promise<void> {
   mountAppVersionLabel();
+  await popupTabReady;
   bindEvents();
   syncBusyUi();
   try {

@@ -743,6 +743,10 @@ input[required]:user-invalid {
   overflow: auto;
 }
 
+.api-guide-backdrop[hidden] {
+  display: none !important;
+}
+
 .api-guide {
   width: min(760px, 100%);
   margin: auto;
@@ -816,6 +820,12 @@ input[required]:user-invalid {
   font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.api-guide-url {
+  font-weight: 400;
+  color: #334155;
+  word-break: break-all;
 }
 
 .api-guide-steps code {

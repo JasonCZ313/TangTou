@@ -18,7 +18,8 @@ import {
   recordTokenUsage,
   resetTokenUsageStats,
 } from '../shared/storage/usageStore';
-import type { FillPlan } from '../shared/types/fill';
+import type { FillPlan, SectionAddRequest } from '../shared/types/fill';
+import type { ProfileData } from '../shared/types/profile';
 import type { ExtensionMessage } from '../shared/types/messages';
 import {
   notesForFieldIds,
@@ -204,14 +205,18 @@ function mergeHeuristicAndLlmPlan(
     heuristicPlan.items.map((item) => item.fieldId),
   );
   const llmItemsWithoutHeuristicOverlap = llmPlan.items.filter(
-    (item) => !heuristicFieldIds.has(item.fieldId),
+    (item) => !heuristicFieldIds.has(item.fieldId) && item.confidence >= 0.35,
   );
+  const lowConfidenceFieldIds = llmPlan.items
+    .filter((item) => !heuristicFieldIds.has(item.fieldId) && item.confidence < 0.35)
+    .map((item) => item.fieldId);
   const items = [...heuristicPlan.items, ...llmItemsWithoutHeuristicOverlap];
   const filledFieldIds = new Set(items.map((item) => item.fieldId));
   const skippedFieldIds = [
     ...new Set([
       ...heuristicPlan.skippedFieldIds,
       ...llmPlan.skippedFieldIds,
+      ...lowConfidenceFieldIds,
     ]),
   ].filter((fieldId) => !filledFieldIds.has(fieldId));
   const notedFieldIds = new Set(
@@ -433,6 +438,58 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 /**
+ * 只统计档案里真正写了内容的条目，空壳教育/项目不再拿去点「添加」。
+ */
+function countNamedRows(values: string[]): number {
+  return values.filter((value) => value.trim().length > 0).length;
+}
+
+/**
+ * 档案各段有几条有效记录。页面上的行不够时，写入阶段才点「添加」。
+ */
+function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] {
+  const requests: SectionAddRequest[] = [
+    {
+      sectionPattern: '教育背景|教育经历',
+      neededRows: countNamedRows(profileData.education.map((item) => item.school || item.major || '')),
+    },
+    {
+      sectionPattern: '实习经历|工作经历',
+      neededRows: countNamedRows(profileData.experience.map((item) => item.company || '')),
+    },
+    {
+      sectionPattern: '项目经历|项目经验',
+      neededRows: countNamedRows(profileData.projects.map((item) => item.name || '')),
+    },
+    {
+      sectionPattern: '校内经历|校内任职|校园',
+      neededRows: countNamedRows(profileData.campusActivities.map((item) => item.organization || '')),
+    },
+    {
+      sectionPattern: '证书',
+      neededRows: countNamedRows(profileData.certificates.map((item) => item.name || '')),
+    },
+    {
+      sectionPattern: '获奖|奖项|荣誉',
+      neededRows: countNamedRows(profileData.awards.map((item) => item.name || '')),
+    },
+    {
+      sectionPattern: '论文|专利|著作',
+      neededRows: countNamedRows(profileData.publications.map((item) => item.title || '')),
+    },
+    {
+      sectionPattern: '培训',
+      neededRows: countNamedRows(profileData.trainings.map((item) => item.course || item.organization || '')),
+    },
+    {
+      sectionPattern: '个人能力|个人技能|专业技能|技能特长',
+      neededRows: countNamedRows(profileData.skills.map((item) => item.name || '')),
+    },
+  ];
+  return requests.filter((request) => request.neededRows > 0);
+}
+
+/**
  * 给填写计划附上附件字节后再转发到页面。
  */
 async function forwardApplyWithFiles(
@@ -456,9 +513,11 @@ async function forwardApplyWithFiles(
       dataBase64: arrayBufferToBase64(stored.buffer),
     });
   }
+  const profile = message.profileId ? await getProfile(message.profileId) : null;
   return sendToActiveTab({
     ...message,
     filePayloads,
+    sectionAdds: profile ? buildSectionAdds(profile.data) : message.sectionAdds,
   });
 }
 
@@ -665,6 +724,7 @@ async function dispatchMessage(
     case 'SCAN_FIELDS_RESULT':
       return message;
     case 'SCAN_FIELDS':
+    case 'STOP_PAGE_WORK':
     case 'UNDO_LAST_FILL':
       return forwardToActiveTab(message);
     default:

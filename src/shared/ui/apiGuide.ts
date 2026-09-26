@@ -55,6 +55,16 @@ function bindApiGuideDialog(backdrop: HTMLElement): void {
   backdrop.querySelector<HTMLButtonElement>('.api-guide-close')?.addEventListener('click', () => {
     backdrop.hidden = true;
   });
+  backdrop.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((linkElement) => {
+    if (linkElement.dataset.urlAppended === '1') {
+      return;
+    }
+    linkElement.dataset.urlAppended = '1';
+    const urlText = document.createElement('span');
+    urlText.className = 'api-guide-url';
+    urlText.textContent = ` ${linkElement.href}`;
+    linkElement.after(urlText);
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !backdrop.hidden) {
       backdrop.hidden = true;

@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>躺投仿网申探针页</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+        padding: 16px;
+        line-height: 1.4;
+      }
+      .pad-top {
+        height: 1200px;
+        background: #f3f4f6;
+        border-bottom: 2px dashed #999;
+      }
+      section {
+        margin: 24px 0;
+        padding: 12px;
+        border: 1px solid #ddd;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        margin: 8px 0;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      label {
+        min-width: 88px;
+      }
+      input,
+      select,
+      textarea {
+        min-width: 120px;
+        padding: 6px 8px;
+      }
+      .combo {
+        position: relative;
+      }
+      .combo-list {
+        display: none;
+        position: absolute;
+        left: 0;
+        top: 100%;
+        background: #fff;
+        border: 1px solid #ccc;
+        z-index: 5;
+        min-width: 160px;
+        max-height: 160px;
+        overflow: auto;
+      }
+      .combo.open .combo-list {
+        display: block;
+      }
+      .combo-list div {
+        padding: 6px 8px;
+        cursor: pointer;
+      }
+      .combo-list div:hover {
+        background: #eef6ff;
+      }
+      .err {
+        color: #c00;
+        font-size: 12px;
+      }
+      .ghost {
+        opacity: 0.45;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="pad-top" id="topPad">上面空白区域（模拟停在中间时漏扫）</div>
+
+    <h1>仿网申表单探针</h1>
+
+    <section id="basic">
+      <h2>基本信息</h2>
+      <div class="row">
+        <label>意向工作城市</label>
+        <input id="intentCity" placeholder="请选择城市" />
+      </div>
+      <div class="row">
+        <label>证件号码 *</label>
+        <div class="combo" id="idTypeCombo">
+          <input id="idType" readonly placeholder="请选择" value="" />
+          <div class="combo-list">
+            <div data-value="身份证">身份证</div>
+            <div data-value="护照">护照</div>
+            <div data-value="身份证(中国香港)">身份证(中国香港)</div>
+          </div>
+        </div>
+        <input id="idNumber" placeholder="证件号码" />
+      </div>
+      <div class="row">
+        <label>手机号码 *</label>
+        <div class="combo" id="phoneCodeCombo">
+          <input id="phoneCode" readonly placeholder="请选择" value="" />
+          <div class="combo-list">
+            <div data-value="+86">+86</div>
+            <div data-value="中国大陆">中国大陆</div>
+          </div>
+        </div>
+        <input id="phoneNumber" placeholder="手机号码" />
+      </div>
+      <div class="row">
+        <label>出生日期 *</label>
+        <div class="combo" id="birthdayCombo">
+          <input id="birthday" readonly placeholder="请选择日期" value="" />
+          <div class="combo-list">
+            <div data-value="2005-03-13">2005-03-13</div>
+            <div data-value="2004-01-01">2004-01-01</div>
+          </div>
+        </div>
+        <span class="err" id="birthdayErr" hidden>必填项未填写</span>
+      </div>
+      <div class="row">
+        <label>成绩排名 *</label>
+        <div class="combo" id="rankCombo">
+          <input id="rank" readonly placeholder="请选择" value="" />
+          <div class="combo-list">
+            <div data-value="前5%">前5%</div>
+            <div data-value="前10%">前10%</div>
+            <div data-value="前20%">前20%</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="education">
+      <h2>教育背景</h2>
+      <button type="button" id="addEducation">+ 添加</button>
+      <div id="educationRows"></div>
+    </section>
+
+    <section id="projects">
+      <h2>项目经历</h2>
+      <button type="button" id="addProject">+ 添加</button>
+      <div id="projectRows"></div>
+    </section>
+
+    <section id="campus">
+      <h2>校内任职</h2>
+      <div class="row">
+        <label>起止时间</label>
+        <select class="year"><option value="">年</option></select>
+        <select class="month"><option value="">月</option></select>
+        <select class="year"><option value="">年</option></select>
+        <select class="month"><option value="">月</option></select>
+      </div>
+      <div class="row">
+        <label>名称</label>
+        <input class="name" />
+        <label>角色</label>
+        <input class="role" />
+      </div>
+    </section>
+
+    <section id="awards">
+      <h2>获奖经历</h2>
+      <button type="button" id="addAward">+ 添加</button>
+      <div id="awardRows"></div>
+    </section>
+
+    <section id="skills">
+      <h2>个人能力</h2>
+      <textarea id="skillBox" rows="4" cols="60"></textarea>
+    </section>
+
+    <section id="essay">
+      <h2>自我描述</h2>
+      <textarea id="essayBox" rows="6" cols="60"></textarea>
+    </section>
+
+    <pre id="probeLog"></pre>
+
+    <script>
+      /**
+       * 给年、月下拉灌选项。月份只有 1-12 不补零，用来复现 08 对不上。
+       */
+      function fillYearMonth(selectRoot) {
+        for (const yearSelect of selectRoot.querySelectorAll('select.year')) {
+          for (let year = 2000; year <= 2030; year += 1) {
+            const option = document.createElement('option');
+            option.value = String(year);
+            option.textContent = String(year);
+            yearSelect.appendChild(option);
+          }
+        }
+        for (const monthSelect of selectRoot.querySelectorAll('select.month')) {
+          for (let month = 1; month <= 12; month += 1) {
+            const option = document.createElement('option');
+            option.value = String(month);
+            option.textContent = String(month);
+            monthSelect.appendChild(option);
+          }
+        }
+      }
+
+      /**
+       * 新建一行教育：就读时间四个下拉 + 学校专业学历。
+       */
+      function addEducationRow() {
+        const wrap = document.createElement('div');
+        wrap.className = 'edu-row';
+        wrap.innerHTML =
+          '<div class="row"><label>就读时间 *</label>' +
+          '<select class="year"><option value="">年</option></select>' +
+          '<select class="month"><option value="">月</option></select>' +
+          '<select class="year"><option value="">年</option></select>' +
+          '<select class="month"><option value="">月</option></select></div>' +
+          '<div class="row"><label>学校</label><input class="school" />' +
+          '<label>专业</label><input class="major" />' +
+          '<label>学历</label><input class="degree" /></div>';
+        document.getElementById('educationRows').appendChild(wrap);
+        fillYearMonth(wrap);
+      }
+
+      function addProjectRow() {
+        const wrap = document.createElement('div');
+        wrap.className = 'proj-row';
+        wrap.innerHTML =
+          '<div class="row"><label>起止时间</label>' +
+          '<select class="year"><option value="">年</option></select>' +
+          '<select class="month"><option value="">月</option></select>' +
+          '<select class="year"><option value="">年</option></select>' +
+          '<select class="month"><option value="">月</option></select></div>' +
+          '<div class="row"><label>名称</label><input class="name" />' +
+          '<label>职责</label><input class="duty" /></div>';
+        document.getElementById('projectRows').appendChild(wrap);
+        fillYearMonth(wrap);
+      }
+
+      function addAwardRow() {
+        const wrap = document.createElement('div');
+        wrap.className = 'award-row';
+        wrap.innerHTML =
+          '<div class="row"><label>获奖时间</label>' +
+          '<select class="year"><option value="">年</option></select>' +
+          '<select class="month"><option value="">月</option></select>' +
+          '<label>奖项名称</label><input class="name" /></div>';
+        document.getElementById('awardRows').appendChild(wrap);
+        fillYearMonth(wrap);
+      }
+
+      addEducationRow();
+      addProjectRow();
+      addAwardRow();
+      fillYearMonth(document.getElementById('campus'));
+
+      document.getElementById('addEducation').onclick = () => addEducationRow();
+      document.getElementById('addProject').onclick = () => addProjectRow();
+      document.getElementById('addAward').onclick = () => addAwardRow();
+
+      /**
+       * 仿 Ant 下拉：点输入框展开，点选项才写入；直接改 value 不算选中。
+       */
+      function wireCombo(comboId, inputId, onPicked) {
+        const combo = document.getElementById(comboId);
+        const input = document.getElementById(inputId);
+        input.addEventListener('click', () => {
+          combo.classList.add('open');
+        });
+        combo.querySelectorAll('.combo-list div').forEach((optionNode) => {
+          optionNode.addEventListener('click', () => {
+            input.value = optionNode.getAttribute('data-value') || '';
+            input.dataset.picked = '1';
+            combo.classList.remove('open');
+            onPicked?.(input.value);
+          });
+        });
+      }
+
+      wireCombo('idTypeCombo', 'idType');
+      wireCombo('phoneCodeCombo', 'phoneCode');
+      wireCombo('rankCombo', 'rank');
+      wireCombo('birthdayCombo', 'birthday', () => {
+        document.getElementById('birthdayErr').hidden = true;
+      });
+
+      /**
+       * 出生日期：只有点选项才消红字；纯写 value 仍显示必填。
+       */
+      const birthdayInput = document.getElementById('birthday');
+      const birthdayErr = document.getElementById('birthdayErr');
+      birthdayErr.hidden = false;
+      const birthdayObserver = new MutationObserver(() => undefined);
+      setInterval(() => {
+        if (birthdayInput.dataset.picked === '1') {
+          birthdayErr.hidden = true;
+        } else if (birthdayInput.value) {
+          birthdayErr.hidden = false;
+        }
+      }, 200);
+
+      /**
+       * 模拟错误写入：硬塞文字进下拉，应出现「暂无选项」或 retained 假值。
+       */
+      window.probeForceTypeIntoPicker = function probeForceTypeIntoPicker(inputId, text) {
+        const input = document.getElementById(inputId);
+        input.value = text;
+        input.dataset.picked = '';
+        const combo = input.closest('.combo');
+        combo?.classList.add('open');
+        let emptyHint = combo?.querySelector('.empty-hint');
+        if (!emptyHint && combo) {
+          emptyHint = document.createElement('div');
+          emptyHint.className = 'empty-hint';
+          emptyHint.textContent = '暂无选项';
+          combo.querySelector('.combo-list')?.prepend(emptyHint);
+        }
+        return {
+          value: input.value,
+          picked: input.dataset.picked || '',
+          emptyHint: emptyHint?.textContent || '',
+          birthdayErrorVisible: !document.getElementById('birthdayErr').hidden,
+        };
+      };
+
+      /**
+       * 正确点选下拉。
+       */
+      window.probeClickPickerOption = function probeClickPickerOption(inputId, optionText) {
+        const input = document.getElementById(inputId);
+        const combo = input.closest('.combo');
+        combo?.classList.add('open');
+        const optionNode = Array.from(combo?.querySelectorAll('.combo-list div') || []).find(
+          (node) => (node.getAttribute('data-value') || node.textContent) === optionText,
+        );
+        optionNode?.click();
+        return {
+          value: input.value,
+          picked: input.dataset.picked || '',
+          birthdayErrorVisible: !document.getElementById('birthdayErr').hidden,
+        };
+      };
+
+      /**
+       * 月份写入：选 08 应失败（没有该 option），选 8 成功。
+       */
+      window.probeSetMonth = function probeSetMonth(selectElement, text) {
+        const matched = Array.from(selectElement.options).find(
+          (option) => option.textContent === text || option.value === text,
+        );
+        if (!matched) {
+          return { ok: false, shown: selectElement.value, reason: '暂无选项' };
+        }
+        selectElement.value = matched.value;
+        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: selectElement.value === matched.value, shown: selectElement.value };
+      };
+
+      /**
+       * 流式写入自我描述，保留换行。
+       */
+      window.probeStreamEssay = function probeStreamEssay(rawText) {
+        const box = document.getElementById('essayBox');
+        const lines = rawText
+          .replace(/[ \t]*[·•][ \t]*/g, '\n')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean);
+        box.value = '';
+        lines.forEach((line, index) => {
+          box.value += (index === 0 ? '' : '\n') + line;
+        });
+        return { lines: lines.length, value: box.value, hasNewline: box.value.includes('\n') };
+      };
+
+      /**
+       * 一次粘贴整段（错误写法）对比。
+       */
+      window.probePasteEssayBlob = function probePasteEssayBlob(rawText) {
+        const box = document.getElementById('essayBox');
+        box.value = rawText.replace(/\n/g, ' ');
+        return { value: box.value, hasNewline: box.value.includes('\n') };
+      };
+
+      window.probeCounts = function probeCounts() {
+        return {
+          educationRows: document.querySelectorAll('.edu-row').length,
+          projectRows: document.querySelectorAll('.proj-row').length,
+          awardRows: document.querySelectorAll('.award-row').length,
+          scrollY: window.scrollY,
+          topPadBottom: document.getElementById('topPad').getBoundingClientRect().bottom,
+        };
+      };
+
+      window.scrollTo(0, 900);
+      document.getElementById('probeLog').textContent = '探针页就绪，初始 scrollY=' + window.scrollY;
+    </script>
+  </body>
+</html>

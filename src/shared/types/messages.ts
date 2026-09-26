@@ -1,4 +1,4 @@
-import type { FieldDescriptor, FillPlan } from './fill';
+import type { FieldDescriptor, FillPlan, SectionAddRequest } from './fill';
 import type { Profile, AppSettings, ProfileData } from './profile';
 import type { LlmTokenUsage, TokenUsageStats } from './usage';
 
@@ -12,6 +12,8 @@ export interface FileUploadPayload {
 
 /** 扩展内部消息联合类型（UI / Background / Content） */
 export type ExtensionMessage =
+  | { type: 'STOP_PAGE_WORK'; requestId: string }
+  | { type: 'STOP_PAGE_WORK_ACK'; requestId: string }
   | { type: 'SCAN_FIELDS'; requestId: string }
   | { type: 'SCAN_FIELDS_STARTED'; requestId: string }
   | {
@@ -44,7 +46,16 @@ export type ExtensionMessage =
       /** 计划可用，但模型超时等需要用红框告诉用户的说明 */
       notice?: string;
     }
-  | { type: 'APPLY_FILL_PLAN'; requestId: string; plan: FillPlan; filePayloads?: FileUploadPayload[] }
+  | {
+      type: 'APPLY_FILL_PLAN';
+      requestId: string;
+      plan: FillPlan;
+      filePayloads?: FileUploadPayload[];
+      /** 有档案时，写入过程才能为新冒出来的框再要一份对照 */
+      profileId?: string;
+      /** 各段档案条数。页面行数不够时，写入阶段逐条点添加 */
+      sectionAdds?: SectionAddRequest[];
+    }
   | {
       type: 'APPLY_FILL_RESULT';
       requestId: string;

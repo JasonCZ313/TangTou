@@ -1,4 +1,6 @@
 import type { FieldDescriptor } from '../../shared/types/fill';
+import { shouldFillStop } from '../fillAbort';
+import { shouldFillStop } from '../fillAbort';
 
 /** 扫描时跳过的 input type，避免误填密码或触发按钮类控件 */
 const SKIPPED_INPUT_TYPES = new Set([
@@ -36,6 +38,18 @@ const fieldTracks = new Map<string, TrackedField>();
  */
 function isElementVisible(element: Element): boolean {
   return element.getClientRects().length > 0;
+}
+
+/**
+ * 右侧申请导航里的「实习经历」不是表单标题。
+ * 用它当边界会把真正的卡片划到区块外面，添加后就填不到。
+ */
+function isNavigationChrome(node: HTMLElement): boolean {
+  if (node.closest('nav, aside, [role="navigation"]')) {
+    return true;
+  }
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.width < 160 && rect.left > window.innerWidth * 0.75;
 }
 
 /**
@@ -81,6 +95,45 @@ function resolveFieldLabel(element: Element): string {
   const ariaLabel = element.getAttribute('aria-label')?.trim();
   if (ariaLabel) {
     return ariaLabel;
+  }
+
+  const labelledById = element.getAttribute('aria-labelledby')?.split(/\s+/)[0];
+  if (labelledById) {
+    const rootNode = element.getRootNode();
+    const labelledByElement =
+      rootNode instanceof Document || rootNode instanceof ShadowRoot
+        ? rootNode.getElementById(labelledById)
+        : null;
+    const labelledByText = (labelledByElement?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (labelledByText && labelledByText.length <= 24) {
+      return labelledByText;
+    }
+  }
+
+  const formItem = element.closest(
+    '.ant-form-item, .el-form-item, .van-cell, .form-group, .form-item',
+  );
+  const formItemLabel = formItem?.querySelector(
+    '.ant-form-item-label, .el-form-item__label, .van-field__label, label',
+  );
+  if (formItemLabel && !formItemLabel.contains(element)) {
+    const formItemText = extractCleanLabelText(formItemLabel);
+    if (formItemText && formItemText.length <= 24) {
+      return formItemText;
+    }
+  }
+
+  const previousSibling = element.previousElementSibling;
+  if (
+    previousSibling &&
+    !(previousSibling instanceof HTMLInputElement) &&
+    !(previousSibling instanceof HTMLSelectElement) &&
+    !(previousSibling instanceof HTMLTextAreaElement)
+  ) {
+    const previousText = (previousSibling.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (previousText.length >= 2 && previousText.length <= 16) {
+      return previousText;
+    }
   }
 
   if (
@@ -224,6 +277,10 @@ function describeField(
     descriptor.required = required;
   }
 
+  if (element instanceof HTMLElement) {
+    element.setAttribute('data-raf-id', fieldId);
+    element.setAttribute('data-raf-label', descriptor.label);
+  }
   fieldTracks.set(fieldId, {
     element,
     opener,
@@ -241,6 +298,15 @@ function describeField(
 function shouldIncludeElement(element: Element): boolean {
   if (element instanceof HTMLInputElement) {
     if (SKIPPED_INPUT_TYPES.has(element.type.toLowerCase())) {
+      return false;
+    }
+    // 年月下拉里的搜索框本身看不见，改记外面的选择框，避免点不中「年」「月」。
+    if (element.closest('.ant-select, .el-select')) {
+      return false;
+    }
+  }
+  if (element instanceof HTMLElement && element.matches('.ant-select, .el-select')) {
+    if (element.parentElement?.closest('.ant-select, .el-select')) {
       return false;
     }
   }
@@ -308,7 +374,7 @@ let lastUnreachableFrameCount = 0;
 function collectFormControls(root: ParentNode): Element[] {
   const controls: Element[] = [];
   const visitedRoots = new Set<ParentNode>();
-  const selector = 'input, textarea, select, [contenteditable="true"]';
+  const selector = 'input, textarea, select, [contenteditable="true"], .ant-select, .el-select';
   let unreachableFrameCount = 0;
 
   /**
@@ -374,13 +440,11 @@ const MAX_SCROLL_STEPS = 80;
 /** 只滚可滚动距离最长的几块，避免被页面顶部的小区域占满 */
 const MAX_SCROLL_TARGETS = 3;
 /** 整次扫描的时间上限，到点把已经发现的输入框交回去 */
-const SCAN_BUDGET_MS = 50_000;
+const SCAN_BUDGET_MS = 90_000;
 /** 每一档滚动后留给懒加载的时间 */
 const SCROLL_PAUSE_MS = 160;
 /** 点开编辑类按钮的上限。Boss 直聘一类页面每个模块都要点一次编辑 */
 const MAX_EDIT_CLICKS = 24;
-/** 点开添加类按钮的上限；每个空区块只点一次 */
-const MAX_ADD_CLICKS = 8;
 /** 点开后等新控件出现 */
 const CLICK_PAUSE_MS = 280;
 
@@ -450,46 +514,6 @@ function isSafeRevealTarget(element: HTMLElement): boolean {
   }
 
   return true;
-}
-
-/**
- * 「添加」旁边或上一块已经有输入框时，不再点，避免扫出一堆空行。
- */
-function nearbyAlreadyHasFields(button: HTMLElement): boolean {
-  const scopes: Element[] = [];
-  if (button.parentElement) {
-    scopes.push(button.parentElement);
-  }
-  if (button.previousElementSibling) {
-    scopes.push(button.previousElementSibling);
-  }
-  const parentPrevious = button.parentElement?.previousElementSibling;
-  if (parentPrevious) {
-    scopes.push(parentPrevious);
-  }
-
-  for (const scope of scopes) {
-    const controls = scope.querySelectorAll(
-      'input, textarea, select, [contenteditable="true"]',
-    );
-    for (const control of controls) {
-      if (control instanceof HTMLInputElement) {
-        const inputType = control.type.toLowerCase();
-        if (
-          inputType === 'hidden' ||
-          inputType === 'submit' ||
-          inputType === 'button'
-        ) {
-          continue;
-        }
-      }
-      if (isElementVisible(control)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
 }
 
 /**
@@ -685,6 +709,47 @@ function listLargestScrollers(): HTMLElement[] {
 }
 
 /**
+ * 先滚回这块的最顶部。从页面中间开始扫时，上面的空框还没出现，必须先往上多滚几档。
+ * 位置不再减小才停，避免有的页面一次设到 0 却没真正上去。
+ */
+async function scrollTargetToTop(
+  target: HTMLElement | Window,
+  onStep: (top: number, maxTop: number) => void,
+  shouldStop: () => boolean,
+  maxSteps = 16,
+): Promise<void> {
+  let stuckRounds = 0;
+  for (let stepIndex = 0; stepIndex < maxSteps; stepIndex += 1) {
+    if (shouldStop()) {
+      return;
+    }
+    const before = readScrollMetrics(target);
+    onStep(before.top, before.maxTop);
+    if (before.top <= 2) {
+      writeScrollTop(target, 0);
+      await wait(SCROLL_PAUSE_MS);
+      return;
+    }
+    const step = Math.max(280, Math.floor(before.client * 0.85));
+    writeScrollTop(target, Math.max(0, before.top - step));
+    await wait(SCROLL_PAUSE_MS);
+    const after = readScrollMetrics(target);
+    if (after.top >= before.top - 2) {
+      stuckRounds += 1;
+      if (stuckRounds >= 2) {
+        writeScrollTop(target, 0);
+        await wait(SCROLL_PAUSE_MS);
+        return;
+      }
+    } else {
+      stuckRounds = 0;
+    }
+  }
+  writeScrollTop(target, 0);
+  await wait(SCROLL_PAUSE_MS);
+}
+
+/**
  * 往下滚到真正到底：位置不再增加、高度也不再变长，才停。
  * 懒加载把内容撑高时会继续滚。返回停下时的百分比。
  */
@@ -734,8 +799,19 @@ const SECTION_HEADING_TEXT =
 /** 节点自己的文字就是编辑，不含子节点里的「删除」 */
 const EDIT_OWN_TEXT = /^(编辑|修改|edit)$/i;
 
-/** 节点自己的文字就是添加 */
-const ADD_OWN_TEXT = /^(添加|新增|增加|加一条|加一行)$/;
+/**
+ * 节点自己的文字是添加。允许「+ 添加」「添加经历」，拒绝整段说明文字。
+ */
+function isAddControlText(text: string): boolean {
+  const compact = text.replace(/\s+/g, '');
+  if (!compact || compact.length > 16) {
+    return false;
+  }
+  if (/删除|保存|提交|确定|取消|上传/.test(compact)) {
+    return false;
+  }
+  return /^[+＋]?(添加|新增|增加)/.test(compact);
+}
 
 /**
  * 只取元素自己的文本节点，不把子按钮的「删除」「完成」算进来。
@@ -807,7 +883,7 @@ function classifyRevealTarget(element: HTMLElement): 'edit' | 'add' | null {
   if (!isElementVisible(element)) {
     return null;
   }
-  if (ADD_OWN_TEXT.test(own) || ADD_OWN_TEXT.test(ariaLabel) || ADD_OWN_TEXT.test(title)) {
+  if (isAddControlText(`${own}${ariaLabel}${title}`)) {
     return 'add';
   }
   return null;
@@ -973,7 +1049,6 @@ async function clickRevealButtons(
   const clicked = new WeakSet<HTMLElement>();
   const clickedSignatures = new Set<string>();
   let editClicks = 0;
-  let addClicks = 0;
 
   for (let round = 0; round < 4; round += 1) {
     if (shouldStop()) {
@@ -994,11 +1069,11 @@ async function clickRevealButtons(
       if (clickedSignatures.has(signature)) {
         continue;
       }
+      // 添加留到写入阶段按档案条数再点。扫描时点开会多出空行，也分不清该加几条。
       if (target.kind === 'add') {
-        if (addClicks >= MAX_ADD_CLICKS || nearbyAlreadyHasFields(target.element)) {
-          continue;
-        }
-      } else if (editClicks >= MAX_EDIT_CLICKS) {
+        continue;
+      }
+      if (editClicks >= MAX_EDIT_CLICKS) {
         continue;
       }
 
@@ -1024,11 +1099,7 @@ async function clickRevealButtons(
       anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
       wakeHoverAround(target.element);
       clickWithoutSubmitting(target.element);
-      if (target.kind === 'add') {
-        addClicks += 1;
-      } else {
-        editClicks += 1;
-      }
+      editClicks += 1;
       await wait(CLICK_PAUSE_MS);
       absorbWithOpener(target.element);
       if (target.kind === 'edit' && findVisibleAction(/^(取消|关闭)$/)) {
@@ -1113,6 +1184,773 @@ export async function prepareFieldForWrite(
   return element?.isConnected ? element : undefined;
 }
 
+/**
+ * 下拉的选项更像年份还是月份。对不上的不改标签。
+ */
+function selectOptionKind(selectElement: HTMLSelectElement): 'year' | 'month' | 'other' {
+  let yearOptions = 0;
+  let monthOptions = 0;
+  for (const optionElement of selectElement.options) {
+    const optionText = (optionElement.textContent ?? '').trim();
+    if (/^(19|20)\d{2}年?$/.test(optionText)) {
+      yearOptions += 1;
+    }
+    if (/^(0?[1-9]|1[0-2])月?$/.test(optionText)) {
+      monthOptions += 1;
+    }
+  }
+  if (yearOptions >= 8) {
+    return 'year';
+  }
+  if (monthOptions >= 6) {
+    return 'month';
+  }
+  return 'other';
+}
+
+/**
+ * 把标题收成稳定分区名。括号、斜杠、多余后缀不再导致整段变成「未分区」。
+ */
+function canonicalSectionTitle(rawTitle: string): string {
+  const compact = rawTitle.replace(/\s+/g, '').replace(/[（(].*$/, '').trim();
+  if (!compact || compact.length > 16) {
+    return '';
+  }
+  if (/^教育背景|^教育经历|^教育$/.test(compact)) {
+    return '教育背景';
+  }
+  if (/实习经历|工作经历|工作\/实习|实习\/工作/.test(compact) || compact === '实习' || compact === '工作') {
+    return '实习经历';
+  }
+  if (/^项目经历|^项目经验|^项目$/.test(compact)) {
+    return '项目经历';
+  }
+  if (/校内经历|校内任职|校园经历|社团经历/.test(compact)) {
+    return '校内经历';
+  }
+  if (/获奖经历|获奖情况|荣誉奖项|所获荣誉/.test(compact)) {
+    return '获奖经历';
+  }
+  if (/^证书|^资格证书/.test(compact)) {
+    return '证书';
+  }
+  if (/培训经历|^培训$/.test(compact)) {
+    return '培训经历';
+  }
+  if (/个人能力|专业技能|技能特长/.test(compact)) {
+    return '个人能力';
+  }
+  if (/自我描述|自我评价/.test(compact)) {
+    return compact.startsWith('自我评价') ? '自我评价' : '自我描述';
+  }
+  return '';
+}
+
+/**
+ * 控件上方或旁边的短标题，用来区分项目、教育、实习、校内。
+ */
+function nearestSectionTitle(element: Element): string {
+  let current: Node | null = element;
+  for (let guard = 0; guard < 500 && current; guard += 1) {
+    const previous = current.previousSibling;
+    if (!previous) {
+      current = current.parentNode;
+      continue;
+    }
+    current = previous;
+    if (!(current instanceof HTMLElement)) {
+      continue;
+    }
+    if (current.querySelector('input, select, textarea')) {
+      continue;
+    }
+    const titleText = canonicalSectionTitle(current.textContent ?? '');
+    if (titleText) {
+      return titleText;
+    }
+  }
+  return '';
+}
+
+/**
+ * 原生下拉或点开后记下来的选项，判断这是年还是月。
+ */
+function controlTimeKind(element: Element): 'year' | 'month' | 'other' {
+  if (element instanceof HTMLSelectElement) {
+    return selectOptionKind(element);
+  }
+  const pickerHost = element.closest('.ant-select, .el-select');
+  if (pickerHost instanceof HTMLElement) {
+    const cueText = (
+      pickerHost.querySelector('.ant-select-selection-placeholder, .ant-select-selection-item, .el-input__inner')
+        ?.textContent ?? ''
+    ).replace(/\s+/g, '');
+    if (cueText === '年' || /^(19|20)\d{2}$/.test(cueText)) {
+      return 'year';
+    }
+    if (cueText === '月' || /^(0?[1-9]|1[0-2])$/.test(cueText)) {
+      return 'month';
+    }
+  }
+  const storedOptions = element.getAttribute('data-raf-options') ?? '';
+  const yearCount = (storedOptions.match(/(19|20)\d{2}/g) ?? []).length;
+  const monthCount = (storedOptions.match(/"(?:0?[1-9]|1[0-2])月?"/g) ?? []).length;
+  if (yearCount >= 8) {
+    return 'year';
+  }
+  if (monthCount >= 6) {
+    return 'month';
+  }
+  return 'other';
+}
+
+/**
+ * 记下字段标签，并写到控件上，写入时按这个标签对行。
+ */
+function rememberFieldLabel(field: FieldDescriptor, element: Element, label: string): void {
+  field.label = label;
+  if (element instanceof HTMLElement) {
+    element.setAttribute('data-raf-label', label);
+  }
+  const track = fieldTracks.get(field.fieldId);
+  if (track) {
+    track.label = label;
+  }
+}
+
+/**
+ * 毕业时间只用结束年月，入学时间只用开始年月。
+ * 起止时间仍按从左到右分成开始和结束。
+ */
+function dateRoleBesideControl(element: Element): '开始' | '结束' | null {
+  let current: Element | null = element;
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    const previousSibling = current.previousElementSibling;
+    const captionText = `${previousSibling?.textContent ?? ''}${current.getAttribute('aria-label') ?? ''}`.replace(
+      /\s+/g,
+      '',
+    );
+    if (captionText.length > 0 && captionText.length <= 16) {
+      if (/毕业/.test(captionText) && !/入学|起止|就读/.test(captionText)) {
+        return '结束';
+      }
+      if (/入学/.test(captionText) && !/毕业|起止|就读/.test(captionText)) {
+        return '开始';
+      }
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+/**
+ * 按卡片把字段分成行，标成「教育背景第1行开始年」这样的标签。
+ * 校内经历、项目经历、获奖经历各自编号，避免时间写串行。
+ */
+function assignStructuredLabels(fields: FieldDescriptor[]): void {
+  const located = fields.flatMap((field) => {
+    const element = fieldElementById.get(field.fieldId);
+    if (!element || !element.isConnected) {
+      return [];
+    }
+    const rect = element.getBoundingClientRect();
+    return [{ field, element, top: Math.round(rect.top), left: rect.left }];
+  });
+  const bySection = new Map<string, typeof located>();
+  for (const item of located) {
+    const sectionTitle = nearestSectionTitle(item.element) || '未分区';
+    const sectionItems = bySection.get(sectionTitle) ?? [];
+    sectionItems.push(item);
+    bySection.set(sectionTitle, sectionItems);
+  }
+
+  for (const [sectionTitle, sectionItems] of bySection) {
+    sectionItems.sort((leftItem, rightItem) => leftItem.top - rightItem.top || leftItem.left - rightItem.left);
+    const rows: Array<typeof sectionItems> = [];
+    let currentRow: typeof sectionItems = [];
+    for (const item of sectionItems) {
+      const optionKind = controlTimeKind(item.element);
+      const yearCount = currentRow.filter(
+        (rowItem) => controlTimeKind(rowItem.element) === 'year',
+      ).length;
+      const previousItem = currentRow[currentRow.length - 1];
+      const verticalGap = previousItem ? item.top - previousItem.top : 0;
+      const fieldHint = `${item.field.label}${item.element.getAttribute('placeholder') ?? ''}`;
+      const repeatsName =
+        /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(fieldHint) &&
+        currentRow.some((rowItem) =>
+          /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(
+            `${rowItem.field.label}${rowItem.element.getAttribute('placeholder') ?? ''}`,
+          ),
+        );
+      const startsNextRow =
+        currentRow.length > 0 &&
+        (repeatsName ||
+          (optionKind === 'year' && (yearCount >= 2 || (yearCount >= 1 && verticalGap > 36))));
+      if (startsNextRow) {
+        rows.push(currentRow);
+        currentRow = [];
+      }
+      currentRow.push(item);
+    }
+    if (currentRow.length > 0) {
+      rows.push(currentRow);
+    }
+
+    const labeledFieldIds = new Set(sectionItems.map((item) => item.field.fieldId));
+    let existingRowCount = 0;
+    if (sectionTitle !== '未分区') {
+      for (const node of document.querySelectorAll('[data-raf-label]')) {
+        const labeledText = node.getAttribute('data-raf-label') ?? '';
+        const rowMatch = labeledText.match(new RegExp(`^${sectionTitle}第(\\d+)行`));
+        const belongsToThisPass = sectionItems.some((item) => item.element === node);
+        if (rowMatch?.[1] && !belongsToThisPass && !labeledFieldIds.has('')) {
+          existingRowCount = Math.max(existingRowCount, Number(rowMatch[1]));
+        }
+      }
+    }
+    rows.forEach((rowItems, rowIndex) => {
+      rowItems.sort((leftItem, rightItem) => leftItem.left - rightItem.left);
+      const rowPrefix = sectionTitle === '未分区' ? '' : `${sectionTitle}第${existingRowCount + rowIndex + 1}行`;
+      const yearItems = rowItems.filter(
+        (item) => controlTimeKind(item.element) === 'year',
+      );
+      const monthItems = rowItems.filter(
+        (item) => controlTimeKind(item.element) === 'month',
+      );
+      const roleNames = ['开始', '结束'];
+      yearItems.forEach((item, index) => {
+      const forcedRole = dateRoleBesideControl(item.element);
+      const roleName = forcedRole ?? roleNames[index] ?? `第${index + 1}个`;
+      rememberFieldLabel(item.field, item.element, `${rowPrefix}${roleName}年`);
+      });
+      monthItems.forEach((item, index) => {
+      const forcedRole = dateRoleBesideControl(item.element);
+      const roleName = forcedRole ?? roleNames[index] ?? `第${index + 1}个`;
+      rememberFieldLabel(item.field, item.element, `${rowPrefix}${roleName}月`);
+      });
+      for (const item of rowItems) {
+        if (yearItems.includes(item) || monthItems.includes(item)) {
+          continue;
+        }
+        let roleLabel = item.field.label;
+        if (item.element instanceof HTMLSelectElement) {
+          const optionText = Array.from(item.element.options)
+            .map((optionElement) => optionElement.textContent ?? '')
+            .join(' ');
+          if (/身份证|护照|港澳/.test(optionText)) {
+            roleLabel = '证件类型';
+          } else if (/\+86|＋86|中国大陆/.test(optionText)) {
+            roleLabel = '电话区号';
+          }
+          const optionList = Array.from(item.element.options)
+            .map((optionElement) => (optionElement.textContent ?? '').trim())
+            .filter((optionLabel) => optionLabel.length > 0);
+          item.field.options = optionList;
+          if (item.element instanceof HTMLElement) {
+            item.element.setAttribute('data-raf-options', JSON.stringify(optionList.slice(0, 60)));
+          }
+        }
+        if (
+          item.element instanceof HTMLInputElement &&
+          (item.element.type === 'checkbox' || item.element.type === 'radio') &&
+          /至今/.test(`${roleLabel} ${item.element.parentElement?.textContent ?? ''}`)
+        ) {
+          roleLabel = '至今';
+        }
+        const storedOptions = item.element.getAttribute('data-raf-options');
+        if (storedOptions && /身份证|护照|港澳/.test(storedOptions)) {
+          roleLabel = '证件类型';
+        } else if (storedOptions && /\+86|＋86|中国大陆/.test(storedOptions)) {
+          roleLabel = '电话区号';
+        }
+        rememberFieldLabel(item.field, item.element, `${rowPrefix}${roleLabel}`.trim());
+      }
+    });
+  }
+}
+
+/**
+ * 点开还没读到选项的下拉，把真实选项记下来再关掉。
+ * 月份是 8 还是 08、成绩排名里有什么，都以这时看到的列表为准。
+ */
+async function samplePickerOptions(fields: FieldDescriptor[]): Promise<void> {
+  let sampledCount = 0;
+  for (const field of fields) {
+    if (sampledCount >= 120) {
+      break;
+    }
+    const element = fieldElementById.get(field.fieldId);
+    if (!(element instanceof HTMLElement) || !isElementVisible(element)) {
+      continue;
+    }
+    if (element instanceof HTMLSelectElement && element.options.length > 1) {
+      const optionList = Array.from(element.options)
+        .map((optionElement) => (optionElement.textContent ?? '').trim())
+        .filter((optionLabel) => optionLabel.length > 0);
+      field.options = optionList;
+      element.setAttribute('data-raf-options', JSON.stringify(optionList.slice(0, 60)));
+      continue;
+    }
+    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
+    const classText = typeof element.className === 'string' ? element.className : '';
+    const looksLikePicker =
+      element.getAttribute('role') === 'combobox' ||
+      Boolean(element.getAttribute('aria-haspopup')) ||
+      Boolean(element.closest('.ant-select, .el-select')) ||
+      (element instanceof HTMLInputElement && element.readOnly) ||
+      /请选择/.test(placeholderText) ||
+      /select|picker|dropdown/i.test(classText);
+    if (!looksLikePicker) {
+      continue;
+    }
+    element.setAttribute('data-raf-must-pick', '1');
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+    element.click();
+    await wait(180);
+    const optionList = [
+      ...new Set(
+        Array.from(document.querySelectorAll('[role="option"], .ant-select-item-option, .el-select-dropdown__item'))
+          .filter((node): node is HTMLElement => {
+          if (!(node instanceof HTMLElement) || !isElementVisible(node)) {
+            return false;
+          }
+          const dropdown = node.closest('.ant-select-dropdown, .el-select-dropdown');
+          if (dropdown instanceof HTMLElement && dropdown.classList.contains('ant-select-dropdown-hidden')) {
+            return false;
+          }
+          const rect = node.getBoundingClientRect();
+          return rect.width > 2 && rect.height > 2;
+        })
+          .map((node) => (node.getAttribute('title') || node.textContent || '').replace(/\s+/g, ' ').trim())
+          .filter((optionLabel) => optionLabel.length > 0 && optionLabel.length <= 40 && optionLabel !== '暂无选项'),
+      ),
+    ].slice(0, 60);
+    if (optionList.length > 0) {
+      field.options = optionList;
+      element.setAttribute('data-raf-options', JSON.stringify(optionList));
+      sampledCount += 1;
+    }
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wait(60);
+  }
+}
+
+
+/**
+ * 登记一块范围里还没扫过的可见控件，供写入后补认新冒出来的框。
+ */
+export function absorbNewFields(scope: ParentNode = document): FieldDescriptor[] {
+  const seenElements = new Set<Element>(fieldElementById.values());
+  const freshFields: FieldDescriptor[] = [];
+  for (const candidate of collectFormControls(scope)) {
+    if (seenElements.has(candidate) || !shouldIncludeElement(candidate)) {
+      continue;
+    }
+    freshFields.push(describeField(candidate));
+  }
+  assignStructuredLabels(freshFields);
+  return freshFields;
+}
+
+/**
+ * 新冒出来的框先采样下拉选项，再按年/月和分区打标签。
+ * 添加行之后必须走这条，否则学历、区号没有选项会被跳过或硬填。
+ */
+export async function absorbNewFieldsReady(scope: ParentNode = document): Promise<FieldDescriptor[]> {
+  const freshFields = absorbNewFields(scope);
+  await samplePickerOptions(freshFields);
+  assignStructuredLabels(freshFields);
+  return freshFields;
+}
+
+/** 一段可重复经历在页面上的位置、现有行数和添加按钮 */
+export interface RepeatSectionSnapshot {
+  root: HTMLElement;
+  rows: number;
+  addButton: HTMLElement | null;
+}
+
+/**
+ * 按标题找到一段经历，数出现有的年月行，并找出「添加」按钮。
+ */
+export function locateRepeatSection(patternSource: string): RepeatSectionSnapshot | null {
+  let sectionPattern: RegExp;
+  try {
+    sectionPattern = new RegExp(patternSource);
+  } catch {
+    return null;
+  }
+  let headingElement: HTMLElement | null = null;
+  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, legend, div, span, p')) {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || isNavigationChrome(node)) {
+      continue;
+    }
+    const headingText = ownText(node).replace(/\s+/g, '').replace(/[（(].*$/, '');
+    if (!headingText || headingText.length > 12 || !sectionPattern.test(headingText)) {
+      continue;
+    }
+    headingElement = node;
+    break;
+  }
+  if (!headingElement) {
+    return null;
+  }
+  let nextHeading: HTMLElement | null = null;
+  let passedHeading = false;
+  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, legend, div, span, p')) {
+    if (!(node instanceof HTMLElement)) {
+      continue;
+    }
+    if (node === headingElement) {
+      passedHeading = true;
+      continue;
+    }
+    if (!passedHeading || !isElementVisible(node) || isNavigationChrome(node)) {
+      continue;
+    }
+    const laterTitle = ownText(node).replace(/\s+/g, '');
+    if (
+      laterTitle &&
+      laterTitle.length <= 12 &&
+      /教育|实习|工作|项目|校内|校园|获奖|荣誉|证书|培训|技能|语言|自我|能力/.test(laterTitle) &&
+      !sectionPattern.test(laterTitle)
+    ) {
+      nextHeading = node;
+      break;
+    }
+  }
+  const isInsideSection = (node: Node): boolean => {
+    const afterHeading = headingElement
+      ? (headingElement.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+      : false;
+    const beforeNext = nextHeading
+      ? (nextHeading.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
+      : true;
+    return afterHeading && beforeNext;
+  };
+  let rootElement: HTMLElement = headingElement.parentElement ?? headingElement;
+  let current: HTMLElement | null = headingElement.parentElement;
+  for (let depth = 0; depth < 6 && current && current !== document.body; depth += 1) {
+    if (nextHeading && current.contains(nextHeading)) {
+      break;
+    }
+    if (current.querySelector('select, textarea, input:not([type="hidden"])')) {
+      rootElement = current;
+      break;
+    }
+    current = current.parentElement;
+  }
+  const deleteButtons = Array.from(document.querySelectorAll('button, a, span')).filter((node) => {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isInsideSection(node)) {
+      return false;
+    }
+    const buttonText = ownText(node).replace(/\s+/g, '');
+    return buttonText === '删除本条' || buttonText === '删除';
+  });
+  const startYearLabels = Array.from(document.querySelectorAll('[data-raf-label]')).filter((node) => {
+    const label = node.getAttribute('data-raf-label') ?? '';
+    return /开始年/.test(label) && sectionPattern.test(label) && isInsideSection(node);
+  });
+  const nameFieldsInSection = Array.from(document.querySelectorAll('input, textarea')).filter((node) => {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isInsideSection(node)) {
+      return false;
+    }
+    const placeholderText = node instanceof HTMLInputElement ? node.placeholder : '';
+    const labelText = node.getAttribute('data-raf-label') ?? '';
+    return /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(`${placeholderText}${labelText}`);
+  });
+  let rows = nameFieldsInSection.length;
+  if (rows === 0 && deleteButtons.length > 0) {
+    rows = deleteButtons.length;
+  }
+  if (rows === 0) {
+    const yearWidgets = Array.from(document.querySelectorAll('select, .ant-select, .el-select')).filter(
+      (node) => {
+        if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isInsideSection(node)) {
+          return false;
+        }
+        if (node instanceof HTMLSelectElement) {
+          return selectOptionKind(node) === 'year';
+        }
+        const cueText = (
+          node.querySelector('.ant-select-selection-placeholder, .ant-select-selection-item')?.textContent ?? ''
+        ).replace(/\s+/g, '');
+        return cueText === '年' || /^(19|20)\d{2}$/.test(cueText);
+      },
+    );
+    rows = yearWidgets.length >= 2 ? Math.floor(yearWidgets.length / 2) : yearWidgets.length;
+  }
+  let addButton: HTMLElement | null = null;
+  for (const node of document.querySelectorAll('button, a, span, div, [role="button"]')) {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isSafeRevealTarget(node) || !isInsideSection(node)) {
+      continue;
+    }
+    const rect = node.getBoundingClientRect();
+    if (rect.width > 180 || rect.height > 72) {
+      continue;
+    }
+    if (!isAddControlText(`${ownText(node)}${node.getAttribute('aria-label') ?? ''}${node.getAttribute('title') ?? ''}`)) {
+      continue;
+    }
+    addButton = node;
+    break;
+  }
+  return { root: rootElement, rows, addButton };
+}
+
+/**
+ * 这个格子还是空的：没选年/月，或仍是占位符。
+ */
+function controlLooksEmpty(element: HTMLElement): boolean {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    const currentText = element.value.trim();
+    const placeholderText = (element.placeholder || '').trim();
+    return currentText.length === 0 || currentText === placeholderText;
+  }
+  const pickerHost = element.closest('.ant-select, .el-select') ?? element;
+  const shownText = (
+    pickerHost.querySelector('.ant-select-selection-item, .ant-select-selection-placeholder')?.textContent ?? ''
+  ).replace(/\s+/g, '');
+  return shownText.length === 0 || /^(请选择|年|月)/.test(shownText);
+}
+
+/**
+ * 把这一块里还空着的格子重新编号，供下一轮按第 2 行、第 3 行去填。
+ * 第一次扫描时页面上还没有的行，也会在添加之后从这里进入填写。
+ */
+export function harvestEmptyLabeledFields(patternSource: string): FieldDescriptor[] {
+  let sectionPattern: RegExp;
+  try {
+    sectionPattern = new RegExp(patternSource);
+  } catch {
+    return [];
+  }
+  const sectionFields: FieldDescriptor[] = [];
+  const emptyFields: FieldDescriptor[] = [];
+  for (const node of document.querySelectorAll('[data-raf-id]')) {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node)) {
+      continue;
+    }
+    const labelText = node.getAttribute('data-raf-label') ?? '';
+    if (!sectionPattern.test(labelText)) {
+      continue;
+    }
+    const fieldId = node.getAttribute('data-raf-id') ?? '';
+    if (!fieldId || !fieldElementById.has(fieldId)) {
+      continue;
+    }
+    const descriptor: FieldDescriptor = {
+      fieldId,
+      tag: node.tagName.toLowerCase(),
+      type: node instanceof HTMLInputElement ? node.type || 'text' : node.tagName.toLowerCase(),
+      label: labelText,
+      selectorHint: 'input',
+    };
+    sectionFields.push(descriptor);
+    if (controlLooksEmpty(node)) {
+      emptyFields.push(descriptor);
+    }
+  }
+  if (sectionFields.length > 0) {
+    assignStructuredLabels(sectionFields);
+  }
+  const snapshot = locateRepeatSection(patternSource);
+  if (snapshot) {
+    for (const node of snapshot.root.querySelectorAll('input, textarea, select')) {
+      if (!(node instanceof HTMLElement) || !isElementVisible(node) || !controlLooksEmpty(node)) {
+        continue;
+      }
+      if (node.getAttribute('data-raf-id')) {
+        continue;
+      }
+      const created = describeField(node);
+      sectionFields.push(created);
+      emptyFields.push(created);
+    }
+    if (sectionFields.length > 0) {
+      assignStructuredLabels(sectionFields);
+    }
+  }
+  return emptyFields;
+}
+
+/**
+ * 只给还空着的下一张卡片打上正确行号。已经写过字的卡片不动，避免又全部写成第一条。
+ */
+export function labelNextEmptyCard(patternSource: string, neededRows: number): FieldDescriptor[] {
+  const sectionTitle = sectionHeadingText(patternSource);
+  const snapshot = locateRepeatSection(patternSource);
+  if (!sectionTitle || !snapshot || neededRows <= 0) {
+    return [];
+  }
+  const controls = Array.from(document.querySelectorAll('input, textarea, select, .ant-select, .el-select'))
+    .filter((node): node is HTMLElement => {
+      if (!(node instanceof HTMLElement) || !isElementVisible(node) || !nodeInRepeatSection(patternSource, node)) {
+        return false;
+      }
+      if (node instanceof HTMLInputElement && node.closest('.ant-select, .el-select')) {
+        return false;
+      }
+      if (node.matches('.ant-select, .el-select') && node.parentElement?.closest('.ant-select, .el-select')) {
+        return false;
+      }
+      return true;
+    })
+    .sort(
+      (leftNode, rightNode) =>
+        leftNode.getBoundingClientRect().top - rightNode.getBoundingClientRect().top ||
+        leftNode.getBoundingClientRect().left - rightNode.getBoundingClientRect().left,
+    );
+  const nameFields = controls.filter((element) => {
+    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
+    const labelText = element.getAttribute('data-raf-label') ?? '';
+    return /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(`${placeholderText}${labelText}`);
+  });
+  const emptyIndex = nameFields.findIndex((element) => {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+    const currentText = element.value.trim();
+    return currentText.length === 0 || currentText === (element.placeholder || '').trim();
+  });
+  if (emptyIndex < 0 || emptyIndex >= neededRows) {
+    return [];
+  }
+  const bandTop = nameFields[emptyIndex].getBoundingClientRect().top - 180;
+  const nextName = nameFields[emptyIndex + 1];
+  const bandBottom = nextName ? nextName.getBoundingClientRect().top - 4 : bandTop + 520;
+  const band = controls.filter((element) => {
+    const top = element.getBoundingClientRect().top;
+    return top >= bandTop && top < bandBottom;
+  });
+  const rowPrefix = `${sectionTitle}第${emptyIndex + 1}行`;
+  const labeled: FieldDescriptor[] = [];
+  const yearFields = band.filter((element) => controlTimeKind(element) === 'year');
+  const monthFields = band.filter((element) => controlTimeKind(element) === 'month');
+  yearFields.forEach((element, index) => {
+    const roleName = dateRoleBesideControl(element) ?? (index === 0 ? '开始' : '结束');
+    const descriptor = descriptorForElement(element);
+    rememberFieldLabel(descriptor, element, `${rowPrefix}${roleName}年`);
+    labeled.push(descriptor);
+  });
+  monthFields.forEach((element, index) => {
+    const roleName = dateRoleBesideControl(element) ?? (index === 0 ? '开始' : '结束');
+    const descriptor = descriptorForElement(element);
+    rememberFieldLabel(descriptor, element, `${rowPrefix}${roleName}月`);
+    labeled.push(descriptor);
+  });
+  for (const element of band) {
+    if (yearFields.includes(element) || monthFields.includes(element)) {
+      continue;
+    }
+    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
+    const previousLabel = (element.getAttribute('data-raf-label') ?? '').replace(/^.*第\d+行/, '');
+    const roleLabel = placeholderText || previousLabel || '内容';
+    const descriptor = descriptorForElement(element);
+    rememberFieldLabel(descriptor, element, `${rowPrefix}${roleLabel}`);
+    labeled.push(descriptor);
+  }
+  return labeled;
+}
+
+/** 标题和下一个区块标题之间的控件，不依赖包住标题的那一层盒子。 */
+function nodeInRepeatSection(patternSource: string, target: Node): boolean {
+  let sectionPattern: RegExp;
+  try {
+    sectionPattern = new RegExp(patternSource);
+  } catch {
+    return false;
+  }
+  let headingElement: HTMLElement | null = null;
+  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, legend, div, span, p')) {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || isNavigationChrome(node)) {
+      continue;
+    }
+    const headingText = ownText(node).replace(/\s+/g, '').replace(/[（(].*$/, '');
+    if (headingText && headingText.length <= 12 && sectionPattern.test(headingText)) {
+      headingElement = node;
+      break;
+    }
+  }
+  if (!headingElement) {
+    return false;
+  }
+  let nextHeading: HTMLElement | null = null;
+  let passedHeading = false;
+  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, legend, div, span, p')) {
+    if (!(node instanceof HTMLElement)) {
+      continue;
+    }
+    if (node === headingElement) {
+      passedHeading = true;
+      continue;
+    }
+    if (!passedHeading || !isElementVisible(node) || isNavigationChrome(node)) {
+      continue;
+    }
+    const laterTitle = ownText(node).replace(/\s+/g, '');
+    if (
+      laterTitle &&
+      laterTitle.length <= 12 &&
+      /教育|实习|工作|项目|校内|校园|获奖|荣誉|证书|培训|技能|语言|自我|能力/.test(laterTitle) &&
+      !sectionPattern.test(laterTitle)
+    ) {
+      nextHeading = node;
+      break;
+    }
+  }
+  const afterHeading = (headingElement.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const beforeNext = nextHeading
+    ? (nextHeading.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
+    : true;
+  return afterHeading && beforeNext;
+}
+
+/** 区块标题原文，用来拼「项目经历第2行」。 */
+function sectionHeadingText(patternSource: string): string {
+  let sectionPattern: RegExp;
+  try {
+    sectionPattern = new RegExp(patternSource);
+  } catch {
+    return '';
+  }
+  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, div, span, p')) {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || isNavigationChrome(node)) {
+      continue;
+    }
+    const headingText = ownText(node).replace(/\s+/g, '');
+    if (headingText && headingText.length <= 12 && sectionPattern.test(headingText)) {
+      return headingText;
+    }
+  }
+  return '';
+}
+
+/** 已登记的格子沿用原来的编号，新格子才新建。 */
+function descriptorForElement(element: HTMLElement): FieldDescriptor {
+  const existingId = element.getAttribute('data-raf-id') ?? '';
+  if (existingId && fieldElementById.has(existingId)) {
+    return {
+      fieldId: existingId,
+      tag: element.tagName.toLowerCase(),
+      type: element instanceof HTMLInputElement ? element.type || 'text' : element.tagName.toLowerCase(),
+      label: element.getAttribute('data-raf-label') ?? '',
+      selectorHint: 'input',
+    };
+  }
+  return describeField(element);
+}
+
+/**
+ * 点添加按钮，并避免按钮默认把表单提交掉。
+ */
+export function pressAddButton(button: HTMLElement): void {
+  button.scrollIntoView({ block: 'center', inline: 'nearest' });
+  clickWithoutSubmitting(button);
+}
+
 /** 扫描过程中报给侧栏的进度：百分比、已发现数量和当前在做什么 */
 export interface ScanProgressUpdate {
   phase: 'scrolling' | 'opening';
@@ -1139,7 +1977,7 @@ export async function scanFieldsSettled(
   const startedAt = Date.now();
   const windowX = window.scrollX;
   const windowY = window.scrollY;
-  const shouldStop = (): boolean => Date.now() - startedAt > SCAN_BUDGET_MS;
+  const shouldStop = (): boolean => shouldFillStop() || Date.now() - startedAt > SCAN_BUDGET_MS;
   await waitForFormSettle(rootDocument);
   openCollapsedPanels();
   await wait(CLICK_PAUSE_MS);
@@ -1197,6 +2035,27 @@ export async function scanFieldsSettled(
         timedOut = true;
         break;
       }
+      const topTarget = scrollTargets[targetIndex];
+      const topLabel = scrollerLabel(topTarget);
+      report('scrolling', 6, `正在滚回${topLabel}顶部，已发现 ${fields.length} 个输入框。`);
+      await scrollTargetToTop(
+        topTarget,
+        () => {
+          absorb();
+          report('scrolling', 6, `正在滚回${topLabel}顶部，已发现 ${fields.length} 个输入框。`);
+        },
+        shouldStop,
+      );
+      absorb();
+      openCollapsedPanels();
+      await wait(CLICK_PAUSE_MS);
+      absorb();
+    }
+    for (let targetIndex = 0; targetIndex < scrollTargets.length; targetIndex += 1) {
+      if (shouldStop()) {
+        timedOut = true;
+        break;
+      }
       const target = scrollTargets[targetIndex];
       const label = scrollerLabel(target);
       if (targetIndex === 0) {
@@ -1244,14 +2103,18 @@ export async function scanFieldsSettled(
         return false;
       }
       const stillOnScreen = track.element.isConnected && isElementVisible(track.element);
-      // 编辑层关掉后框会消失，但打开它的按钮还在，写入时会再点开
-      if (stillOnScreen || track.opener?.isConnected) {
+      // 编辑层关掉后框会消失，但打开它的按钮还在，写入时会再点开。
+      // 滚到底时上面的行可能被页面卸掉，扫描时见过的仍然留下。
+      if (stillOnScreen || track.opener?.isConnected || track.label.length > 0) {
         return true;
       }
       fieldTracks.delete(field.fieldId);
       fieldElementById.delete(field.fieldId);
       return false;
     });
+
+    await samplePickerOptions(liveFields);
+    assignStructuredLabels(liveFields);
 
     let notice: string | undefined;
     if (timedOut) {

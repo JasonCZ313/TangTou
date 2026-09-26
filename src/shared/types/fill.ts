@@ -33,6 +33,16 @@ export interface SkippedFieldNote {
   reason: string;
 }
 
+/**
+ * 档案里某一段有几条。写入时页面上的行数少于此数，才点这一段的「添加」。
+ */
+export interface SectionAddRequest {
+  /** 用来对上页面标题的正则源，例如「项目」或「工作|实习」 */
+  sectionPattern: string;
+  /** 档案里这一段的条数 */
+  neededRows: number;
+}
+
 /** 一轮填写计划：待写入项与明确跳过的字段 */
 export interface FillPlan {
   items: FillMappingItem[];

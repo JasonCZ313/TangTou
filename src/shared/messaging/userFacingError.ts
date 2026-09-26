@@ -45,6 +45,9 @@ function translateRawError(rawMessage: string): string {
   if (detail === '请求超时' || detail === 'LLM_TIMEOUT' || detail === 'AbortError') {
     return '模型超过等待时间还没返回。请检查网络和接口地址后再试。本机已经配上的项会留下来。';
   }
+  if (/sidePanel\.open\(\)|user gesture/i.test(detail)) {
+    return '侧边助手只能在你点击按钮的当下打开。请再点一次「打开侧边助手」。对照结果如果已经生成，打开后就能看到。';
+  }
   if (/[\u4e00-\u9fff]/.test(detail)) {
     return detail;
   }

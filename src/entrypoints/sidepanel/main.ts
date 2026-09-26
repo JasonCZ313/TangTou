@@ -24,6 +24,10 @@ import {
   scanActivePage,
 } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import {
+  PENDING_POPUP_SCAN_REQUEST_KEY,
+  type PendingPopupScanRequest,
+} from '../../shared/messaging/popupScanHandoff';
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { mountApiGuide } from '../../shared/ui/apiGuide';
 import { mountAppVersionLabel } from '../../shared/appVersion';
@@ -48,6 +52,9 @@ interface PendingFillSession {
 
 /** Popup「打开设置」写入，侧栏启动时展开设置区 */
 const FOCUS_SETTINGS_SESSION_KEY = 'sidePanelFocusSettings';
+
+/** 正在接手快捷条丢过来的扫描，避免监听和启动各跑一遍。 */
+let popupScanHandoffActive = false;
 
 let cachedProfiles: Profile[] = [];
 let cachedActiveProfileId: string | null = null;
@@ -112,6 +119,7 @@ const confirmButton = document.getElementById(
   'confirmButton',
 ) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
+const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
 const rescanButton = document.getElementById(
   'rescanButton',
 ) as HTMLButtonElement;
@@ -960,20 +968,28 @@ async function runConfirmWrite(): Promise<void> {
     showError('没有可写入的映射项');
     return;
   }
-  const applyResponse = await requestBackground({
-    type: 'APPLY_FILL_PLAN',
-    requestId: createRequestId(),
-    plan: editedPlan,
-  });
-  if (applyResponse.type !== 'APPLY_FILL_RESULT') {
-    throw new Error('写入页面失败');
+  stopButton.hidden = false;
+  showScanProgress(8, '正在按行写入，写完才会到 100%。');
+  try {
+    const applyResponse = await requestBackground({
+      type: 'APPLY_FILL_PLAN',
+      requestId: createRequestId(),
+      plan: editedPlan,
+      profileId: profileSelect.value || undefined,
+    });
+    if (applyResponse.type !== 'APPLY_FILL_RESULT') {
+      throw new Error('写入页面失败');
+    }
+    showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
+    await clearPendingSession();
+    renderMappingTable();
+    showStatus(
+      `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。`,
+      'success',
+    );
+  } finally {
+    stopButton.hidden = true;
   }
-  await clearPendingSession();
-  renderMappingTable();
-  showStatus(
-    `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。`,
-    'success',
-  );
 }
 
 async function runUndoFlow(): Promise<void> {
@@ -991,10 +1007,12 @@ async function runUndoFlow(): Promise<void> {
 }
 
 async function runRescanFlow(profileId: string): Promise<void> {
+  stopButton.hidden = false;
   showScanProgress(4, '正在滚动页面，已发现 0 个输入框。');
-  const scanResult = await scanActivePage(createRequestId(), (progress) => {
-    showScanProgress(progress.percent, progress.message);
-  });
+  try {
+    const scanResult = await scanActivePage(createRequestId(), (progress) => {
+      showScanProgress(progress.percent, progress.message);
+    });
   const scannedFields = scanResult.fields;
   if (scannedFields.length === 0) {
     await clearPendingSession();
@@ -1038,6 +1056,9 @@ async function runRescanFlow(profileId: string): Promise<void> {
     );
   }
   await refreshUsageLine(planResponse.usage ?? null);
+  } finally {
+    stopButton.hidden = true;
+  }
 }
 
 async function withBusy(action: () => Promise<void>): Promise<void> {
@@ -1053,6 +1074,50 @@ async function withBusy(action: () => Promise<void>): Promise<void> {
   } finally {
     isBusy = false;
     syncBusyUi();
+    // 扫描进行中如果快捷条又丢来一次请求，忙完再接。
+    void startRequestedPopupScan();
+  }
+}
+
+/**
+ * 读走快捷条留下的扫描请求，对当前网申页扫描并对照。
+ * 侧栏已经打开，这里不再调用 sidePanel.open。
+ */
+async function startRequestedPopupScan(): Promise<void> {
+  if (isBusy || popupScanHandoffActive) {
+    return;
+  }
+  popupScanHandoffActive = true;
+  let scanRequestWasStarted = false;
+  try {
+    const storageSnapshot = await chrome.storage.session.get(
+      PENDING_POPUP_SCAN_REQUEST_KEY,
+    );
+    const scanRequest = storageSnapshot[PENDING_POPUP_SCAN_REQUEST_KEY] as
+      | PendingPopupScanRequest
+      | undefined;
+    if (!scanRequest || typeof scanRequest.profileId !== 'string' || !scanRequest.profileId) {
+      return;
+    }
+    await chrome.storage.session.remove(PENDING_POPUP_SCAN_REQUEST_KEY);
+    const profileOptionExists = Array.from(profileSelect.options).some(
+      (option) => option.value === scanRequest.profileId,
+    );
+    if (profileOptionExists) {
+      profileSelect.value = scanRequest.profileId;
+      syncDefaultCheckboxFromSelection();
+    }
+    scanRequestWasStarted = true;
+    await withBusy(async () => {
+      showStatus('正在扫描当前网申页…', 'info');
+      await runRescanFlow(scanRequest.profileId);
+    });
+  } finally {
+    popupScanHandoffActive = false;
+  }
+  // 扫描过程中快捷条可能又写入一次。当时接手标志还在，忙完再读一次。
+  if (scanRequestWasStarted) {
+    await startRequestedPopupScan();
   }
 }
 
@@ -1143,6 +1208,15 @@ function bindEvents(): void {
     });
   });
 
+  stopButton.addEventListener('click', () => {
+    void requestBackground({
+      type: 'STOP_PAGE_WORK',
+      requestId: createRequestId(),
+    }).then(() => {
+      showStatus('已要求停止，当前这一格结束后不再继续。', 'info');
+    });
+  });
+
   chrome.storage.session.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'session') {
       return;
@@ -1151,6 +1225,9 @@ function bindEvents(): void {
       settingsDetails.open = true;
       void chrome.storage.session.remove(FOCUS_SETTINGS_SESSION_KEY);
       settingsDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    if (changes[PENDING_POPUP_SCAN_REQUEST_KEY]?.newValue) {
+      void startRequestedPopupScan();
     }
     if (!changes.pendingFillSession || isBusy) {
       return;
@@ -1182,6 +1259,7 @@ async function bootstrapSidePanel(): Promise<void> {
   try {
     await loadState();
     await maybeFocusSettingsFromPopup();
+    await startRequestedPopupScan();
     currentSession = await loadPendingSession();
     renderMappingTable();
 

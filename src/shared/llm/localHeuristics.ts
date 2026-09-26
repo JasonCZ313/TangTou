@@ -1,4 +1,10 @@
-import { AWARD_PRIZE_OPTIONS, labelOfCatalog } from '../catalogs/enums';
+import {
+  AWARD_PRIZE_OPTIONS,
+  ETHNICITY_OPTIONS,
+  GENDER_OPTIONS,
+  POLITICAL_STATUS_OPTIONS,
+  labelOfCatalog,
+} from '../catalogs/enums';
 import type { FieldDescriptor, FillPlan } from '../types/fill';
 import type { ProfileData } from '../types/profile';
 import type { AttachmentKind, AttachmentMeta } from '../types/attachment';
@@ -6,7 +12,10 @@ import { attachmentKindLabel } from '../types/attachment';
 import {
   notesForFieldIds,
   SKIP_REASON_NO_FILE,
+  SKIP_REASON_UNSURE,
 } from '../fill/skipReasons';
+import { bindSectionFields, cityNameOnly } from '../fill/sectionBinder';
+import { restoreListLineBreaks } from '../resume/restoreListBreaks';
 
 /** 启发式匹配结果：档案取值路径对应的填写值与原因文案 */
 interface HeuristicMatch {
@@ -67,6 +76,9 @@ function corpusMatchesEmail(rawText: string, normalizedLowerText: string): boole
 
 /** 判断语料是否命中手机/电话类字段（中文 + phone/mobile/tel 词界）。 */
 function corpusMatchesPhone(rawText: string, normalizedLowerText: string): boolean {
+  if (/区号/.test(rawText)) {
+    return false;
+  }
   if (includesAnyChineseKeyword(rawText, ['手机', '电话'])) {
     return true;
   }
@@ -109,6 +121,26 @@ function matchFieldToProfile(
   const normalizedLowerText = rawText.toLowerCase();
   const { basic } = profile;
 
+  if (/区号/.test(rawText)) {
+    return { value: '+86', reason: '本地启发式：电话区号' };
+  }
+
+  if (/证件类型/.test(rawText) && !/号码/.test(rawText)) {
+    const idType = (basic.idType ?? '').trim() || ((basic.idNumber ?? '').trim() ? '身份证' : '');
+    if (idType) {
+      return { value: idType, reason: '本地启发式：证件类型' };
+    }
+    return null;
+  }
+
+  if (/证件号码|证件号|身份证号/.test(rawText)) {
+    const idNumber = (basic.idNumber ?? '').trim();
+    if (idNumber) {
+      return { value: idNumber, reason: '本地启发式：证件号码' };
+    }
+    return null;
+  }
+
   if (corpusMatchesEmail(rawText, normalizedLowerText)) {
     const emailValue = basic.email.trim();
     if (emailValue) {
@@ -133,16 +165,62 @@ function matchFieldToProfile(
     return null;
   }
 
-  if (corpusMatchesCity(rawText, normalizedLowerText)) {
-    const cityValue = (basic.currentCity || basic.city || '').trim();
+  if (corpusMatchesCity(rawText, normalizedLowerText) && !/区|县|街道/.test(rawText)) {
+    const citySource = /意向|期望|工作城市/.test(rawText)
+      ? profile.jobIntent.expectedCities || profile.jobIntent.workCity || basic.currentCity || basic.city || ''
+      : basic.currentCity || basic.city || '';
+    const cityValue = cityNameOnly(citySource);
     if (cityValue) {
-      return { value: cityValue, reason: '本地启发式：城市' };
+      return { value: cityValue, reason: '本地启发式：城市只写城市名' };
     }
     return null;
   }
 
-  if (/自我评价|个人优势|我的价值|个人介绍|个人评价/.test(rawText)) {
-    const evaluation = profile.essays?.selfEvaluation?.trim() ?? '';
+  // 出生日期（不含出生地）
+  if (/(出生日期|出生年月|生日)/.test(rawText) && !/出生地/.test(rawText)) {
+    const birthdayValue = (basic.birthday ?? '').trim();
+    if (birthdayValue) {
+      return { value: birthdayValue, reason: '本地启发式：出生日期' };
+    }
+    return null;
+  }
+
+  // 性别
+  if (/性别/.test(rawText) && !/别名/.test(rawText)) {
+    const genderValue = labelOfCatalog(GENDER_OPTIONS, (basic.gender ?? '').trim());
+    if (genderValue) {
+      return { value: genderValue, reason: '本地启发式：性别' };
+    }
+    return null;
+  }
+
+  // 民族（避开校名）
+  if (/民族/.test(rawText) && !/民族大学|民族学院/.test(rawText)) {
+    const ethnicityValue = labelOfCatalog(ETHNICITY_OPTIONS, (basic.ethnicity ?? '').trim());
+    if (ethnicityValue) {
+      return { value: ethnicityValue, reason: '本地启发式：民族' };
+    }
+    return null;
+  }
+
+  // 政治面貌
+  if (/政治面貌/.test(rawText)) {
+    const politicalValue = labelOfCatalog(
+      POLITICAL_STATUS_OPTIONS,
+      (basic.politicalStatus ?? '').trim(),
+    );
+    if (politicalValue) {
+      return { value: politicalValue, reason: '本地启发式：政治面貌' };
+    }
+    return null;
+  }
+
+  // 自我评价长文：含自我描述/自我介绍（与 skill 绑定拆开后的双保险）
+  if (/自我评价|自我描述|个人优势|我的价值|个人介绍|个人简介|个人评价|自我介绍/.test(rawText)) {
+    if (/个人能力|专业技能|技能特长/.test(rawText)) {
+      return null;
+    }
+    const evaluation = restoreListLineBreaks(profile.essays?.selfEvaluation?.trim() ?? '');
     if (evaluation) {
       return { value: evaluation, reason: '本地启发式：自我评价' };
     }
@@ -178,14 +256,10 @@ function matchFieldToProfile(
     if (certificateNames.length === 0) {
       return null;
     }
-    const certificateValue =
-      field.tag === 'textarea' || certificateNames.length === 1
-        ? certificateNames.join('\n')
-        : '';
-    if (certificateValue) {
-      return { value: certificateValue, reason: '本地启发式：证书' };
+    if (certificateNames.length !== 1) {
+      return null;
     }
-    return null;
+    return { value: certificateNames[0] ?? '', reason: '本地启发式：证书' };
   }
 
   return null;
@@ -253,7 +327,11 @@ export function applyLocalHeuristics(
   const remainingFields: FieldDescriptor[] = [];
   const skippedFieldIds: string[] = [];
 
-  for (const field of fields) {
+  const sectionBinding = bindSectionFields(profile, fields);
+  matchedItems.push(...sectionBinding.items);
+  skippedFieldIds.push(...sectionBinding.skippedFieldIds);
+
+  for (const field of sectionBinding.remainingFields) {
     if (field.type === 'file') {
       const fileMatch = matchFileField(field, attachments);
       if (fileMatch) {
@@ -280,7 +358,13 @@ export function applyLocalHeuristics(
     partialPlan: {
       items: matchedItems,
       skippedFieldIds,
-      skippedNotes: notesForFieldIds(skippedFieldIds, SKIP_REASON_NO_FILE),
+      skippedNotes: [
+        ...notesForFieldIds(
+          skippedFieldIds.filter((fieldId) => fields.some((field) => field.fieldId === fieldId && field.type === 'file')),
+          SKIP_REASON_NO_FILE,
+        ),
+        ...notesForFieldIds(sectionBinding.skippedFieldIds, SKIP_REASON_UNSURE),
+      ],
     },
     remainingFields,
   };

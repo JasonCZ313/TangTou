@@ -1,5 +1,6 @@
 import { scanFieldsSettled } from '../content/scanner/scanFields';
 import { applyFillPlan, undoLastFill } from '../content/filler/fillFields';
+import { clearFillStop, requestFillStop } from '../content/fillAbort';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
 import type { ExtensionMessage } from '../shared/types/messages';
 
@@ -21,8 +22,18 @@ export default defineContentScript({
   main() {
     chrome.runtime.onMessage.addListener(
       (message: ExtensionMessage, _sender, sendResponse) => {
+        if (message.type === 'STOP_PAGE_WORK') {
+          requestFillStop();
+          sendResponse({
+            type: 'STOP_PAGE_WORK_ACK',
+            requestId: message.requestId,
+          } satisfies ExtensionMessage);
+          return true;
+        }
+
         if (message.type === 'SCAN_FIELDS') {
           const requestId = message.requestId;
+          clearFillStop();
           reportToExtension({
             type: 'SCAN_PROGRESS',
             requestId,
@@ -72,7 +83,13 @@ export default defineContentScript({
         }
 
         if (message.type === 'APPLY_FILL_PLAN') {
-          void applyFillPlan(message.plan, message.filePayloads ?? [])
+          clearFillStop();
+          void applyFillPlan(
+            message.plan,
+            message.filePayloads ?? [],
+            message.profileId,
+            message.sectionAdds ?? [],
+          )
             .then((result) => {
               sendResponse({
                 type: 'APPLY_FILL_RESULT',
