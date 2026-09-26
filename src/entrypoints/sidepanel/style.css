@@ -315,3 +315,19 @@ body {
   border-color: var(--tt-danger);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-danger) 22%, transparent);
 }
+
+.fill-done-dialog {
+  border: none;
+  border-radius: 16px;
+  padding: 20px 18px 16px;
+  max-width: 320px;
+}
+
+.fill-done-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.fill-done-text {
+  margin: 0 0 14px;
+  line-height: 1.5;
+}

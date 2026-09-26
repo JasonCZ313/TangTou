@@ -157,6 +157,30 @@
         <p id="skippedSummary" class="skipped-summary" hidden></p>
       </section>
 
+      <section class="sidepanel-section mapping-section" aria-labelledby="missHeading">
+        <h2 id="missHeading" class="section-label">没写上的</h2>
+        <div class="table-scroll">
+          <table class="mapping-table">
+            <thead>
+              <tr>
+                <th scope="col">字段</th>
+                <th scope="col">原因</th>
+              </tr>
+            </thead>
+            <tbody id="missTableBody">
+              <tr class="empty-row">
+                <td colspan="2">写完后，没写进去的格子会列在这里。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <dialog id="fillDoneDialog" class="fill-done-dialog">
+        <p id="fillDoneText" class="fill-done-text"></p>
+        <button type="button" id="fillDoneClose" class="btn btn-primary">知道了</button>
+      </dialog>
+
       <section class="sidepanel-actions" aria-label="助手操作">
         <button type="button" id="confirmButton" class="btn btn-primary action-confirm">
           确认写入

@@ -148,11 +148,17 @@ async function handleGetState(
 
 /**
  * 处理 TEST_API：先申请主机权限，再用最小 messages 测连。
- * Options 页「测试连接」依赖本处理。
+ * 消息里带了三项就用表单草稿测；没有才读本机已保存的设置。
  */
-async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
-  const settings = await getSettings();
-  if (!settings.apiBaseUrl.trim()) {
+async function handleTestApi(
+  message: Extract<ExtensionMessage, { type: 'TEST_API' }>,
+): Promise<ExtensionMessage> {
+  const requestId = message.requestId;
+  const savedSettings = await getSettings();
+  const apiBaseUrl = (message.apiBaseUrl ?? savedSettings.apiBaseUrl).trim();
+  const apiKey = (message.apiKey ?? savedSettings.apiKey).trim();
+  const model = (message.model ?? savedSettings.model).trim();
+  if (!apiBaseUrl) {
     return {
       type: 'TEST_API_RESULT',
       requestId,
@@ -160,7 +166,7 @@ async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
       detail: '请先填写 API Base URL',
     };
   }
-  if (!settings.apiKey.trim()) {
+  if (!apiKey) {
     return {
       type: 'TEST_API_RESULT',
       requestId,
@@ -169,7 +175,7 @@ async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
     };
   }
 
-  const permissionGranted = await ensureHostPermission(settings.apiBaseUrl);
+  const permissionGranted = await ensureHostPermission(apiBaseUrl);
   if (!permissionGranted) {
     return {
       type: 'TEST_API_RESULT',
@@ -180,9 +186,9 @@ async function handleTestApi(requestId: string): Promise<ExtensionMessage> {
   }
 
   const testResult = await testApiConnection({
-    apiBaseUrl: settings.apiBaseUrl,
-    apiKey: settings.apiKey,
-    model: settings.model,
+    apiBaseUrl,
+    apiKey,
+    model,
   });
 
   return {
@@ -491,6 +497,7 @@ function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] {
 
 /**
  * 给填写计划附上附件字节后再转发到页面。
+ * 直填（空 plan）时从档案附件库取简历/头像，供页面规则写完后落 file 控件。
  */
 async function forwardApplyWithFiles(
   message: Extract<ExtensionMessage, { type: 'APPLY_FILL_PLAN' }>,
@@ -513,11 +520,33 @@ async function forwardApplyWithFiles(
       dataBase64: arrayBufferToBase64(stored.buffer),
     });
   }
+  // 无 plan 附件映射时：把档案里最新的简历/头像带上，交给内容脚本按文案匹配上传框
+  if (filePayloads.length === 0 && message.profileId) {
+    const attachmentRows = await listAttachments(message.profileId);
+    const preferredKinds = ['resume', 'avatar', 'other'] as const;
+    for (const kind of preferredKinds) {
+      const row = attachmentRows.find((item) => item.kind === kind);
+      if (!row) {
+        continue;
+      }
+      const stored = await readAttachmentFile(row.id);
+      if (!stored) {
+        continue;
+      }
+      filePayloads.push({
+        fieldId: `profile-attachment:${row.id}`,
+        fileName: stored.meta.fileName,
+        mimeType: stored.meta.mimeType,
+        dataBase64: arrayBufferToBase64(stored.buffer),
+      });
+    }
+  }
   const profile = message.profileId ? await getProfile(message.profileId) : null;
   return sendToActiveTab({
     ...message,
     filePayloads,
     sectionAdds: profile ? buildSectionAdds(profile.data) : message.sectionAdds,
+    profileData: profile?.data,
   });
 }
 
@@ -705,7 +734,7 @@ async function dispatchMessage(
     case 'GET_STATE':
       return handleGetState(message.requestId, sender);
     case 'TEST_API':
-      return handleTestApi(message.requestId);
+      return handleTestApi(message);
     case 'BUILD_FILL_PLAN':
       return handleBuildFillPlan(message);
     case 'OPEN_SIDE_PANEL':

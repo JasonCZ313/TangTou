@@ -1,4 +1,4 @@
-import type { FieldDescriptor, FillPlan, SectionAddRequest } from './fill';
+import type { FieldDescriptor, FillMiss, FillPlan, SectionAddRequest } from './fill';
 import type { Profile, AppSettings, ProfileData } from './profile';
 import type { LlmTokenUsage, TokenUsageStats } from './usage';
 
@@ -55,12 +55,16 @@ export type ExtensionMessage =
       profileId?: string;
       /** 各段档案条数。页面行数不够时，写入阶段逐条点添加 */
       sectionAdds?: SectionAddRequest[];
+      /** 页面上逐格对照用的档案正文，由后台附上，不经过预先扫描 */
+      profileData?: ProfileData;
     }
   | {
       type: 'APPLY_FILL_RESULT';
       requestId: string;
       filled: number;
       skipped: number;
+      /** 没写进去的格子，侧栏用另一张表显示 */
+      misses?: FillMiss[];
     }
   | { type: 'UNDO_LAST_FILL'; requestId: string }
   | { type: 'UNDO_FILL_RESULT'; requestId: string; restored: number }
@@ -75,7 +79,14 @@ export type ExtensionMessage =
     }
   | { type: 'OPEN_SIDE_PANEL'; requestId: string }
   | { type: 'OPEN_SIDE_PANEL_RESULT'; requestId: string; ok: boolean }
-  | { type: 'TEST_API'; requestId: string }
+  | {
+      type: 'TEST_API';
+      requestId: string;
+      /** 表单里刚填的三项；有则优先用来测连，不必先点保存 */
+      apiBaseUrl?: string;
+      apiKey?: string;
+      model?: string;
+    }
   | { type: 'TEST_API_RESULT'; requestId: string; ok: boolean; detail: string }
   | { type: 'RESET_TOKEN_USAGE'; requestId: string }
   | {

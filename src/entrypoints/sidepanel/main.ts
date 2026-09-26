@@ -32,7 +32,7 @@ import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { mountApiGuide } from '../../shared/ui/apiGuide';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import type { ExtensionMessage } from '../../shared/types/messages';
-import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
+import type { FieldDescriptor, FillMiss, FillPlan } from '../../shared/types/fill';
 import type { FillMode, Profile } from '../../shared/types/profile';
 import type { LlmTokenUsage, TokenUsageStats } from '../../shared/types/usage';
 
@@ -112,6 +112,10 @@ const setDefaultCheckbox = document.getElementById(
 const mappingTableBody = document.getElementById(
   'mappingTableBody',
 ) as HTMLTableSectionElement;
+const missTableBody = document.getElementById('missTableBody') as HTMLTableSectionElement;
+const fillDoneDialog = document.getElementById('fillDoneDialog') as HTMLDialogElement;
+const fillDoneText = document.getElementById('fillDoneText') as HTMLParagraphElement;
+const fillDoneClose = document.getElementById('fillDoneClose') as HTMLButtonElement;
 const skippedSummaryElement = document.getElementById(
   'skippedSummary',
 ) as HTMLParagraphElement;
@@ -376,7 +380,7 @@ function syncBusyUi(): void {
   const hasPlanItems = sessionHasMappingRows();
   const atLimit = cachedProfiles.length >= MAX_PROFILES;
 
-  confirmButton.disabled = isBusy || !hasPlanItems;
+  confirmButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
   undoButton.disabled = isBusy;
   rescanButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
   profileSelect.disabled = isBusy;
@@ -813,8 +817,8 @@ async function handleSaveSettings(event: SubmitEvent): Promise<void> {
 }
 
 /**
- * 经 Background 测试 API 连通性（先保存当前表单值再测）。
- * 成功只闪绿，不折叠，方便接着看结果。
+ * 用表单里已经填好的三项测连，不必先点保存。
+ * 测通后再决定要不要保存。
  */
 async function handleTestApi(): Promise<void> {
   cancelSettingsAutoCollapse();
@@ -828,23 +832,14 @@ async function handleTestApi(): Promise<void> {
     'pending',
     '正在敲门确认能不能连上…',
   );
-  try {
-    await saveSettings(draft);
-  } catch {
-    showInlineFeedback(
-      apiSettingsForm,
-      apiSettingsFeedback,
-      'bad',
-      '设置还没写进本机，所以先不测。稍等再点一次。',
-    );
-    return;
-  }
-  modelInput.value = draft.model;
   let response: ExtensionMessage;
   try {
     response = await requestBackground({
       type: 'TEST_API',
       requestId: createRequestId(),
+      apiBaseUrl: draft.apiBaseUrl,
+      apiKey: draft.apiKey,
+      model: draft.model,
     });
   } catch {
     showInlineFeedback(
@@ -887,7 +882,7 @@ async function handleTestApi(): Promise<void> {
     apiSettingsForm,
     apiSettingsFeedback,
     'ok',
-    '连上啦，可以开始填表。',
+    '连上啦。确认无误后再点「保存」。',
   );
 }
 
@@ -958,35 +953,71 @@ function openFullOptionsEditor(): void {
   void chrome.tabs.create({ url: optionsUrl });
 }
 
-async function runConfirmWrite(): Promise<void> {
-  if (!currentSession) {
-    showError('没有可写入的映射项');
+/**
+ * 把没写进去的格子画到「没写上的」表里。
+ */
+function renderMissTable(misses: FillMiss[]): void {
+  missTableBody.replaceChildren();
+  if (misses.length === 0) {
+    const emptyRow = document.createElement('tr');
+    emptyRow.className = 'empty-row';
+    const emptyCell = document.createElement('td');
+    emptyCell.colSpan = 2;
+    emptyCell.textContent = '这一轮没有没写上的格子。';
+    emptyRow.appendChild(emptyCell);
+    missTableBody.appendChild(emptyRow);
     return;
   }
-  const editedPlan = collectEditedFillPlan();
-  if (editedPlan.items.length === 0) {
-    showError('没有可写入的映射项');
+  for (const miss of misses) {
+    const tableRow = document.createElement('tr');
+    const labelCell = document.createElement('td');
+    labelCell.textContent = miss.label;
+    const reasonCell = document.createElement('td');
+    reasonCell.textContent = miss.reason;
+    tableRow.append(labelCell, reasonCell);
+    missTableBody.appendChild(tableRow);
+  }
+}
+
+/**
+ * 写完后弹出结果。没写上的明细在下面那张表里。
+ */
+function showFillDoneDialog(filled: number, misses: FillMiss[]): void {
+  fillDoneText.textContent =
+    misses.length > 0
+      ? `写完了。成功 ${filled} 项，有 ${misses.length} 项没写上，列在「没写上的」表里。`
+      : `写完了。成功 ${filled} 项，这一轮没有没写上的格子。`;
+  if (!fillDoneDialog.open) {
+    fillDoneDialog.showModal();
+  }
+}
+
+async function runConfirmWrite(): Promise<void> {
+  const selectedProfileId = profileSelect.value;
+  if (!selectedProfileId) {
+    showError('请先选择档案');
     return;
   }
   stopButton.hidden = false;
-  showScanProgress(8, '正在按行写入，写完才会到 100%。');
+  showScanProgress(8, '正在逐格对照档案并写入。');
   try {
     const applyResponse = await requestBackground({
       type: 'APPLY_FILL_PLAN',
       requestId: createRequestId(),
-      plan: editedPlan,
-      profileId: profileSelect.value || undefined,
+      plan: { items: [], skippedFieldIds: [] },
+      profileId: selectedProfileId,
     });
     if (applyResponse.type !== 'APPLY_FILL_RESULT') {
       throw new Error('写入页面失败');
     }
+    const misses = applyResponse.misses ?? [];
+    renderMissTable(misses);
     showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
-    await clearPendingSession();
-    renderMappingTable();
     showStatus(
-      `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。`,
-      'success',
+      `已经写入 ${applyResponse.filled} 项。没写上 ${misses.length} 项，见下方表格。`,
+      misses.length > 0 ? 'error' : 'success',
     );
+    showFillDoneDialog(applyResponse.filled, misses);
   } finally {
     stopButton.hidden = true;
   }
@@ -1181,6 +1212,10 @@ function bindEvents(): void {
 
   openFullEditorButton.addEventListener('click', () => {
     openFullOptionsEditor();
+  });
+
+  fillDoneClose.addEventListener('click', () => {
+    fillDoneDialog.close();
   });
 
   confirmButton.addEventListener('click', () => {

@@ -89,6 +89,7 @@ export default defineContentScript({
             message.filePayloads ?? [],
             message.profileId,
             message.sectionAdds ?? [],
+            message.profileData,
           )
             .then((result) => {
               sendResponse({

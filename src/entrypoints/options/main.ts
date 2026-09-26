@@ -671,8 +671,25 @@ async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
 }
 
 function handleTestApiConnection(): void {
+  const apiBaseUrl = apiBaseUrlInput.value.trim();
+  const apiKey = apiKeyInput.value.trim();
+  const model = modelInput.value.trim();
+  if (!apiBaseUrl) {
+    showStatus('请先填写 API Base URL', 'error');
+    return;
+  }
+  if (!apiKey) {
+    showStatus('请先填写 API Key', 'error');
+    return;
+  }
   const requestId = createRequestId();
-  const message: ExtensionMessage = { type: 'TEST_API', requestId };
+  const message: ExtensionMessage = {
+    type: 'TEST_API',
+    requestId,
+    apiBaseUrl,
+    apiKey,
+    model,
+  };
 
   try {
     chrome.runtime.sendMessage(

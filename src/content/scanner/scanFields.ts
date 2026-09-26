@@ -1831,13 +1831,13 @@ export function labelNextEmptyCard(patternSource: string, neededRows: number): F
   const monthFields = band.filter((element) => controlTimeKind(element) === 'month');
   yearFields.forEach((element, index) => {
     const roleName = dateRoleBesideControl(element) ?? (index === 0 ? '开始' : '结束');
-    const descriptor = descriptorForElement(element);
+    const descriptor = ensureFieldDescriptor(element);
     rememberFieldLabel(descriptor, element, `${rowPrefix}${roleName}年`);
     labeled.push(descriptor);
   });
   monthFields.forEach((element, index) => {
     const roleName = dateRoleBesideControl(element) ?? (index === 0 ? '开始' : '结束');
-    const descriptor = descriptorForElement(element);
+    const descriptor = ensureFieldDescriptor(element);
     rememberFieldLabel(descriptor, element, `${rowPrefix}${roleName}月`);
     labeled.push(descriptor);
   });
@@ -1848,7 +1848,7 @@ export function labelNextEmptyCard(patternSource: string, neededRows: number): F
     const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
     const previousLabel = (element.getAttribute('data-raf-label') ?? '').replace(/^.*第\d+行/, '');
     const roleLabel = placeholderText || previousLabel || '内容';
-    const descriptor = descriptorForElement(element);
+    const descriptor = ensureFieldDescriptor(element);
     rememberFieldLabel(descriptor, element, `${rowPrefix}${roleLabel}`);
     labeled.push(descriptor);
   }
@@ -1928,8 +1928,8 @@ function sectionHeadingText(patternSource: string): string {
   return '';
 }
 
-/** 已登记的格子沿用原来的编号，新格子才新建。 */
-function descriptorForElement(element: HTMLElement): FieldDescriptor {
+/** 已登记的格子沿用原来的编号，新格子才新建。逐格填写时也用这个，避免同一框登记两次。 */
+export function ensureFieldDescriptor(element: HTMLElement): FieldDescriptor {
   const existingId = element.getAttribute('data-raf-id') ?? '';
   if (existingId && fieldElementById.has(existingId)) {
     return {

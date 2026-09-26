@@ -229,6 +229,27 @@ async function maybePersistDefaultProfile(profileId: string): Promise<void> {
 async function runFillFlow(profileId: string): Promise<void> {
   stopButton.hidden = false;
   try {
+  if (cachedFillMode === 'direct') {
+    showScanProgress(8, '正在逐格对照档案并写入。');
+    const applyResponse = await requestBackground({
+      type: 'APPLY_FILL_PLAN',
+      requestId: createRequestId(),
+      plan: { items: [], skippedFieldIds: [] },
+      profileId,
+    });
+    if (applyResponse.type !== 'APPLY_FILL_RESULT') {
+      throw new Error('写入页面失败');
+    }
+    const missCount = applyResponse.misses?.length ?? 0;
+    showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
+    showStatus(
+      missCount > 0
+        ? `已经写入 ${applyResponse.filled} 项。有 ${missCount} 项没写上，请打开侧栏查看「没写上的」表。`
+        : `已经写入 ${applyResponse.filled} 项。`,
+      missCount > 0 ? 'error' : 'success',
+    );
+    return;
+  }
   const scanResult = await scanActivePage(createRequestId(), (progress) => {
     showScanProgress(progress.percent, progress.message);
   });

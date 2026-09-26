@@ -33,6 +33,12 @@ export interface SkippedFieldNote {
   reason: string;
 }
 
+/** 逐格填写时没写进去的一格，给侧栏另一张表用 */
+export interface FillMiss {
+  label: string;
+  reason: string;
+}
+
 /**
  * 档案里某一段有几条。写入时页面上的行数少于此数，才点这一段的「添加」。
  */
