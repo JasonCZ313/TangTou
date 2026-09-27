@@ -376,7 +376,14 @@ async function fillWidgetByOption(el, value) {
   el.click();
   await sleep(350);
   const ownPopup = findOwnPopup(el);
-  const allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
+  let allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
+  // 弹层渲染有快有慢：一次没读到就再等一小段重读一次。
+  // 这一步把「同格要点四五次」压成最多两次，且等待时间只增不减，不会伤准确性。
+  if (!allOptions.length) {
+    chaoDebug.info('首次未读到选项，250ms 后重读一次', { 目标: value });
+    await sleep(250);
+    allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
+  }
   const freshOptions = allOptions.filter((option) => !beforeOptions.has(option));
   const options = ownPopup || !freshOptions.length ? allOptions : freshOptions;
   const optionTexts = options.map((option) => option.textContent.replace(/\s+/g, ' ').trim());
@@ -451,8 +458,12 @@ export async function writeField(field, intendedValue) {
     } else {
       strategy = '组件选项（点开比对）';
       wrote = await fillWidgetByOption(field.el, value);
-      // 双策略兜底：点选没命中且是「可输入的组件」时，回落成文本输入
-      if (!wrote && field.el.tagName.toLowerCase() === 'input' && !field.el.readOnly && !field.el.isContentEditable) {
+      // 双策略兜底：点选没命中且是「可输入的组件」时，回落成文本输入。
+      // 但含分隔符的多段文本（如「北京市 / 市辖区 / 朝阳区」）绝不回落 ——
+      // 整串打进输入框会产出错值，宁缺勿错，直接进漏填表。
+      const multiSegment = /[/、,，]/.test(value);
+      if (!wrote && !multiSegment
+        && field.el.tagName.toLowerCase() === 'input' && !field.el.readOnly && !field.el.isContentEditable) {
         strategy = '组件选项未命中 → 回落文本输入';
         wrote = fillPlainField(field.el, value);
       }

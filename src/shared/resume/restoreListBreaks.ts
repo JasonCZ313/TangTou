@@ -26,6 +26,19 @@ export function restoreListLineBreaks(rawText: string): string {
 }
 
 /**
+ * 填写阶段专用的换行归一。
+ *
+ * 与 restoreListLineBreaks 的区别（这是关键）：
+ *  - restoreListLineBreaks 会「按符号插换行」并把 3 连换行压成 2 个 —— 那是给「识别出来的整段文本」补结构用的；
+ *  - 已经存好的档案里，换行是用户自己敲的，填写时必须**逐字照抄**：
+ *    不补行、不压行、不动首尾之外的任何空白。
+ * 因此这里只做「统一 \r\n → \n」和首尾裁剪。
+ */
+export function normalizeLineBreaks(rawText: string): string {
+  return String(rawText || '').replace(/\r\n?/g, '\n').trim();
+}
+
+/**
  * 只修简历识别结果里的长文段。已经存好的档案不会在每次打开时被改写。
  */
 export function restoreResumePatchLineBreaks(rawPatch: unknown): unknown {

@@ -79,8 +79,8 @@ const MAX_ADD_ROUNDS_PER_SECTION = 25;
 const MAX_ADD_STALL = 2;
 /** 同一格最多尝试次数（超限才真正放弃） */
 const MAX_FIELD_RETRY = 3;
-/** 同一行最多尝试次数（超限才跳过该条档案） */
-const MAX_ROW_RETRY = 3;
+/** 同一行最多尝试次数（超限才跳过该条档案）。点选侧已有「重读」兜底，这里收紧一次往返 */
+const MAX_ROW_RETRY = 2;
 /** 连续多少轮「连一个字段都没判定」就提前结束 */
 const MAX_NO_PROGRESS_ROUNDS = 8;
 
@@ -202,15 +202,17 @@ function inferSectionByText(el) {
   return null;
 }
 
-/** 综合判定字段分区 */
+/** 综合判定字段分区（带本轮缓存，避免同一元素反复爬祖先 + 正则） */
 function resolveSectionType(el, ctx) {
+  if (ctx.sectionCache?.has(el)) return ctx.sectionCache.get(el);
   const byRoot = sectionByRoot(el, ctx.anchors);
-  if (byRoot && byRoot !== 'basic') return byRoot;
   const byNearest = sectionByNearestPreceding(el, ctx.anchors);
-  if (byNearest && byNearest !== 'basic') return byNearest;
   const byText = inferSectionByText(el);
-  if (byText) return byText;
-  return byNearest || byRoot || null;
+  const resolved = (byRoot && byRoot !== 'basic') ? byRoot
+    : (byNearest && byNearest !== 'basic') ? byNearest
+      : byText || byNearest || byRoot || null;
+  ctx.sectionCache?.set(el, resolved);
+  return resolved;
 }
 
 /* ============================ 阶段 B：扫描单个空 ============================ */
@@ -276,6 +278,23 @@ function textWithoutOptions(node) {
 }
 
 /**
+ * 取日期控件的语义容器文案。
+ * 只包住年/月两个下拉的那层容器本身没有文字（`[年][月]`），
+ * 必须再往上找一层才能读到「毕业时间」这类标签 —— 否则起止判定一定失效。
+ */
+function findDateHintText(node) {
+  let fallback = '';
+  let current = node;
+  for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) {
+    const text = textWithoutOptions(current);
+    if (!text || text.length > 30) continue;
+    if (DATE_START_WORDS.test(text) || DATE_END_WORDS.test(text)) return text;
+    if (!fallback) fallback = text;
+  }
+  return fallback || textWithoutOptions(node);
+}
+
+/**
  * 裸日期控件（年/月/日 下拉）归类：按「包含 ≥2 个裸日期控件的最小祖先」分组。
  * 组内 ≥4 个（偶数）→ 前一半=开始、后一半=结束；2-3 个看容器文案；
  * 都判断不出来时按「单点日期（date）」处理，交给分区决定落到哪个字段。
@@ -333,7 +352,7 @@ function classifyBareDateParts(fields) {
       members.sort((left, right) => (
         left.field.el.compareDocumentPosition(right.field.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
       ));
-      const containerText = textWithoutOptions(node);
+      const containerText = findDateHintText(node);
       const hasStart = DATE_START_WORDS.test(containerText);
       const hasEnd = DATE_END_WORDS.test(containerText);
       let roles = null;
@@ -348,6 +367,10 @@ function classifyBareDateParts(fields) {
         result.set(item.field.el, {
           role: roles[index],
           part: item.part === '年' ? 'year' : item.part === '月' ? 'month' : 'day',
+          // 带上容器文案与起止语义，供「单点日期」在分区内判定该落到开始还是结束
+          hint: containerText,
+          hasStartWord: hasStart,
+          hasEndWord: hasEnd,
         });
       });
     });
@@ -357,16 +380,158 @@ function classifyBareDateParts(fields) {
   return result;
 }
 
-/** 分区里是否支持某个 sub（date 会退化成 start / date） */
-function resolveSubForSection(sectionType, sub) {
+/**
+ * 分区里是否支持某个 sub，并把「单点日期（date）」落到正确的开始/结束。
+ *
+ * 关键修正：不能无条件把 date 当成 start ——
+ * 页面上只有一对年月、且容器写着「毕业时间」时，那是**结束时间**；
+ * 无条件当 start 会把入学时间写进毕业时间的框里（用户反馈的「时间填错」）。
+ */
+function resolveSubForSection(sectionType, sub, bareHint) {
   const rules = ROW_RULES[sectionType] || [];
   const subs = new Set(rules.map((rule) => rule.sub));
   if (subs.has(sub)) return sub;
   if (sub === 'date') {
-    if (subs.has('start')) return 'start';
+    const hint = String(bareHint?.hint || '');
+    const scopeHasEnd = bareHint?.hasEndWord ?? DATE_END_WORDS.test(hint);
+    const scopeHasStart = bareHint?.hasStartWord ?? DATE_START_WORDS.test(hint);
+    if (scopeHasEnd && !scopeHasStart && subs.has('end')) return 'end';
+    if (scopeHasStart && !scopeHasEnd && subs.has('start')) return 'start';
+    // 两边都没关键词时，按分区常用语义兜底：教育/实习/工作/项目/校内 的孤立日期多为开始时间
+    if (!scopeHasEnd && subs.has('start')) return 'start';
+    if (!scopeHasStart && subs.has('end')) return 'end';
     return null;
   }
   return null;
+}
+
+/* ============================ 阶段 C2：基本信息区的年月对 ============================ */
+
+/**
+ * 基本信息区「年/月」这类格子的语义表。
+ * 它们的标签只有「年」「月」，基础规则根本匹配不到，历史上会整对漏填
+ * （用户反馈的「毕业时间没有检测」）。
+ */
+const BASIC_DATE_HINTS = [
+  { key: 'educationEnd', pattern: /(毕业|离校|毕业时间|毕业年月)/ },
+  { key: 'educationStart', pattern: /(入学|入学时间|就读起始|入学年月)/ },
+  { key: 'birthday', pattern: /(出生|生日|出生日期|出生年月)/ },
+];
+
+/** 从裸日期控件向上找一个「短且有语义」的容器，据此判断它属于哪个基础字段 */
+function nearestBasicDateHint(el) {
+  let node = el?.parentElement || null;
+  for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+    const text = textWithoutOptions(node);
+    if (!text || text.length > 30) continue;
+    const hit = BASIC_DATE_HINTS.find((item) => item.pattern.test(text));
+    if (hit) return hit.key;
+  }
+  return null;
+}
+
+/**
+ * 填基本信息区的「年」「月」下拉。
+ * 只处理不在行分区里的裸日期控件，且容器文案能明确对应到某个基础字段；
+ * 认不准就留空（宁缺勿错）。
+ */
+async function fillBasicDatePairs(fields, ctx) {
+  let filled = 0;
+  for (const field of fields) {
+    if (ROW_SECTION_TYPES.includes(field.sectionType)) continue;
+    const part = bareDatePartOf(field.blob);
+    if (!part) continue;
+    const targetKey = nearestBasicDateHint(field.el);
+    if (!targetKey) continue;
+    const valueItem = ctx.values.find((item) => item.key === targetKey);
+    if (!valueItem) continue;
+    const partValue = datePartValue(
+      valueItem.value,
+      part === '年' ? 'year' : part === '月' ? 'month' : 'day',
+    );
+    if (!partValue) continue;
+    // 先标记，避免主循环把它当普通散字段再处理一次
+    ctx.done.add(field.el);
+    const result = await writeField(field, partValue);
+    if (result.ok) {
+      field.el.classList.add(AUTOFILL_FILL_CLASS);
+      ctx.progressMark += 1;
+      filled += 1;
+      ctx.dbg.push(debugLine('✓', field.blob, ` → ${targetKey}（年月对）`));
+    } else {
+      ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
+      ctx.missed.push({ label: field.blob, reason: `${targetKey}：${result.reason}` });
+    }
+    await sleep(45);
+  }
+  if (filled) chaoDebug.ok(`基本信息区年月对写入 ${filled} 项`);
+  return filled;
+}
+
+/**
+ * 阶段四：补漏。
+ * 主循环结束后，把「仍然空着」的散字段再走一遍：
+ * 先用常规规则、再用宽松别名、最后按语义关键词兜底，命中就回档案取值补上。
+ * 只处理空字段，绝不覆盖已填内容；行分区的空值由行内回落负责，这里不插手。
+ */
+const SECOND_PASS_KEYWORDS = [
+  { key: 'educationEnd', pattern: /(毕业|离校)/ },
+  { key: 'educationStart', pattern: /(入学|就读起始)/ },
+  { key: 'degree', pattern: /(最高学历|学历层次|学历|学位)/ },
+  { key: 'school', pattern: /(毕业院校|就读学校|学校名称|学校)/ },
+  { key: 'major', pattern: /(所学专业|专业名称|专业)/ },
+  { key: 'college', pattern: /(院系|学院)/ },
+  { key: 'birthday', pattern: /(出生|生日)/ },
+  { key: 'gender', pattern: /(性别)/ },
+  { key: 'ethnicity', pattern: /(民族)/ },
+  { key: 'politicalStatus', pattern: /(政治面貌)/ },
+  { key: 'nativePlace', pattern: /(籍贯)/ },
+  { key: 'phone', pattern: /(手机|联系电话|电话)/ },
+  { key: 'email', pattern: /(邮箱|电子邮件)/ },
+  { key: 'expectedCity', pattern: /(意向工作城市|期望工作城市|期望城市|意向城市)/ },
+  { key: 'availableDate', pattern: /(到岗|入职时间|可入职)/ },
+];
+
+async function runSecondPass(ctx) {
+  let total = 0;
+  for (let round = 0; round < 2; round += 1) {
+    const fields = scanEmptyFields(ctx);
+    if (!fields.length) break;
+    let wroteThisRound = 0;
+    for (const field of fields) {
+      if (ROW_SECTION_TYPES.includes(field.sectionType)) continue;
+      if (!isControlEmpty(field.el)) continue;
+      let matchedKey = matchAutofillKey(field.blob, ctx.availableKeys, ctx.customRules)
+        || relaxedMatchAutofillKey(field.blob, ctx.availableKeys);
+      if (!matchedKey) {
+        // 语义兜底：第一轮完全没认出来时，按标签里的概念词映射到基础字段
+        matchedKey = SECOND_PASS_KEYWORDS.find((item) => item.pattern.test(field.blob))?.key || null;
+      }
+      if (!matchedKey) continue;
+      if (matchedKey === 'idNumber') {
+        matchedKey = resolveIdKey(field, ctx);
+        if (!matchedKey) { ctx.done.add(field.el); continue; }
+      }
+      const valueItem = ctx.values.find((item) => item.key === matchedKey);
+      if (!valueItem) continue;
+      const result = await writeField(field, valueItem.value);
+      if (result.ok) {
+        field.el.classList.add(AUTOFILL_FILL_CLASS);
+        ctx.done.add(field.el);
+        wroteThisRound += 1;
+        total += 1;
+        ctx.dbg.push(debugLine('✓', field.blob, ` → ${valueItem.label}（补漏）`));
+      } else {
+        ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
+        ctx.missed.push({ label: field.blob, reason: `${valueItem.label}：${result.reason}` });
+      }
+      await sleep(45);
+    }
+    ctx.progressMark += wroteThisRound;
+    if (!wroteThisRound) break;
+  }
+  if (total) chaoDebug.ok(`补漏阶段又写入 ${total} 项`);
+  return total;
 }
 
 /* ============================ 阶段 D：行分组（锚点边界法） ============================ */
@@ -386,7 +551,7 @@ function resolveSectionEntries(sectionType, sectionFields) {
   sectionFields.forEach((field) => {
     const bare = bareParts.get(field.el);
     if (bare) {
-      const sub = resolveSubForSection(sectionType, bare.role);
+      const sub = resolveSubForSection(sectionType, bare.role, bare);
       if (sub) entries.push({ field, sub, part: bare.part });
       else leftovers.push(field);
       return;
@@ -496,6 +661,40 @@ function findRowRecord(group, ctx) {
 }
 
 /**
+ * 行字段取值回落到「基础信息」的映射。
+ * 只在「该分区的档案只有 1 条」时启用（见 basicFallbackValue），
+ * 否则多行场景会把同一个学校/公司写进每一行。
+ */
+const BASIC_FALLBACK_BY_SUB = {
+  education: {
+    org: 'school',
+    college: 'college',
+    major: 'major',
+    degree: 'degree',
+    start: 'educationStart',
+    end: 'educationEnd',
+    courses: 'mainCourses',
+  },
+  internship: { org: 'school' },
+  work: { org: 'school' },
+};
+
+/**
+ * 取「基础信息里的同义值」作为行内空值的兜底。
+ * 典型场景：档案只有基本信息里填了「最高学历：大学本科」，
+ * 而页面的学历框在教育分区内 —— 该行没有值，但基础信息有，应当补上。
+ * 安全前提：该分区只配置了 1 条档案（多行时不允许回落，避免串值）。
+ */
+function basicFallbackValue(sectionType, sub, ctx) {
+  const pool = ctx.entries[sectionType] || [];
+  if (pool.length !== 1) return '';
+  const mapping = BASIC_FALLBACK_BY_SUB[sectionType];
+  const basicKey = mapping?.[sub];
+  if (!basicKey) return '';
+  return ctx.values.find((item) => item.key === basicKey)?.value || '';
+}
+
+/**
  * 填一行：逐字段写 + 回读。
  * 返回 written 供调用方判断成败；失败原因一并带回。
  */
@@ -508,6 +707,12 @@ async function fillRowGroup(group, entry, sectionType, ctx) {
   for (const item of group) {
     const { field, sub } = item;
     let value = rowValue(entry.data, sub);
+    let fromBasic = false;
+    if (!value) {
+      // 行内没有值 → 单条档案时回落到基础信息（修「学历本来有但没填」）
+      value = basicFallbackValue(sectionType, sub, ctx);
+      fromBasic = Boolean(value);
+    }
     if (!value) continue;
     if (value === '至今') {
       needCurrent = true;
@@ -521,6 +726,7 @@ async function fillRowGroup(group, entry, sectionType, ctx) {
       ctx.done.add(field.el);
       written += 1;
       if (ANCHOR_SUBS.has(sub)) anchorWritten = true;
+      if (fromBasic) ctx.dbg.push(debugLine('✓', field.blob, ` → ${sub}（基础信息回落）`));
     } else {
       ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
       firstFailure = firstFailure || result.reason;
@@ -691,6 +897,8 @@ async function growOneRow(sectionType, ctx) {
   }
   state.addStall = 0;
   ctx.progressMark += 1;
+  // 新增行会改变 DOM（新的空字段、新的祖先文本），分区缓存必须作废
+  ctx.sectionCache?.clear();
   ctx.dbg.push(`➕ [${sectionType}] 已新增一行（${beforeRows} → ${afterRows}）`);
   chaoDebug.ok(`[${sectionType}] 新增一行`, { 行数: afterRows });
   return true;
@@ -1023,6 +1231,8 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
     anchors: [],
     sectionState: new Map(),
     addButtonCache: new Map(),
+    /** 分区判定缓存：本轮的字段→分区结果，避免同一元素被反复爬祖先（纯等价缓存） */
+    sectionCache: new Map(),
     /** 本轮已成功写入的控件 */
     done: new Set(),
     /** 每个控件的失败次数 */
@@ -1111,11 +1321,19 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
   // 阶段一：只做「行数体检 + 诊断」（不再批量补行；补行改由主循环按需一条一条加）
   ROW_SECTION_TYPES.forEach((sectionType) => inspectSectionRows(sectionType, ctx));
 
+  // 阶段一之二：基本信息区的「年/月」对（如「毕业时间 年/月」）。
+  // 这些格子标签只有「年」「月」，常规规则匹配不到，必须单独处理。
+  progress.update('📅 正在填写基本信息区的时间…');
+  const basicDateFilled = await fillBasicDatePairs(scanEmptyFields(ctx), ctx);
+  if (basicDateFilled) ctx.filledCount += basicDateFilled;
+
   // 阶段二：一个空一个空写入。补行是按需的：某个分区填不出空行了，才点一次「添加」，
   // 因此整体节奏就是「加一条 → 扫一次 → 填一条 → 再核对」。
   chaoDebug.stage('逐格写入');
   let lastProgress = -1;
   for (let step = 0; step < MAX_STEPS; step += 1) {
+    // DOM 可能已被上一轮改写（新增行、联动控件），分区缓存每轮作废一次
+    ctx.sectionCache.clear();
     const fields = scanEmptyFields(ctx);
     const task = pickNextTask(ctx, fields);
     if (!task) {
@@ -1144,10 +1362,19 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
   }
   chaoDebug.stageEnd(`写入 ${ctx.filledCount} 项`);
 
-  // 阶段三：核对
+  // 阶段三：补漏。把「还空着的散字段」再走一遍，回档案取值补上（不覆盖已填内容）
+  chaoDebug.stage('补漏复核');
+  progress.update('🔁 正在复核没写上的格子…');
+  ctx.sectionCache.clear();
+  const secondPassFilled = await runSecondPass(ctx);
+  ctx.filledCount += secondPassFilled;
+  chaoDebug.stageEnd(`补漏写入 ${secondPassFilled} 项`);
+
+  // 阶段四：核对
   chaoDebug.stage('回读核对');
   progress.update('🧪 正在回读核对…');
   await sleep(300);
+  ctx.sectionCache.clear();
   verifyFilled(ctx);
   chaoDebug.stageEnd();
 

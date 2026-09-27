@@ -51,6 +51,7 @@ export const BASIC_FIELDS = [
   ['hukouProvince', '户籍所在地省', 'text'], ['hukouCity', '户籍所在地市', 'text'],
   ['liveProvince', '现居住省', 'text'], ['liveCity', '现居住市', 'text'],
   ['expectedProvince', '期望工作省', 'text'],
+  ['expectedCityName', '期望工作市', 'text'], ['expectedCityDistrict', '期望工作区', 'text'],
   ['address', '现居地址', 'text'], ['jobIntent', '求职意向', 'text'], ['expectedCity', '期望城市', 'text'],
   ['expectedSalary', '期望薪资', 'text'], ['availableDate', '到岗时间', 'text'],
 ].map(([key, label, type]) => ({ key, label, type }));
@@ -108,6 +109,9 @@ export const AUTOFILL_RULES = [
   { key: 'liveProvince', words: ['现居住省', '现居省', '居住省', '现居住地省', '现居住地'], block: ['户籍', '户口', '期望', '市'] },
   { key: 'liveCity', words: ['现居住市', '现居市', '居住市', '现居住地市'], block: ['户籍', '户口', '期望', '省'] },
   { key: 'expectedProvince', words: ['期望工作省', '期望省', '意向省'], block: ['户籍', '户口', '现居', '市'] },
+  // 期望城市分层：与 expectedCity 并列但更具体，靠 block 互斥避免互相抢词
+  { key: 'expectedCityName', words: ['意向工作城市市', '期望工作城市市', '期望城市市', '意向城市市'], block: ['省'] },
+  { key: 'expectedCityDistrict', words: ['意向工作城市区', '期望城市区', '意向城市区'], block: ['省', '市'] },
   { key: 'hukouLocation', words: ['户籍所在地', '户籍地址', '户口所在地', '户籍'], block: ['省', '市'] },
   { key: 'politicalStatus', words: ['政治面貌'] },
   { key: 'expectedCity', words: ['期望城市', '意向城市', '工作城市'] },
@@ -431,6 +435,14 @@ export function optionMatchAliases(value) {
   if (/硕士|研究生/.test(raw)) ['硕士', '硕士研究生', '研究生'].forEach((item) => aliases.add(item));
   if (/博士/.test(raw)) ['博士', '博士研究生'].forEach((item) => aliases.add(item));
   if (/群众/.test(raw)) ['群众', '普通群众'].forEach((item) => aliases.add(item));
+  // 含分隔符的地区串（如「北京市 / 市辖区 / 朝阳区」）：
+  // 页面往往只给其中一层（只列「北京」），把每层都作为候选才有机会命中；
+  // 「市辖区」「省直辖」这类中间层对页面无意义，去掉后再加一次。
+  if (/[/、,，]/.test(raw)) {
+    raw.split(/\s*[/、,，]\s*/).filter(Boolean).forEach((part) => aliases.add(part));
+    aliases.add(raw.replace(/市辖区|省直辖县级行政区划|省直辖/g, ''));
+    aliases.add(raw.replace(/市辖区|省直辖县级行政区划|省直辖/g, '').replace(/\s*[/、,，]\s*/g, ''));
+  }
   return [...aliases];
 }
 

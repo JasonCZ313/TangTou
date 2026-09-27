@@ -932,6 +932,106 @@ const CASES = [
       { sel: '[data-k="p-tech"]', eq: 'TypeScript / React' },
     ],
   },
+  /* ===== 39-46：本轮（时间/地区/补漏/换行）修复的锁定用例 ===== */
+  {
+    name: '39 意向工作城市：档案是三级拼串，页面只列「北京」→ 选「北京」而不是灌整串',
+    html: page(section('申请信息',
+      comboField('意向工作城市', ['北京', '上海'], 'city'), null)),
+    editable: () => makeEditable({ profile: { expectedCity: '北京市 / 市辖区 / 朝阳区' } }),
+    expect: [
+      { sel: '[data-k="city"]', eq: '北京' },
+      { sel: '[data-k="city"]', notEquals: '北京市 / 市辖区 / 朝阳区' },
+    ],
+  },
+  {
+    name: '40 意向工作城市：页面选项带「市」后缀 → 命中「北京市」',
+    html: page(section('申请信息',
+      comboField('意向工作城市', ['北京市', '上海市'], 'city'), null)),
+    editable: () => makeEditable({ profile: { expectedCity: '北京市 / 市辖区 / 朝阳区' } }),
+    expect: [{ sel: '[data-k="city"]', eq: '北京市' }],
+  },
+  {
+    name: '41 基本信息区「毕业时间 年/月」：两个下拉都要检测并填上',
+    html: page(section('个人信息',
+      '<div class="field"><label>毕业时间</label><div class="date-range">'
+      + bareDate('年', 'grad-y') + bareDate('月', 'grad-m')
+      + '</div></div>', null)),
+    editable: () => makeEditable({ profile: { educationEnd: '2026-08' } }),
+    expect: [
+      { sel: '[data-k="grad-y"]', eq: '2026' },
+      { sel: '[data-k="grad-m"]', eq: '8' },
+    ],
+  },
+  {
+    name: '42 教育分区只有一对年月、容器写「毕业时间」→ 落到结束时间，不能写进开始时间',
+    html: page('<div class="section" id="eduSec"><div class="section-title">教育背景</div><div class="rows">'
+      + '<div class="row"><div class="field"><label>学校名称</label><input type="text" data-k="e-school"></div>'
+      + '<div class="field"><label>毕业时间</label><div class="date-range">'
+      + bareDate('年', 'grad-y') + bareDate('月', 'grad-m')
+      + '</div></div></div></div></div>'),
+    editable: () => makeEditable({
+      rows: { education: [{ org: '甲大学', start: '2022-09', end: '2026-08' }] },
+    }),
+    expect: [
+      { sel: '[data-k="e-school"]', eq: '甲大学' },
+      { sel: '[data-k="grad-y"]', eq: '2026' },
+      { sel: '[data-k="grad-m"]', eq: '8' },
+    ],
+  },
+  {
+    name: '43 教育行缺学历、基础信息有「大学本科」→ 单条档案时回落补上',
+    html: page('<div class="section" id="eduSec"><div class="section-title">教育背景</div><div class="rows">'
+      + '<div class="row"><div class="field"><label>学校名称</label><input type="text" data-k="e-school"></div>'
+      + '<div class="field"><label>学历</label><select data-k="e-degree"><option value="">请选择</option>'
+      + '<option>大专</option><option>大学本科</option><option>硕士研究生</option></select></div></div></div></div>'),
+    editable: () => makeEditable({
+      profile: { degree: '大学本科' },
+      rows: { education: [{ org: '甲大学' }] },
+    }),
+    expect: [
+      { sel: '[data-k="e-school"]', eq: '甲大学' },
+      { sel: '[data-k="e-degree"]', eq: '大学本科' },
+    ],
+  },
+  {
+    name: '44 教育有 3 行时禁止回落：每行保持各自学校，不能把基础信息灌进每一行',
+    html: page('<div class="section" id="eduSec"><div class="section-title">教育背景</div><div class="rows">'
+      + `<div class="row">${textField('学校名称', 'e1')}${textField('专业名称', 'm1')}</div>`
+      + `<div class="row">${textField('学校名称', 'e2')}${textField('专业名称', 'm2')}</div>`
+      + `<div class="row">${textField('学校名称', 'e3')}${textField('专业名称', 'm3')}</div>`
+      + '</div></div>'),
+    editable: () => makeEditable({
+      profile: { major: '软件工程' },
+      rows: {
+        education: [{ org: '甲大学' }, { org: '乙大学' }, { org: '丙大学' }],
+      },
+    }),
+    expect: [
+      { sel: '[data-k="e1"]', eq: '甲大学' },
+      { sel: '[data-k="e2"]', eq: '乙大学' },
+      { sel: '[data-k="e3"]', eq: '丙大学' },
+      { sel: '[data-k="m1"]', eq: '' },
+      { sel: '[data-k="m3"]', eq: '' },
+    ],
+  },
+  {
+    name: '45 档案里没有换行时，写入必须与档案逐字一致（不按符号补行）',
+    html: page(section('个人信息',
+      '<div class="field"><label>自我描述</label><textarea data-k="adv"></textarea></div>', null)),
+    editable: () => makeEditable({
+      profile: { advantages: '软硬结合人才 工控+AI+图纸建模无伤切岗 · 软件+架构 应用从架构选型到开发交付' },
+    }),
+    expect: [
+      { sel: '[data-k="adv"]', eq: '软硬结合人才 工控+AI+图纸建模无伤切岗 · 软件+架构 应用从架构选型到开发交付' },
+    ],
+  },
+  {
+    name: '46 档案里连写 3 个换行时必须原样保留（不再被压成 2 个）',
+    html: page(section('个人信息',
+      '<div class="field"><label>自我描述</label><textarea data-k="adv"></textarea></div>', null)),
+    editable: () => makeEditable({ profile: { advantages: '第一段\n\n\n第二段' } }),
+    expect: [{ sel: '[data-k="adv"]', eq: '第一段\n\n\n第二段' }],
+  },
 ];
 
 /* ------------------------------------------------------------------ */

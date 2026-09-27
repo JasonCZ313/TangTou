@@ -7,7 +7,7 @@ import {
   ID_TYPE_OPTIONS,
   ETHNICITY_OPTIONS,
 } from '../../shared/catalogs/enums';
-import { restoreListLineBreaks } from '../../shared/resume/restoreListBreaks';
+import { normalizeLineBreaks } from '../../shared/resume/restoreListBreaks';
 
 /**
  * 行式条目：canonical 键（org/title/role/start/end/desc/name/date/level/score…）。
@@ -114,6 +114,9 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
     liveProvince: (basic.currentCityRegion?.provinceName || '').trim(),
     liveCity: (basic.currentCityRegion?.cityName || '').trim(),
     expectedProvince: (profile.jobIntent?.expectedCitiesRegions?.[0]?.provinceName || '').trim(),
+    // 期望城市的「市 / 区」分层：页面可能只给一层（如只列「北京」），分层后才有机会选中
+    expectedCityName: (profile.jobIntent?.expectedCitiesRegions?.[0]?.cityName || '').trim(),
+    expectedCityDistrict: (profile.jobIntent?.expectedCitiesRegions?.[0]?.districtName || '').trim(),
     politicalStatus: politicalStatusForFill(basic.politicalStatus || ''),
     address: (basic.currentAddress || '').trim(),
     jobIntent: (profile.jobIntent?.targetRole || profile.jobIntent?.jobType || '').trim(),
@@ -121,7 +124,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
     expectedSalary: (profile.jobIntent?.expectedSalary || '').trim(),
     availableDate: (profile.jobIntent?.availableDate || '').trim(),
     skills: profile.skills.map((item) => item.name.trim()).filter(Boolean).join(' / '),
-    advantages: restoreListLineBreaks(profile.essays?.selfEvaluation?.trim() || ''),
+    advantages: normalizeLineBreaks(profile.essays?.selfEvaluation?.trim() || ''),
   };
 
   const rows: ChaoRows = {
@@ -133,10 +136,10 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       start: (item.startDate || '').trim(),
       end: endOf(item.endDate, item.isCurrent),
       gpa: (item.gpa || '').trim(),
-      courses: restoreListLineBreaks((item.courses || '').trim()),
+      courses: normalizeLineBreaks((item.courses || '').trim()),
       city: (item.city || '').trim(),
       schoolType: (item.educationType || '').trim(),
-      desc: restoreListLineBreaks((item.description || '').trim()),
+      desc: normalizeLineBreaks((item.description || '').trim()),
     })),
     internship: profile.experience.map((item) => ({
       org: (item.company || '').trim(),
@@ -145,7 +148,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       end: endOf(item.endDate, item.isCurrent),
       department: (item.department || '').trim(),
       city: (item.city || '').trim(),
-      desc: restoreListLineBreaks(
+      desc: normalizeLineBreaks(
         (item.responsibilities || item.workContent || item.description || '').trim(),
       ),
     })),
@@ -157,7 +160,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       end: endOf(item.endDate, item.isCurrent),
       link: (item.link || '').trim(),
       techStack: (item.techStack || '').trim(),
-      desc: restoreListLineBreaks(
+      desc: normalizeLineBreaks(
         [item.description, item.content, item.value].filter(Boolean).join('\n').trim(),
       ),
     })),
@@ -166,7 +169,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       role: (item.role || '').trim(),
       start: (item.startDate || '').trim(),
       end: (item.endDate || '').trim(),
-      desc: restoreListLineBreaks((item.description || '').trim()),
+      desc: normalizeLineBreaks((item.description || '').trim()),
     })),
     certificates: profile.certificates
       .filter((item) => (item.name || '').trim())
@@ -175,7 +178,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
         date: (item.date || '').trim(),
         issuer: (item.issuer || '').trim(),
         number: (item.number || '').trim(),
-        desc: restoreListLineBreaks((item.description || '').trim()),
+        desc: normalizeLineBreaks((item.description || '').trim()),
       })),
     awards: profile.awards
       .filter((item) => (item.name || '').trim())
@@ -184,7 +187,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
         date: (item.date || '').trim(),
         level: (item.level || '').trim(),
         issuer: (item.issuer || '').trim(),
-        desc: restoreListLineBreaks((item.description || '').trim()),
+        desc: normalizeLineBreaks((item.description || '').trim()),
       })),
     languages: profile.languages
       .filter((item) => (item.language || '').trim())
@@ -198,7 +201,7 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       .map((item) => ({
         name: (item.title || '').trim(),
         date: (item.date || '').trim(),
-        desc: restoreListLineBreaks((item.venueOrNumber || '').trim()),
+        desc: normalizeLineBreaks((item.venueOrNumber || '').trim()),
       })),
   };
 
