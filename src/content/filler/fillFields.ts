@@ -6,8 +6,7 @@
 import type { FillMiss, FillPlan, SectionAddRequest } from '../../shared/types/fill';
 import type { ProfileData } from '../../shared/types/profile';
 import type { FileUploadPayload } from '../../shared/types/messages';
-import { runChaoRuleAutofill } from './chaoAutofill';
-import { profileToChaoEditable } from './profileToChao';
+import { runChaoRuleAutofill, profileToChaoEditable } from './chaoAutofill';
 
 /** 撤销快照：写入前控件原值，方便 undoLastFill 还原 */
 let lastUndoSnapshots: Array<{ element: Element; previousValue: string; isFile: boolean }> =

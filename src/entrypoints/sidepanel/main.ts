@@ -119,14 +119,11 @@ const fillDoneClose = document.getElementById('fillDoneClose') as HTMLButtonElem
 const skippedSummaryElement = document.getElementById(
   'skippedSummary',
 ) as HTMLParagraphElement;
-const confirmButton = document.getElementById(
-  'confirmButton',
+const scanFillButton = document.getElementById(
+  'scanFillButton',
 ) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
 const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
-const rescanButton = document.getElementById(
-  'rescanButton',
-) as HTMLButtonElement;
 const statusMessageElement = document.getElementById(
   'statusMessage',
 ) as HTMLParagraphElement;
@@ -147,7 +144,7 @@ const tokenUsageLine = document.getElementById(
 ) as HTMLParagraphElement;
 
 const EMPTY_MAPPING_HINT =
-  '选好档案后，点下方「扫描本页」。扫完会在这里列出要填的字段，确认后再写入。';
+  '选好档案后，点下方「扫描并写入」。会一边扫描一边写入，写完会在这里列出结果。';
 
 /** 已经扫过，但没有可以填的项 */
 const EMPTY_MAPPING_AFTER_SCAN =
@@ -361,28 +358,20 @@ function sessionHasMappingRows(): boolean {
 }
 
 /**
- * 有预览时「确认写入」为 primary；无预览时「扫描本页」升为 primary。
+ * 单按钮模式下不再切换主次；保留函数名避免改动调用点。
+ * 扫描结果里有可填项时用主色，否则也用主色（一次点击即可完成扫描+写入）。
  */
 function syncActionButtonHierarchy(): void {
-  const hasPlanItems = sessionHasMappingRows();
-  if (hasPlanItems) {
-    confirmButton.className = 'btn btn-primary action-confirm';
-    rescanButton.className = 'btn btn-secondary action-scan';
-  } else {
-    confirmButton.className = 'btn btn-secondary action-confirm';
-    rescanButton.className = 'btn btn-primary action-scan';
-  }
+  scanFillButton.className = 'btn btn-primary action-confirm';
 }
 
 function syncBusyUi(): void {
   const hasProfiles = cachedProfiles.length > 0;
   const selectedProfileId = profileSelect.value;
-  const hasPlanItems = sessionHasMappingRows();
   const atLimit = cachedProfiles.length >= MAX_PROFILES;
 
-  confirmButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
+  scanFillButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
   undoButton.disabled = isBusy;
-  rescanButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
   profileSelect.disabled = isBusy;
   setDefaultCheckbox.disabled = isBusy || !selectedProfileId;
   createProfileButton.disabled = isBusy || atLimit;
@@ -1092,6 +1081,34 @@ async function runRescanFlow(profileId: string): Promise<void> {
   }
 }
 
+/**
+ * 一键流程：先扫描（让用户看到命中清单），紧接着直接写入。
+ * 合并了原来的「扫描本页」与「确认写入」两个按钮，中途不再要求二次确认。
+ */
+async function runScanAndFillFlow(profileId: string): Promise<void> {
+  stopButton.hidden = false;
+  try {
+    showScanProgress(4, '正在扫描页面，准备一面扫一面写。');
+    const scanResult = await scanActivePage(createRequestId(), (progress) => {
+      showScanProgress(Math.min(40, progress.percent), progress.message);
+    });
+    if (scanResult.fields.length === 0) {
+      await clearPendingSession();
+      renderMappingTable();
+      showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
+      showError(
+        scanResult.notice ??
+          '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再试一次。',
+      );
+      return;
+    }
+    showScanProgress(50, `发现 ${scanResult.fields.length} 个输入框，开始写入…`);
+    await runConfirmWrite();
+  } finally {
+    stopButton.hidden = true;
+  }
+}
+
 async function withBusy(action: () => Promise<void>): Promise<void> {
   if (isBusy) {
     return;
@@ -1218,10 +1235,15 @@ function bindEvents(): void {
     fillDoneDialog.close();
   });
 
-  confirmButton.addEventListener('click', () => {
+  // 一键「扫描并写入」：先扫描（仅为展示命中清单），紧接着直接写入，中途不再要求二次确认
+  scanFillButton.addEventListener('click', () => {
     void withBusy(async () => {
-      showStatus('正在确认写入…', 'info');
-      await runConfirmWrite();
+      const selectedProfileId = profileSelect.value;
+      if (!selectedProfileId) {
+        showError('请先选择档案');
+        return;
+      }
+      await runScanAndFillFlow(selectedProfileId);
     });
   });
 
@@ -1229,17 +1251,6 @@ function bindEvents(): void {
     void withBusy(async () => {
       showStatus('正在撤销本轮填写…', 'info');
       await runUndoFlow();
-    });
-  });
-
-  rescanButton.addEventListener('click', () => {
-    void withBusy(async () => {
-      const selectedProfileId = profileSelect.value;
-      if (!selectedProfileId) {
-        showError('请先选择档案');
-        return;
-      }
-      await runRescanFlow(selectedProfileId);
     });
   });
 

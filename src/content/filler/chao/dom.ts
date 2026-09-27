@@ -1,0 +1,469 @@
+// @ts-nocheck
+/**
+ * DOM 与控件策略层。
+ * 职责：标签提取、控件类型判定、写入、**写入后回读校验**。
+ * 关键原则：
+ *  1) 只读/点选控件一律先点开读选项，再比对别名，绝不把长文本/证件号硬塞进去；
+ *  2) 每次写入后必须回读页面实际值，读不回目标值就判失败——这样「控件静默拒绝」会进漏填表，而不是假装成功；
+ *  3) 全工程「读控件值 / 判断是否为空」只走 readControlText / isControlEmpty 两个函数，
+ *     避免出现「扫描看它是空的、行内匹配说它已有值」这类自相矛盾（历史上年/月下拉永远填不进去就是这个原因）。
+ */
+import { normalizeDate, optionMatchAliases } from './rules';
+import { chaoDebug } from './debug';
+
+/** 面板 id：排除扩展自身 DOM，避免扫到自己画的浮层 */
+export const PANEL_ID = 'resume-autofill-panel';
+export const AUTOFILL_FILL_CLASS = 'raf-autofill-filled';
+export const AUTOFILL_MISS_CLASS = 'raf-autofill-missed';
+
+export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 控件类型：决定用哪套写入策略 */
+export const CONTROL = {
+  nativeSelect: 'native-select',
+  optionWidget: 'option-widget',
+  dateInput: 'date-input',
+  contentEditable: 'contenteditable',
+  text: 'text',
+};
+
+/** 字段是否可见可交互：不可见字段一律不扫，防止对着隐藏模板写值 */
+export function isPageFieldVisible(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+/**
+ * 标签缓存。
+ * 为什么必须缓存：fieldLabelBlob 会读「前序兄弟节点的文本」，而兄弟节点里可能正是刚填好的值
+ * （例如「政治面貌」填成共青团员后，紧邻的「手机号」输入框会把「政治面貌共青团员」当成自己的标签，
+ *  于是手机号被写成共青团员）。缓存「首次扫描时」的标签即可彻底避免这种自我污染。
+ */
+let labelCacheGeneration = 0;
+const labelCache = new Map();
+
+/** 每次新的填写流程开始时调用，让标签重新计算 */
+export function resetLabelCache() {
+  labelCacheGeneration += 1;
+  if (labelCache.size > 4000) labelCache.clear();
+}
+
+/**
+ * 提取字段上下文文案（label 的主要来源）。
+ * 顺序按可信度：aria → label[for] → 包裹 label → placeholder → 前序兄弟文本 → 就近祖先里的 label → name/id 兜底。
+ */
+export function fieldLabelBlob(el) {
+  const cached = labelCache.get(el);
+  if (cached && cached.generation === labelCacheGeneration) return cached.blob;
+  const blob = computeFieldLabelBlob(el);
+  labelCache.set(el, { generation: labelCacheGeneration, blob });
+  return blob;
+}
+
+/** 真正计算标签（只在缓存未命中时执行） */
+function computeFieldLabelBlob(el) {
+  const parts = [];
+  const push = (value) => {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text && text.length <= 60) parts.push(text);
+  };
+  push(el.getAttribute('aria-label'));
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) labelledBy.split(/\s+/).forEach((id) => push(document.getElementById(id)?.textContent));
+  if (el.id) {
+    try {
+      push(document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent);
+    } catch {
+      /* 非法 id 忽略 */
+    }
+  }
+  push(el.closest('label')?.textContent);
+  push(el.getAttribute('placeholder'));
+  push(el.getAttribute('data-placeholder'));
+  // 前序兄弟文本：必须含中文或字母且长度 ≥2；
+  // 并且必须「自己不含任何控件（含 role=combobox 组件）」——否则会把隔壁字段的标签甚至已填值当成本字段标签
+  const pushPrevText = (node) => {
+    if (!node || isEditable(node) || node.querySelector('input, textarea, select, [contenteditable], [role="combobox"]')) return;
+    const text = node.textContent.replace(/\s+/g, '');
+    if (text.length >= 2 && text.length <= 60 && /[\u4e00-\u9fa5a-zA-Z]/.test(text)) push(node.textContent);
+  };
+  pushPrevText(el.previousElementSibling);
+  // 组件库常见版式：label 与输入框是兄弟分支，向上找就近祖先里的 label 文字
+  let host = el.parentElement;
+  for (let depth = 0; host && depth < 4; depth += 1, host = host.parentElement) {
+    const before = parts.length;
+    let labelEl = host.querySelector(':scope > label');
+    if (!labelEl && /(form|field|item|group|control|content)/i.test(host.getAttribute('class') || '')) {
+      labelEl = host.querySelector(':scope > [class*="label" i], :scope > div > label');
+    }
+    if (!labelEl) {
+      labelEl = [...host.children].find((child) => !child.contains(el)
+        && !child.querySelector('input, textarea, select, [contenteditable], [role="combobox"]')
+        && (() => {
+          const text = child.textContent.replace(/\s+/g, '');
+          return text.length >= 2 && text.length <= 24 && /[\u4e00-\u9fa5a-zA-Z]/.test(text);
+        })());
+    }
+    if (labelEl && !labelEl.contains(el)) push(labelEl.textContent);
+    pushPrevText(host.previousElementSibling);
+    if (parts.length > before) break;
+  }
+  push(el.getAttribute('name'));
+  push(el.id);
+  return parts.join(' ');
+}
+
+/** 是否可编辑文本控件 */
+export const isEditable = (el) => Boolean(el) && (
+  el.isContentEditable
+  || el.tagName?.toLowerCase() === 'textarea'
+  || (el.tagName?.toLowerCase() === 'input' && !['checkbox', 'radio', 'button', 'submit', 'file'].includes(el.type))
+);
+
+/** 只读且是日期/时间类 → 视为组件触发器（自定义日期控件也是只读的，要纳入扫描） */
+export function isWidgetTrigger(el) {
+  if (el.getAttribute('aria-haspopup')) return true;
+  if (el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i], [class*="cascader" i]')) return true;
+  return /(日期|时间|生日|date|time)/i.test(fieldLabelBlob(el));
+}
+
+/**
+ * 判定控件类型。顺序很重要：原生 select > 组件触发器 > 日期输入 > 可编辑 > 文本。
+ */
+export function classifyControl(el) {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'select') return CONTROL.nativeSelect;
+  if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup')) return CONTROL.optionWidget;
+  if (el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i], [class*="cascader" i]')) {
+    // 组件内部的纯文本输入框仍可按文本写；但只读的只能是点选触发器
+    if (el.readOnly) return CONTROL.optionWidget;
+  }
+  if (el.readOnly) return CONTROL.optionWidget;
+  if (el.isContentEditable) return CONTROL.contentEditable;
+  const type = (el.getAttribute('type') || 'text').toLowerCase();
+  if (['date', 'month', 'datetime-local', 'time'].includes(type)) return CONTROL.dateInput;
+  return CONTROL.text;
+}
+
+/** 是否点选类控件（禁止塞长数字/长文本） */
+export function isOptionControl(field) {
+  return field.control === CONTROL.optionWidget || field.control === CONTROL.nativeSelect;
+}
+
+/**
+ * 占位文案判定。
+ * 组件化下拉的触发器里往往渲染着「年」「请选择」这类占位文字，它不代表已经填过值。
+ * 若不排除，会出现「扫描当它是空、行内匹配却说它已有值」的矛盾（年/月下拉填不进去的根因）。
+ */
+export function isPlaceholderText(rawText) {
+  const text = String(rawText || '').replace(/\s+/g, '').replace(/[*＊:：]/g, '');
+  if (!text) return true;
+  if (/^[年月日]$/.test(text)) return true;
+  if (/^[年月日]{2,4}$/.test(text)) return true;
+  if (/^(请选择|请填写|请输入|选择|暂无|暂无选项|未选择|未填写|尚未填写|无)/.test(text)) return true;
+  if (/^[-—–－_/·.\s]+$/.test(text)) return true;
+  return false;
+}
+
+/**
+ * 读控件当前「显示文本」——全工程唯一读值入口。
+ * select 取选中项文案；组件取自身文本或同容器文本；其余取 value。
+ */
+export function readControlText(el) {
+  if (!el) return '';
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'select') {
+    return String(el.options?.[el.selectedIndex]?.text || el.value || '').trim();
+  }
+  if (el.isContentEditable) return String(el.textContent || '').trim();
+  const ownValue = String(el.value || '').trim();
+  if (ownValue) return ownValue;
+  // 组件触发器：显示值通常渲染在自身或最近的选择器容器里
+  const ownText = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+  if (ownText && !isPlaceholderText(ownText)) return ownText.slice(0, 60);
+  const host = el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i]');
+  if (host) {
+    const hostText = String(host.textContent || '').replace(/\s+/g, ' ').trim();
+    return hostText.slice(0, 60);
+  }
+  return '';
+}
+
+/**
+ * 控件是否为空——全工程唯一判空入口。
+ * 关键：组件触发器的 textContent 若只是占位文案，仍然算空。
+ */
+export function isControlEmpty(el) {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'select') return !(el.value && el.selectedIndex > 0);
+  if (el.isContentEditable) return !String(el.textContent || '').trim();
+  const ownValue = String(el.value || '').trim();
+  if (ownValue) return false;
+  const ownText = String(el.textContent || '').replace(/\s+/g, '').trim();
+  return isPlaceholderText(ownText);
+}
+
+/** 原生方式写值：绕过 React/Vue 的受控 value setter，并派发 input/change */
+export function setNativeValue(el, value) {
+  const proto = Object.getPrototypeOf(el);
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (descriptor?.set) descriptor.set.call(el, value);
+  else el.value = value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** 原生 select：按别名匹配 option 文案 */
+function fillSelectOption(el, value) {
+  const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
+  if (!aliases.length) return false;
+  const options = [...el.options].filter((option) => option.text.trim() || option.value.trim());
+  const lower = (text) => String(text || '').trim().toLowerCase();
+  const hit = options.find((option) => aliases.includes(lower(option.text)) || aliases.includes(lower(option.value)))
+    || options.find((option) => {
+      const text = lower(option.text);
+      return text.length >= 1 && aliases.some((alias) => text.includes(alias) || alias.includes(text));
+    });
+  if (!hit) return false;
+  el.value = hit.value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+/** 文本/日期/可编辑控件写入（不含点选控件） */
+function fillPlainField(el, value) {
+  const text = String(value || '').trim();
+  if (!text || text === '至今') return false;
+  if (el.isContentEditable) {
+    el.focus();
+    document.execCommand('selectAll', false, null);
+    document.execCommand('insertText', false, text);
+    return true;
+  }
+  const type = (el.getAttribute('type') || 'text').toLowerCase();
+  let output = text;
+  if (type === 'date') {
+    const date = normalizeDate(text);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+    output = date;
+  }
+  if (type === 'month') {
+    const date = normalizeDate(text);
+    if (!/^\d{4}-\d{2}/.test(date)) return false;
+    output = date.slice(0, 7);
+  }
+  setNativeValue(el, output);
+  // 日期被控件改写成不含年份的碎片 → 清空判失败（宁缺勿错）
+  if (/^\d{4}/.test(output) && !String(el.value || '').includes(output.slice(0, 4))) {
+    setNativeValue(el, '');
+    return false;
+  }
+  return true;
+}
+
+/** 自定义日期组件：点开 → 去掉 readonly → 写入 → Enter/blur 提交 → 还原 readonly */
+async function fillWidgetDate(el, value) {
+  const date = normalizeDate(value);
+  el.scrollIntoView({ block: 'center' });
+  el.click();
+  await sleep(150);
+  const wasReadOnly = el.readOnly;
+  if (wasReadOnly) el.removeAttribute('readonly');
+  el.focus();
+  setNativeValue(el, date);
+  ['keydown', 'keypress', 'keyup'].forEach((type) => el.dispatchEvent(
+    new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }),
+  ));
+  el.blur();
+  await sleep(100);
+  if (wasReadOnly) el.setAttribute('readonly', '');
+  return /(19|20)\d{2}/.test(String(el.value || ''));
+}
+
+/** 弹层里收集可见选项（下拉/树选择器通用） */
+function collectPopupOptions() {
+  const containers = [...document.querySelectorAll(
+    '[role="listbox"], [role="menu"], [class*="dropdown" i], [class*="select" i], [class*="picker" i], [class*="popper" i], [class*="cascader" i]',
+  )].filter((node) => node instanceof HTMLElement && !node.closest(`#${PANEL_ID}`) && isPageFieldVisible(node));
+  const options = [];
+  containers.forEach((container) => {
+    container.querySelectorAll('[role="option"], li, [class*="option" i], [class*="item" i]')
+      .forEach((option) => options.push(option));
+  });
+  if (!options.length) options.push(...document.querySelectorAll('[role="option"]'));
+  const seen = new Set();
+  return options.filter((option) => {
+    if (!(option instanceof HTMLElement) || seen.has(option) || option.closest(`#${PANEL_ID}`)) return false;
+    seen.add(option);
+    if (!isPageFieldVisible(option)) return false;
+    const text = option.textContent.replace(/\s+/g, ' ').trim();
+    // 政治面貌等文案可达 40+ 字；过严会漏选项，导致「暂无选项」后乱填
+    return text && text.length <= 48 && option.children.length <= 4;
+  });
+}
+
+/** 点选控件：点开 → 读选项 → 别名比对 → 点击 → 回读确认 */
+async function fillWidgetByOption(el, value) {
+  const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
+  if (!aliases.length) return false;
+  el.scrollIntoView({ block: 'center' });
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  el.click();
+  await sleep(350);
+  const options = collectPopupOptions();
+  const optionTexts = options.map((option) => option.textContent.replace(/\s+/g, ' ').trim());
+  chaoDebug.info(`打开下拉，读到 ${optionTexts.length} 个选项`, {
+    目标: value,
+    别名: aliases,
+    选项: optionTexts.slice(0, 12),
+  });
+  const textOf = (option) => option.textContent.replace(/\s+/g, ' ').trim().toLowerCase();
+  const hit = options.find((option) => aliases.includes(textOf(option)))
+    || options.find((option) => {
+      const text = textOf(option);
+      return text.length >= 1 && aliases.some((alias) => text === alias || text.includes(alias) || alias.includes(text));
+    });
+  if (hit) {
+    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    hit.click();
+    await sleep(150);
+    return true;
+  }
+  // 没命中：Esc 关闭弹层，避免弹层挡住后续字段
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+  document.body.click();
+  await sleep(80);
+  return false;
+}
+
+/** 读控件当前「可读值」：用于写入后的回读校验（统一走 readControlText） */
+export function readFieldValue(field) {
+  return readControlText(field?.el);
+}
+
+/** 回读是否达标：整串包含、别名包含、或年份一致（日期控件常只回显年月） */
+function valueLooksWritten(field, intended) {
+  const actual = readFieldValue(field).toLowerCase();
+  if (!actual) return false;
+  const want = String(intended || '').trim().toLowerCase();
+  if (!want) return false;
+  if (actual.includes(want) || want.includes(actual)) return true;
+  if (optionMatchAliases(intended).some((alias) => actual.includes(alias.toLowerCase()))) return true;
+  const yearMatch = want.match(/(?:19|20)\d{2}/);
+  if (yearMatch && actual.includes(yearMatch[0])) return true;
+  return false;
+}
+
+/**
+ * 统一写入入口：按控件类型选策略，写完后回读校验。
+ * 全程输出到 F12：选了哪条策略、控件拒绝还是回读不一致，都能看到。
+ * @returns {{ ok: boolean, reason: string }}
+ */
+export async function writeField(field, intendedValue) {
+  const value = String(intendedValue || '').trim();
+  if (!value) return { ok: false, reason: '档案为空' };
+  if (value === '至今') return { ok: false, reason: '「至今」需勾选复选框，跳过文本写入' };
+  // 长数字（证件号/手机号）绝不进点选控件
+  if (/^\d{6,}$/.test(value) && isOptionControl(field)) {
+    chaoDebug.skip(`「${field.blob}」`, '长数字禁止写进点选控件');
+    return { ok: false, reason: '数字不能写进点选控件' };
+  }
+  const isDateLike = /^\d{4}-\d{2}/.test(normalizeDate(value));
+
+  const started = Date.now();
+  let wrote = false;
+  let strategy = '文本输入';
+  if (field.control === CONTROL.nativeSelect) {
+    strategy = '原生 select 选项比对';
+    wrote = fillSelectOption(field.el, value);
+  } else if (field.control === CONTROL.optionWidget) {
+    if (isDateLike && field.el.tagName.toLowerCase() === 'input') {
+      strategy = '组件日期（点开写入）';
+      wrote = await fillWidgetDate(field.el, value);
+    } else {
+      strategy = '组件选项（点开比对）';
+      wrote = await fillWidgetByOption(field.el, value);
+    }
+  } else {
+    wrote = fillPlainField(field.el, value);
+  }
+
+  const actual = readControlText(field.el);
+  if (!wrote) {
+    chaoDebug.value(field.blob, value, actual, Date.now() - started, { 策略: strategy, 结果: '控件拒绝' });
+    return { ok: false, reason: '控件拒绝写入' };
+  }
+  const verified = valueLooksWritten(field, value);
+  chaoDebug.value(field.blob, value, actual, Date.now() - started, {
+    策略: strategy,
+    结果: verified ? '回读一致' : '回读不一致',
+  });
+  if (!verified) return { ok: false, reason: '写入后回读不一致' };
+  return { ok: true, reason: '' };
+}
+
+/** 在某个块内勾选「至今」之类的复选框（结束时间为空时用） */
+export function tryCheckCurrentInBlock(blockEl) {
+  if (!blockEl) return false;
+  const labels = [...blockEl.querySelectorAll('label, [class*="checkbox" i], [class*="radio" i], span')];
+  const target = labels.find((node) => /^(至今|现在|目前)$/.test(String(node.textContent || '').replace(/\s+/g, '')));
+  if (!target) return false;
+  const input = target.querySelector('input[type="checkbox"], input[type="radio"]')
+    || (target.previousElementSibling instanceof HTMLInputElement ? target.previousElementSibling : null);
+  if (input instanceof HTMLInputElement && !input.checked) {
+    input.click();
+    return true;
+  }
+  if (!input) {
+    target.click();
+    return true;
+  }
+  return false;
+}
+
+/** 注入高亮样式：绿=已写，橙=漏填 */
+export function ensureHighlightStyles() {
+  if (document.getElementById('tangtou-chao-autofill-style')) return;
+  const style = document.createElement('style');
+  style.id = 'tangtou-chao-autofill-style';
+  style.textContent = `
+    .${AUTOFILL_FILL_CLASS} { outline: 2px solid #22c55e !important; outline-offset: 1px; }
+    .${AUTOFILL_MISS_CLASS} { outline: 2px solid #f59e0b !important; outline-offset: 1px; }
+  `;
+  document.documentElement.appendChild(style);
+}
+
+/** 清掉上一轮的高亮，避免新旧结果混在一起 */
+export function clearAutofillHighlights() {
+  document.querySelectorAll(`.${AUTOFILL_FILL_CLASS}, .${AUTOFILL_MISS_CLASS}`)
+    .forEach((el) => el.classList.remove(AUTOFILL_FILL_CLASS, AUTOFILL_MISS_CLASS));
+}
+
+/** 页面常驻进度条：长流程必须让用户看到「还在跑」 */
+export function toastProgress(initialMessage) {
+  let tip = document.getElementById('tangtou-chao-progress');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'tangtou-chao-progress';
+    tip.style.cssText = 'position:fixed;z-index:2147483646;left:50%;top:16px;transform:translateX(-50%);'
+      + 'padding:10px 16px;border-radius:8px;background:#111;color:#fff;font:13px/1.4 sans-serif;'
+      + 'box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:90vw;';
+    document.body.appendChild(tip);
+  }
+  tip.textContent = initialMessage;
+  return {
+    update(nextMessage) {
+      if (tip) tip.textContent = nextMessage;
+    },
+    done(finalMessage) {
+      if (!tip) return;
+      tip.textContent = finalMessage;
+      setTimeout(() => tip?.remove(), 2200);
+    },
+  };
+}
