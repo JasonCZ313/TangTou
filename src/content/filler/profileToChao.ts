@@ -108,6 +108,12 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
     mainCourses: (topEducation?.courses || '').trim(),
     nativePlace: (basic.nativePlace || '').trim(),
     hukouLocation: (basic.hukouLocation || '').trim(),
+    // 省市结构化：网申的「户籍/现居」多是省、市两级级联下拉，必须分别给值
+    hukouProvince: (basic.hukouLocationRegion?.provinceName || '').trim(),
+    hukouCity: (basic.hukouLocationRegion?.cityName || '').trim(),
+    liveProvince: (basic.currentCityRegion?.provinceName || '').trim(),
+    liveCity: (basic.currentCityRegion?.cityName || '').trim(),
+    expectedProvince: (profile.jobIntent?.expectedCitiesRegions?.[0]?.provinceName || '').trim(),
     politicalStatus: politicalStatusForFill(basic.politicalStatus || ''),
     address: (basic.currentAddress || '').trim(),
     jobIntent: (profile.jobIntent?.targetRole || profile.jobIntent?.jobType || '').trim(),
@@ -128,6 +134,8 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       end: endOf(item.endDate, item.isCurrent),
       gpa: (item.gpa || '').trim(),
       courses: restoreListLineBreaks((item.courses || '').trim()),
+      city: (item.city || '').trim(),
+      schoolType: (item.educationType || '').trim(),
       desc: restoreListLineBreaks((item.description || '').trim()),
     })),
     internship: profile.experience.map((item) => ({
@@ -135,6 +143,8 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       role: (item.title || '').trim(),
       start: (item.startDate || '').trim(),
       end: endOf(item.endDate, item.isCurrent),
+      department: (item.department || '').trim(),
+      city: (item.city || '').trim(),
       desc: restoreListLineBreaks(
         (item.responsibilities || item.workContent || item.description || '').trim(),
       ),
@@ -145,6 +155,8 @@ export function profileToChaoEditable(profile: ProfileData): ChaoEditable {
       role: (item.role || item.duty || '').trim(),
       start: (item.startDate || '').trim(),
       end: endOf(item.endDate, item.isCurrent),
+      link: (item.link || '').trim(),
+      techStack: (item.techStack || '').trim(),
       desc: restoreListLineBreaks(
         [item.description, item.content, item.value].filter(Boolean).join('\n').trim(),
       ),

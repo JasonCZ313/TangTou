@@ -130,17 +130,29 @@ export function isWidgetTrigger(el) {
   return /(日期|时间|生日|date|time)/i.test(fieldLabelBlob(el));
 }
 
+/** 是不是「可选择组件」（可输入文本 + 带下拉触发器） */
+function looksLikeSelectWidget(el) {
+  const scope = el.closest(
+    '[class*="select" i], [class*="picker" i], [class*="dropdown" i],'
+    + ' [class*="cascader" i], [class*="autocomplete" i], [class*="combobox" i]',
+  );
+  if (!scope) return false;
+  // 有下拉箭头/后缀图标，或本身就是 combobox，才按点选处理
+  return Boolean(scope.querySelector(
+    '[aria-haspopup], [class*="arrow" i], [class*="suffix" i], [class*="caret" i], [class*="icon" i], [role="combobox"]',
+  ));
+}
+
 /**
  * 判定控件类型。顺序很重要：原生 select > 组件触发器 > 日期输入 > 可编辑 > 文本。
+ * 注意：「可输入 + 带下拉」的组件（请输入就读学校 ⌄）也按点选处理，
+ * 因为直接 setNativeValue 会被组件打回；写入侧还有「点选失败回落文本」的双策略兜底。
  */
 export function classifyControl(el) {
   const tag = el.tagName.toLowerCase();
   if (tag === 'select') return CONTROL.nativeSelect;
   if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup')) return CONTROL.optionWidget;
-  if (el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i], [class*="cascader" i]')) {
-    // 组件内部的纯文本输入框仍可按文本写；但只读的只能是点选触发器
-    if (el.readOnly) return CONTROL.optionWidget;
-  }
+  if (looksLikeSelectWidget(el)) return CONTROL.optionWidget;
   if (el.readOnly) return CONTROL.optionWidget;
   if (el.isContentEditable) return CONTROL.contentEditable;
   const type = (el.getAttribute('type') || 'text').toLowerCase();
@@ -155,22 +167,50 @@ export function isOptionControl(field) {
 
 /**
  * 占位文案判定。
- * 组件化下拉的触发器里往往渲染着「年」「请选择」这类占位文字，它不代表已经填过值。
- * 若不排除，会出现「扫描当它是空、行内匹配却说它已有值」的矛盾（年/月下拉填不进去的根因）。
+ * 组件化下拉的触发器里往往渲染着「年」「请选择」「例：XXXX」这类提示文字，它不代表已经填过值。
+ * 若不排除，会出现「扫描当它是空、回读说它已有值」的矛盾（年/月下拉填不进、示例文案被跳过都由此而来）。
+ *
+ * 判据用「开头匹配」而不是 includes，避免把真正填好的内容误判成占位：
+ *  1) 裸年/月/日；
+ *  2) 纯符号（下划线、横杠等）；
+ *  3) 中文提示词（请选择/请输入/…）；
+ *  4) 示例词（例/例如/示例/格式/待填/选填…）；
+ *  5) 含冒号的示例（例：XXXX、格式：YYYY-MM）；
+ *  6) 英文提示词（select/choose/please/search…）。
  */
 export function isPlaceholderText(rawText) {
-  const text = String(rawText || '').replace(/\s+/g, '').replace(/[*＊:：]/g, '');
+  const text = String(rawText || '')
+    .replace(/\s+/g, '')
+    .replace(/^[*＊]+/, '');
   if (!text) return true;
-  if (/^[年月日]$/.test(text)) return true;
-  if (/^[年月日]{2,4}$/.test(text)) return true;
-  if (/^(请选择|请填写|请输入|选择|暂无|暂无选项|未选择|未填写|尚未填写|无)/.test(text)) return true;
-  if (/^[-—–－_/·.\s]+$/.test(text)) return true;
+  if (/^[年月日]{1,4}$/.test(text)) return true;
+  if (/^[-—–－_＿/·.、]+$/.test(text)) return true;
+  if (/^(请选择|请填写|请输入|请勾选|请选|选择|暂无|暂无选项|未选择|未填写|尚未填写|无$)/.test(text)) return true;
+  if (/^(例|例如|示例|如|比如|待填|待填写|选填|格式|参考|输入|填写)/.test(text)) return true;
+  if (/[:：]/.test(text) && /(例|如|格式|参考|x{2,}|X{2,})/.test(text)) return true;
+  if (/^(select|choose|please|search|enter|type|pick)/i.test(text)) return true;
   return false;
 }
 
 /**
+ * 组件「已选值」节点的选择器白名单。
+ * 只在这些明确的节点上取文本，绝不读整个容器——
+ * 否则空输入框会读到容器里的字段名（class 常含 select），被误判成「已经有值」。
+ */
+const SELECTED_VALUE_SELECTOR = [
+  '.el-select__selected',
+  '.el-select__placeholder + span',
+  '.ant-select-selection-item',
+  '.van-field__control',
+  '[class*="selection-item" i]',
+  '[class*="selected-value" i]',
+  '[class*="select-value" i]',
+  '[class*="selectedLabel" i]',
+].join(', ');
+
+/**
  * 读控件当前「显示文本」——全工程唯一读值入口。
- * select 取选中项文案；组件取自身文本或同容器文本；其余取 value。
+ * select 取选中项文案；组件只认自身文本或「已选值节点」，其余取 value。
  */
 export function readControlText(el) {
   if (!el) return '';
@@ -181,15 +221,13 @@ export function readControlText(el) {
   if (el.isContentEditable) return String(el.textContent || '').trim();
   const ownValue = String(el.value || '').trim();
   if (ownValue) return ownValue;
-  // 组件触发器：显示值通常渲染在自身或最近的选择器容器里
   const ownText = String(el.textContent || '').replace(/\s+/g, ' ').trim();
   if (ownText && !isPlaceholderText(ownText)) return ownText.slice(0, 60);
-  const host = el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i]');
-  if (host) {
-    const hostText = String(host.textContent || '').replace(/\s+/g, ' ').trim();
-    return hostText.slice(0, 60);
-  }
-  return '';
+  // 组件把选中值渲染在专门的节点里时才回读；读不到就当作空
+  const scope = el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i]');
+  const selectedNode = scope?.querySelector(SELECTED_VALUE_SELECTOR);
+  const selectedText = String(selectedNode?.textContent || '').replace(/\s+/g, ' ').trim();
+  return selectedText && !isPlaceholderText(selectedText) ? selectedText.slice(0, 60) : '';
 }
 
 /**
@@ -285,9 +323,14 @@ async function fillWidgetDate(el, value) {
   return /(19|20)\d{2}/.test(String(el.value || ''));
 }
 
-/** 弹层里收集可见选项（下拉/树选择器通用） */
-function collectPopupOptions() {
-  const containers = [...document.querySelectorAll(
+/**
+ * 弹层里收集可见选项（下拉/树选择器通用）。
+ * 只收「选项」语义的节点：role=option，或弹层内的 li / option 类节点。
+ * 阈值对齐参考实现：文本 ≤32 字（政治面貌最长「中国共产党预备党员」9 字，32 足够）、子元素 ≤3。
+ */
+function collectPopupOptions(root) {
+  const scope = root || document;
+  const containers = [...scope.querySelectorAll(
     '[role="listbox"], [role="menu"], [class*="dropdown" i], [class*="select" i], [class*="picker" i], [class*="popper" i], [class*="cascader" i]',
   )].filter((node) => node instanceof HTMLElement && !node.closest(`#${PANEL_ID}`) && isPageFieldVisible(node));
   const options = [];
@@ -295,16 +338,31 @@ function collectPopupOptions() {
     container.querySelectorAll('[role="option"], li, [class*="option" i], [class*="item" i]')
       .forEach((option) => options.push(option));
   });
-  if (!options.length) options.push(...document.querySelectorAll('[role="option"]'));
+  if (!options.length) options.push(...scope.querySelectorAll('[role="option"]'));
   const seen = new Set();
   return options.filter((option) => {
     if (!(option instanceof HTMLElement) || seen.has(option) || option.closest(`#${PANEL_ID}`)) return false;
     seen.add(option);
     if (!isPageFieldVisible(option)) return false;
     const text = option.textContent.replace(/\s+/g, ' ').trim();
-    // 政治面貌等文案可达 40+ 字；过严会漏选项，导致「暂无选项」后乱填
-    return text && text.length <= 48 && option.children.length <= 4;
+    return Boolean(text) && text.length <= 32 && option.children.length <= 3;
   });
+}
+
+/** 用 aria-controls / aria-owns 精确定位本字段的弹层；取不到返回 null */
+function findOwnPopup(el) {
+  const ids = [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
+    .filter(Boolean)
+    .flatMap((value) => String(value).split(/\s+/));
+  for (const id of ids) {
+    try {
+      const node = document.getElementById(id);
+      if (node instanceof HTMLElement && isPageFieldVisible(node)) return node;
+    } catch {
+      /* 非法 id 忽略 */
+    }
+  }
+  return null;
 }
 
 /** 点选控件：点开 → 读选项 → 别名比对 → 点击 → 回读确认 */
@@ -312,10 +370,15 @@ async function fillWidgetByOption(el, value) {
   const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
   if (!aliases.length) return false;
   el.scrollIntoView({ block: 'center' });
+  // 点击前先记录「已经可见的选项」，点击后新增的那些才属于本次打开的弹层
+  const beforeOptions = new Set(collectPopupOptions());
   el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
   el.click();
   await sleep(350);
-  const options = collectPopupOptions();
+  const ownPopup = findOwnPopup(el);
+  const allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
+  const freshOptions = allOptions.filter((option) => !beforeOptions.has(option));
+  const options = ownPopup || !freshOptions.length ? allOptions : freshOptions;
   const optionTexts = options.map((option) => option.textContent.replace(/\s+/g, ' ').trim());
   chaoDebug.info(`打开下拉，读到 ${optionTexts.length} 个选项`, {
     目标: value,
@@ -388,6 +451,11 @@ export async function writeField(field, intendedValue) {
     } else {
       strategy = '组件选项（点开比对）';
       wrote = await fillWidgetByOption(field.el, value);
+      // 双策略兜底：点选没命中且是「可输入的组件」时，回落成文本输入
+      if (!wrote && field.el.tagName.toLowerCase() === 'input' && !field.el.readOnly && !field.el.isContentEditable) {
+        strategy = '组件选项未命中 → 回落文本输入';
+        wrote = fillPlainField(field.el, value);
+      }
     }
   } else {
     wrote = fillPlainField(field.el, value);

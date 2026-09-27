@@ -48,6 +48,9 @@ export const BASIC_FIELDS = [
   ['school', '学校', 'text'], ['college', '学院', 'text'], ['major', '专业', 'text'], ['degree', '学历', 'text'],
   ['educationStart', '入学时间', 'date'], ['educationEnd', '毕业时间', 'date'], ['mainCourses', '主修课程', 'textarea'],
   ['nativePlace', '籍贯', 'text'], ['hukouLocation', '户籍所在地', 'text'], ['politicalStatus', '政治面貌', 'text'],
+  ['hukouProvince', '户籍所在地省', 'text'], ['hukouCity', '户籍所在地市', 'text'],
+  ['liveProvince', '现居住省', 'text'], ['liveCity', '现居住市', 'text'],
+  ['expectedProvince', '期望工作省', 'text'],
   ['address', '现居地址', 'text'], ['jobIntent', '求职意向', 'text'], ['expectedCity', '期望城市', 'text'],
   ['expectedSalary', '期望薪资', 'text'], ['availableDate', '到岗时间', 'text'],
 ].map(([key, label, type]) => ({ key, label, type }));
@@ -99,7 +102,13 @@ export const AUTOFILL_RULES = [
   { key: 'birthday', words: ['出生日期', '出生年月', '生日', '出生', 'birthday', 'birth', 'date of birth'] },
   { key: 'ethnicity', words: ['民族', 'ethnicity'] },
   { key: 'nativePlace', words: ['籍贯'] },
-  { key: 'hukouLocation', words: ['户籍所在地', '户籍地址', '户口所在地', '户籍'] },
+  // 户籍 / 现居 / 期望 的省市：用 block 互斥，防止「户籍省」被「现居住省」规则抢走
+  { key: 'hukouProvince', words: ['户籍所在地省', '户籍所在省', '户籍省', '户口所在地省', '户口所在省'], block: ['现居', '现居住', '期望', '市'] },
+  { key: 'hukouCity', words: ['户籍所在地市', '户籍所在市', '户籍市', '户口所在地市', '户口所在市'], block: ['现居', '现居住', '期望', '省'] },
+  { key: 'liveProvince', words: ['现居住省', '现居省', '居住省', '现居住地省', '现居住地'], block: ['户籍', '户口', '期望', '市'] },
+  { key: 'liveCity', words: ['现居住市', '现居市', '居住市', '现居住地市'], block: ['户籍', '户口', '期望', '省'] },
+  { key: 'expectedProvince', words: ['期望工作省', '期望省', '意向省'], block: ['户籍', '户口', '现居', '市'] },
+  { key: 'hukouLocation', words: ['户籍所在地', '户籍地址', '户口所在地', '户籍'], block: ['省', '市'] },
   { key: 'politicalStatus', words: ['政治面貌'] },
   { key: 'expectedCity', words: ['期望城市', '意向城市', '工作城市'] },
   { key: 'city', words: ['所在城市', '现居城市', '居住城市', '现居住', '城市', 'city', 'location'], block: ['期望', '意向', '户籍'] },
@@ -142,7 +151,7 @@ export const EXP_RULE_KEYS = Object.keys(EXP_SUB_BY_KEY);
  */
 export const ROW_RULES = {
   education: [
-    { sub: 'org', words: ['学校名称', '毕业院校', '毕业学校', '就读学校', '学校', '院校', 'university', 'school'], block: ['专业'] },
+    { sub: 'org', words: ['学校名称', '毕业院校', '毕业学校', '就读学校', '学校', '院校', 'university', 'school'], block: ['专业', '所在地'] },
     { sub: 'college', words: ['院系', '学院', '所在学院'] },
     { sub: 'major', words: ['所学专业', '专业名称', '专业'], block: ['院系', '学院'] },
     { sub: 'degree', words: ['学历层次', '学历', '学位', '培养层次'] },
@@ -150,6 +159,8 @@ export const ROW_RULES = {
     { sub: 'end', words: ['毕业时间', '毕业日期', '结束时间', '结束日期', '离校时间'] },
     { sub: 'gpa', words: ['gpa', '绩点', '平均分', '平均成绩', '成绩排名', '排名'] },
     { sub: 'courses', words: ['主修课程', '主修', '课程'] },
+    { sub: 'city', words: ['学校所在地', '院校所在地', '学校城市', '学校所在城市', '所在地'], block: ['专业'] },
+    { sub: 'schoolType', words: ['学校类型', '办学类型', '院校类型', '学校性质'] },
     { sub: 'desc', words: ['在校表现', '教育描述', '描述', '说明'] },
   ],
   internship: [
@@ -157,6 +168,8 @@ export const ROW_RULES = {
     { sub: 'role', words: ['职位名称', '岗位名称', '担任职位', '职位', '岗位', '角色', '职务'], block: ['工作职责', '岗位职责', '职责描述', '工作内容', '职责'] },
     { sub: 'start', words: ['开始时间', '起始时间', '开始日期', '入职时间', '实习时间', '任职时间', '起止时间'], block: ['最早可入职', '可入职', '可到岗', '到岗', '最早'] },
     { sub: 'end', words: ['结束时间', '结束日期', '离职时间', '截止时间', '离岗时间'] },
+    { sub: 'department', words: ['所在部门', '部门名称', '部门'] },
+    { sub: 'city', words: ['实习地点', '工作地点', '工作城市'] },
     { sub: 'desc', words: ['工作描述', '工作内容', '岗位职责', '职责描述', '工作职责', '实习内容', '实习描述', '职责', '描述'] },
   ],
   work: [
@@ -164,6 +177,8 @@ export const ROW_RULES = {
     { sub: 'role', words: ['职位名称', '岗位名称', '担任职位', '职位', '岗位', '角色', '职务'], block: ['工作职责', '岗位职责', '职责描述', '工作内容', '职责'] },
     { sub: 'start', words: ['开始时间', '起始时间', '开始日期', '入职时间', '工作时间', '任职时间', '起止时间'], block: ['最早可入职', '可入职', '可到岗', '到岗', '最早'] },
     { sub: 'end', words: ['结束时间', '结束日期', '离职时间', '截止时间', '离岗时间'] },
+    { sub: 'department', words: ['所在部门', '部门名称', '部门'] },
+    { sub: 'city', words: ['工作地点', '工作城市'] },
     { sub: 'desc', words: ['工作描述', '工作内容', '岗位职责', '职责描述', '工作职责', '职责', '描述'] },
   ],
   project: [
@@ -171,6 +186,8 @@ export const ROW_RULES = {
     { sub: 'role', words: ['担任角色', '项目角色', '担任职位', '项目职务', '角色', '职位', '职责'], block: ['项目描述', '项目内容', '项目简介'] },
     { sub: 'start', words: ['开始时间', '起始时间', '开始日期', '项目时间', '起止时间'], block: ['最早可入职', '可入职', '可到岗', '到岗', '最早'] },
     { sub: 'end', words: ['结束时间', '结束日期', '截止时间'] },
+    { sub: 'link', words: ['项目链接', '项目地址', '仓库地址', '项目网址', 'pr链接'] },
+    { sub: 'techStack', words: ['技术栈', '技术关键词', '使用技术', '涉及技术'] },
     { sub: 'desc', words: ['项目描述', '项目内容', '项目简介', '项目职责', '项目介绍', '描述'] },
   ],
   campus: [
@@ -481,6 +498,12 @@ export function rowValue(entry, sub) {
     case 'college': return pick('college');
     case 'issuer': return pick('issuer', 'organization');
     case 'number': return pick('number', 'certificate');
+    // 分区专属补充字段（学校所在地 / 部门 / 工作城市 / 项目链接 / 技术栈 / 学校类型）
+    case 'city': return pick('city');
+    case 'department': return pick('department');
+    case 'schoolType': return pick('schoolType', 'educationType');
+    case 'link': return pick('link');
+    case 'techStack': return pick('techStack');
     default: return pick(sub);
   }
 }

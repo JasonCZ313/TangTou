@@ -111,7 +111,11 @@ function wireInteractions(window) {
       const template = doc.querySelector(button.getAttribute('data-add-clone'));
       if (!template) return;
       const clone = template.cloneNode(true);
-      clone.querySelectorAll('input').forEach((input) => { input.value = ''; });
+      clone.querySelectorAll('input').forEach((input) => {
+        input.value = '';
+        if (input.type === 'checkbox' || input.type === 'radio') input.checked = false;
+      });
+      clone.querySelectorAll('textarea').forEach((area) => { area.textContent = ''; area.value = ''; });
       clone.querySelectorAll('select').forEach((select) => { select.selectedIndex = 0; });
       clone.querySelectorAll('[role="combobox"]').forEach((node) => {
         node.textContent = '';
@@ -252,6 +256,12 @@ function runExpectations(window, expectations) {
   const doc = window.document;
   const problems = [];
   expectations.forEach((expect) => {
+    // 自定义断言：拿到 window 自己判断（用于统计点击次数这类非 DOM 值）
+    if (typeof expect.check === 'function') {
+      const message = expect.check(window);
+      if (message) problems.push(message);
+      return;
+    }
     const nodes = [...doc.querySelectorAll(expect.sel)];
     if (typeof expect.count === 'number') {
       if (nodes.length !== expect.count) {
@@ -762,6 +772,164 @@ const CASES = [
       { sel: '#projSec .row:nth-child(8) input[type="text"]', eq: '项目8号' },
       { sel: '#campusSec .row:nth-child(3) input[type="text"]', eq: '志愿者协会' },
       { sel: '#awardSec .row:nth-child(1) input[type="text"]', eq: '国家奖学金' },
+    ],
+  },
+  /* ===== 以下 8 条对应本轮修复（31-38），每条都锁定一个曾经出错的场景 ===== */
+  {
+    name: '31 前段全失败不阻断：8 个匹配不上的下拉 + 后面项目区仍要填上',
+    html: page(
+      section('个人信息',
+        selectField('户籍所在地省', ['北京', '上海'], 'q1')
+        + selectField('户籍所在地市', ['北京市', '上海市'], 'q2')
+        + selectField('现居住省', ['北京', '上海'], 'q3')
+        + selectField('现居住市', ['北京市', '上海市'], 'q4')
+        + selectField('最高学历', ['本科', '硕士'], 'q5')
+        + selectField('专业成绩排名', ['前5%', '前20%'], 'q6')
+        + selectField('在读异常情况', ['是', '否'], 'q7')
+        + selectField('了解渠道', ['校招', '内推'], 'q8'), null)
+      + '<div class="section" id="projSec"><div class="section-title">项目经验</div><div class="rows">'
+      + projectRow('p') + '</div><button data-add-clone="#projSec .row">+ 添加</button></div>',
+    ),
+    editable: () => makeEditable({
+      rows: { project: [{ title: '甲项目', role: '负责人', start: '2024-03', end: '2024-09', desc: '描述' }] },
+    }),
+    expect: [
+      { sel: '[data-k="p-title"]', eq: '甲项目' },
+      { sel: '[data-k="p-role"]', eq: '负责人' },
+    ],
+  },
+  {
+    name: '32 示例文案「例：XXXX」不算已填，要真正写进去',
+    html: page('<div class="section" id="projSec"><div class="section-title">项目经验</div><div class="rows">'
+      + '<div class="row"><div class="field"><label>项目名称</label>'
+      + '<div class="picker"><div role="combobox" id="fakeCombo" data-options="甲项目|乙项目">例：XXXX</div></div></div>'
+      + '<div class="field"><label>职责</label><input type="text" placeholder="如：前端负责人" data-k="r"></div>'
+      + '</div></div></div>'),
+    editable: () => makeEditable({ rows: { project: [{ title: '甲项目', role: '前端负责人' }] } }),
+    expect: [
+      { sel: '#fakeCombo', eq: '甲项目' },
+      { sel: '[data-k="r"]', eq: '前端负责人' },
+    ],
+  },
+  {
+    name: '33 空输入框包在 class 含 select 的容器里：不能当成已填',
+    html: page('<div class="section" id="projSec"><div class="section-title">项目经验</div><div class="rows">'
+      + '<div class="row form-select"><div class="field el-select"><label>项目名称</label>'
+      + '<input type="text" data-k="t1"></div></div>'
+      + '<div class="row form-select"><div class="field el-select"><label>项目名称</label>'
+      + '<input type="text" data-k="t2"></div></div>'
+      + '</div></div>'),
+    editable: () => makeEditable({ rows: { project: [{ title: '甲项目' }, { title: '乙项目' }] } }),
+    expect: [
+      { sel: '[data-k="t1"]', eq: '甲项目' },
+      { sel: '[data-k="t2"]', eq: '乙项目' },
+    ],
+  },
+  {
+    name: '34 可输入的下拉组件（请输入就读学校 ⌄）：点选失败要回落文本输入',
+    html: page('<div class="section" id="eduSec"><div class="section-title">教育背景</div><div class="rows">'
+      + '<div class="row"><div class="field el-select"><label>学校名称</label>'
+      + '<input type="text" data-k="school">'
+      + '<i class="el-select__caret"></i></div>'
+      + '<div class="field"><label>专业名称</label><input type="text" data-k="major"></div></div></div></div>'),
+    editable: () => makeEditable({ rows: { education: [{ org: '甲大学', major: '软件工程' }] } }),
+    expect: [
+      { sel: '[data-k="school"]', eq: '甲大学' },
+      { sel: '[data-k="major"]', eq: '软件工程' },
+    ],
+  },
+  {
+    name: '35 户籍/现居 省市四级联：四个下拉都要选中',
+    html: page(section('个人信息',
+      selectField('户籍所在地省', ['北京市', '广东省'], 'hk-province')
+      + selectField('户籍所在地市', ['北京市', '深圳市'], 'hk-city')
+      + selectField('现居住省', ['北京市', '广东省'], 'live-province')
+      + selectField('现居住市', ['北京市', '深圳市'], 'live-city'), null)),
+    editable: () => makeEditable({
+      profile: {
+        hukouProvince: '广东省', hukouCity: '深圳市',
+        liveProvince: '北京市', liveCity: '北京市',
+      },
+    }),
+    expect: [
+      { sel: '[data-k="hk-province"]', eq: '广东省' },
+      { sel: '[data-k="hk-city"]', eq: '深圳市' },
+      { sel: '[data-k="live-province"]', eq: '北京市' },
+      { sel: '[data-k="live-city"]', eq: '北京市' },
+    ],
+  },
+  {
+    name: '36 节奏：加一条 → 扫一次 → 填一条（点击添加的次数不超过档案条数）',
+    html: page('<div class="section" id="projSec"><div class="section-title">项目经验</div><div class="rows">'
+      + projectRow('p') + '</div>'
+      + '<button id="addBtn" data-add-clone="#projSec .row">+ 添加</button></div>'),
+    editable: () => makeEditable({
+      rows: { project: [
+        { title: '项目A' }, { title: '项目B' }, { title: '项目C' }, { title: '项目D' },
+      ] },
+    }),
+    setup: (window) => {
+      // 统计「添加」被点了几次，验证是交错节奏而不是先批量补完
+      window.__addClicks = 0;
+      window.document.getElementById('addBtn').addEventListener('click', () => {
+        window.__addClicks += 1;
+      });
+    },
+    expect: [
+      { sel: '#projSec .row', count: 4 },
+      { sel: '#projSec .row:nth-child(4) input[type="text"]', eq: '项目D' },
+      {
+        check: (window) => (window.__addClicks <= 4
+          ? ''
+          : `「添加」被点了 ${window.__addClicks} 次，超过档案条数 4，说明不是交错节奏`),
+      },
+    ],
+  },
+  {
+    name: '37 跨区安全：项目区的添加键不能被实习区抢走',
+    html: page(
+      '<div class="section" id="projSec"><div class="section-title">项目经验</div><div class="rows">'
+      + projectRow('p') + '</div><button data-add-clone="#projSec .row">+ 添加</button></div>'
+      + '<div class="section" id="intSec"><div class="section-title">实习经历</div><div class="rows">'
+      + `<div class="row">${textField('公司名称', 'i-company')}${textField('职位名称', 'i-role')}</div>`
+      + '</div><button data-add-clone="#intSec .row">+ 添加</button></div>',
+    ),
+    editable: () => makeEditable({
+      rows: {
+        project: [{ title: '项目A' }, { title: '项目B' }],
+        internship: [{ org: '甲公司', role: '开发' }],
+      },
+    }),
+    expect: [
+      { sel: '#projSec .row', count: 2 },
+      { sel: '#intSec .row', count: 1 },
+      { sel: '#projSec .row:nth-child(2) input[type="text"]', eq: '项目B' },
+      { sel: '[data-k="i-company"]', eq: '甲公司' },
+    ],
+  },
+  {
+    name: '38 分区专属字段：学校所在地 / 部门 / 工作城市 / 技术栈',
+    html: page(
+      '<div class="section" id="eduSec"><div class="section-title">教育背景</div><div class="rows">'
+      + `<div class="row">${textField('学校名称', 'e-school')}${textField('学校所在地（城市）', 'e-city')}</div></div></div>`
+      + '<div class="section" id="intSec"><div class="section-title">实习经历</div><div class="rows">'
+      + `<div class="row">${textField('公司名称', 'i-company')}${textField('部门', 'i-dept')}`
+      + `${textField('工作城市', 'i-city')}</div></div></div>`
+      + '<div class="section" id="projSec"><div class="section-title">项目经验</div><div class="rows">'
+      + `<div class="row">${textField('项目名称', 'p-title')}${textField('技术栈', 'p-tech')}</div></div></div>`,
+    ),
+    editable: () => makeEditable({
+      rows: {
+        education: [{ org: '甲大学', city: '北京市' }],
+        internship: [{ org: '乙公司', department: '基础架构部', city: '上海市' }],
+        project: [{ title: '丙项目', techStack: 'TypeScript / React' }],
+      },
+    }),
+    expect: [
+      { sel: '[data-k="e-city"]', eq: '北京市' },
+      { sel: '[data-k="i-dept"]', eq: '基础架构部' },
+      { sel: '[data-k="i-city"]', eq: '上海市' },
+      { sel: '[data-k="p-tech"]', eq: 'TypeScript / React' },
     ],
   },
 ];

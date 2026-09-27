@@ -1,10 +1,13 @@
 import versionRecord from '../../version.json';
 
 /**
- * 界面版本号 = git 标签 + 本地修订。
- * 标签仍是 V1.5.2 时，每次改动把 version.json 的 localRevision 加 1，变成 V1.5.2.1、V1.5.2.2。
- * 若用户推送后的新标签是 V1.6.0，下一次改动把 baseTag 改成 V1.6.0，localRevision 改为 1，即 V1.6.0.1。
- * 与标签完全一致、尚未再改时，localRevision 为 0，显示 V1.5.2.0。
+ * 界面版本号 = git 最近一次提交备注里的版本号 + 本地修订。
+ *
+ * 规则（与仓库 git 备注保持一致）：
+ *  1) git 最近一次提交备注写成「V1.11.0：…」时，baseTag 就跟着改成 V1.11.0；
+ *  2) 该标签之后每做一次改动，把 version.json 的 localRevision 加 1，得到 V1.11.0.1、V1.11.0.2…；
+ *  3) 用户下次提交备注升级为「V1.12.0：…」时，把 baseTag 改成 V1.12.0、localRevision 归 1，即 V1.12.0.1。
+ *  4) 与标签完全一致、尚未再改时，localRevision 为 0，显示 V1.11.0.0。
  */
 export const APP_VERSION_BASE_TAG = versionRecord.baseTag;
 

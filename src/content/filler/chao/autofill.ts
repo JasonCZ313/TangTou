@@ -47,6 +47,7 @@ import {
   isControlEmpty,
   isOptionControl,
   isPageFieldVisible,
+  isPlaceholderText,
   isWidgetTrigger,
   readControlText,
   resetLabelCache,
@@ -80,8 +81,8 @@ const MAX_ADD_STALL = 2;
 const MAX_FIELD_RETRY = 3;
 /** 同一行最多尝试次数（超限才跳过该条档案） */
 const MAX_ROW_RETRY = 3;
-/** 连续多少轮毫无进展就提前结束 */
-const MAX_NO_PROGRESS_ROUNDS = 6;
+/** 连续多少轮「连一个字段都没判定」就提前结束 */
+const MAX_NO_PROGRESS_ROUNDS = 8;
 
 const escapeHtml = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const debugLine = (icon, blob, note) => `${icon} 「${escapeHtml(truncate(blob, 24))}」${note}`;
@@ -373,25 +374,31 @@ function resolveSubForSection(sectionType, sub) {
 /**
  * 把一个分区的空字段解析成 { field, sub, part }。
  * 顺序：裸日期 → 行规则 → 「换个叫法」兜底。
+ * 返回值同时带上 leftovers：这一分区里「匹配不上的字段」原样交回，
+ * 让上层把它们记进漏填表，而不是静默丢弃（否则用户只看到「必填项未填写」却不知道是哪一格）。
  */
 function resolveSectionEntries(sectionType, sectionFields) {
   const rules = ROW_RULES[sectionType] || [];
   const availableSubs = new Set(rules.map((rule) => rule.sub));
   const bareParts = classifyBareDateParts(sectionFields);
   const entries = [];
+  const leftovers = [];
   sectionFields.forEach((field) => {
     const bare = bareParts.get(field.el);
     if (bare) {
       const sub = resolveSubForSection(sectionType, bare.role);
       if (sub) entries.push({ field, sub, part: bare.part });
+      else leftovers.push(field);
       return;
     }
     const sub = matchRowRule(field.blob, rules, availableSubs) || inferSubByKeyword(field.blob, sectionType);
     if (sub && availableSubs.has(sub)) entries.push({ field, sub });
+    else leftovers.push(field);
   });
-  return entries.sort((left, right) => (
+  entries.sort((left, right) => (
     left.field.el.compareDocumentPosition(right.field.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
   ));
+  return { entries, leftovers };
 }
 
 /**
@@ -427,9 +434,20 @@ function clusterWithinUnit(entries) {
 
 /** 分区内行分组：按文档顺序聚类成「一行一组」 */
 function buildSectionGroups(sectionType, sectionFields) {
-  const entries = resolveSectionEntries(sectionType, sectionFields);
+  const { entries } = resolveSectionEntries(sectionType, sectionFields);
   if (!entries.length) return [];
   return clusterWithinUnit(entries);
+}
+
+/**
+ * 行数统计（补行判据用）：
+ * 正常行按「一组一行」计数；匹配不上的字段（leftovers）每个单独算一行，
+ * 这样「新加的行字段匹配不上」时也不会被误判成「点了添加但没增加」（否则会提前放弃补行）。
+ */
+function countSectionRows(sectionType, sectionFields) {
+  const { entries, leftovers } = resolveSectionEntries(sectionType, sectionFields);
+  const groups = entries.length ? clusterWithinUnit(entries) : [];
+  return groups.length + leftovers.length;
 }
 
 /** 一组字段的最近公共祖先 */
@@ -520,16 +538,18 @@ async function fillRowGroup(group, entry, sectionType, ctx) {
     chaoDebug.ok('勾选「至今」', { 分区: sectionType });
   }
 
-  // 同行「写入后才渲染出来」的字段（结束时间、联动下拉）继续用同一段档案补
+  // 同行「写入后才渲染出来」的字段（结束时间、联动下拉）继续用同一段档案补。
+  // 扫描范围取「本行容器」，并额外覆盖「该分区根容器」里新增的字段，避免跨行新控件被漏掉。
   for (let pass = 0; pass < 2; pass += 1) {
     await sleep(240);
-    const scope = commonAncestorOf(group) || container;
+    const anchor = ctx.anchors.find((item) => item.type === sectionType);
+    const scope = commonAncestorOf(group) || anchor?.root || container;
     if (!scope) break;
     const fresh = scanEmptyFields(ctx)
       .filter((field) => scope.contains(field.el))
       .filter((field) => !ctx.done.has(field.el));
     if (!fresh.length) break;
-    const followEntries = resolveSectionEntries(sectionType, fresh);
+    const { entries: followEntries } = resolveSectionEntries(sectionType, fresh);
     if (!followEntries.length) break;
     let wroteThisPass = 0;
     for (const item of followEntries) {
@@ -556,7 +576,11 @@ async function fillRowGroup(group, entry, sectionType, ctx) {
 
 /* ============================ 阶段 F：行数补齐 ============================ */
 
-/** 找分区内的「+ 添加」按钮（只在分区根容器内找，找不到才用分区词兜底） */
+/**
+ * 找分区内的「+ 添加」按钮。
+ * 先按「分区归属」筛（与字段同一套判定），再按分区关键词挑；两者都不满足就不返回。
+ * 这样绝不会把「实习经历」的添加键点给「项目经验」用（跨区 root 也不会误点）。
+ */
 function findAddButton(sectionType, ctx) {
   const cached = ctx.addButtonCache.get(sectionType);
   if (cached && document.contains(cached) && isPageFieldVisible(cached)) return cached;
@@ -567,14 +591,7 @@ function findAddButton(sectionType, ctx) {
     .map((el) => ({ el, text: String(el.textContent || el.value || '').replace(/\s+/g, '') }))
     .filter((item) => item.text && item.text.length <= 16 && /(添加|新增|增加|＋|\+)/.test(item.text));
   if (!candidates.length) return null;
-  if (anchor?.root) {
-    const inside = candidates.find((item) => anchor.root.contains(item.el));
-    if (inside) {
-      ctx.addButtonCache.set(sectionType, inside.el);
-      return inside.el;
-    }
-  }
-  const words = SECTION_ADD_WORDS[sectionType] || [];
+
   const contextOf = (el) => {
     let context = '';
     let node = el;
@@ -584,9 +601,27 @@ function findAddButton(sectionType, ctx) {
     }
     return context.slice(0, 500);
   };
-  const typed = candidates.find((item) => words.some((word) => contextOf(item.el).includes(word)));
-  if (typed) ctx.addButtonCache.set(sectionType, typed.el);
-  return typed?.el || null;
+  const words = SECTION_ADD_WORDS[sectionType] || [];
+
+  // ① 分区归属必须匹配（同一套 resolveSectionType，字段与按钮口径一致）
+  const owned = candidates.filter((item) => resolveSectionType(item.el, ctx) === sectionType);
+  const ownedByWord = owned.find((item) => words.some((word) => contextOf(item.el).includes(word)));
+  const chosen = ownedByWord || owned[0];
+  if (chosen) {
+    ctx.addButtonCache.set(sectionType, chosen.el);
+    return chosen.el;
+  }
+
+  // ② 分区判定不出来时，才退回「分区根容器内 + 分区关键词」；仍不行就返回 null（宁可少加，不加错区）
+  if (anchor?.root) {
+    const insideRoot = candidates.filter((item) => anchor.root.contains(item.el));
+    const insideByWord = insideRoot.find((item) => words.some((word) => contextOf(item.el).includes(word)));
+    if (insideByWord) {
+      ctx.addButtonCache.set(sectionType, insideByWord.el);
+      return insideByWord.el;
+    }
+  }
+  return null;
 }
 
 /** 当前分区里「还能填的空行组」数量 */
@@ -594,7 +629,8 @@ function countEmptyGroups(sectionType, ctx) {
   const sectionFields = scanEmptyFields(ctx).filter((field) => field.sectionType === sectionType);
   if (!sectionFields.length) return { count: 0, groups: [] };
   const groups = buildSectionGroups(sectionType, sectionFields);
-  return { count: groups.length, groups };
+  // 行数判据用 countSectionRows：匹配不上的字段也算一行，避免「新行字段认不出 → 误判没增加」
+  return { count: countSectionRows(sectionType, sectionFields), groups };
 }
 
 /** 站点自己已经填好的行数（排除我们本轮写的），用于初始游标 */
@@ -607,19 +643,64 @@ function countSitePrefilledRows(sectionType, ctx) {
     if (!(el instanceof HTMLElement) || el.closest(`#${PANEL_ID}`)) return;
     if (ctx.done.has(el)) return;
     if (resolveSectionType(el, ctx) !== sectionType) return;
+    const blob = fieldLabelBlob(el);
     const value = readControlText(el);
     if (!value) return;
-    if (matchRowRule(fieldLabelBlob(el), anchorRules, anchorSubs)) count += 1;
+    // 双保险：值等于自己的标签（容器污染）、或仍是占位文案 → 不算已填
+    if (value === blob || isPlaceholderText(value)) return;
+    if (matchRowRule(blob, anchorRules, anchorSubs)) count += 1;
   });
   return count;
 }
 
 /**
- * 先把行数补齐到「档案条数」。
- * 这是本轮最关键的行为改变：不再「填一行→加一行」，而是「检测到 8 条 → 先加到 8 行 → 再逐行填」，
- * 因此不会再出现「加了一堆行却没填」。
+ * 在当前分区补出「一行」。
+ * 节奏：点一次「添加」→ 等待 → 重新扫描确认行数真的 +1。
+ * 这个函数被主循环按需调用，因此整体节奏就是「加一条 → 扫一次 → 填一条」。
+ * @returns {boolean} 是否成功新增一行
  */
-async function ensureRowCapacity(sectionType, ctx) {
+async function growOneRow(sectionType, ctx) {
+  const state = ctx.sectionState.get(sectionType);
+  if (!state) return false;
+  if (state.addRounds >= MAX_ADD_ROUNDS_PER_SECTION) {
+    state.done = true;
+    return false;
+  }
+  const button = findAddButton(sectionType, ctx);
+  if (!button) {
+    ctx.dbg.push(`✋ [${sectionType}] 还需要新行，但没找到该分区的「添加」按钮`);
+    chaoDebug.fail(`[${sectionType}] 找不到「添加」按钮`, {});
+    return false;
+  }
+  const beforeRows = countEmptyGroups(sectionType, ctx).count;
+  ctx.progress.update(`➕ [${sectionType}] 正在新增一行…`);
+  chaoDebug.op(`点击「添加」新增一行`, { 分区: sectionType, 当前行数: beforeRows });
+  button.scrollIntoView({ block: 'center' });
+  button.click();
+  state.addRounds += 1;
+  await sleep(700);
+  const afterRows = countEmptyGroups(sectionType, ctx).count;
+  if (afterRows <= beforeRows) {
+    state.addStall += 1;
+    chaoDebug.fail(`[${sectionType}] 点了「添加」但行数没增加`, { 当前: beforeRows, 次数: state.addStall });
+    if (state.addStall >= MAX_ADD_STALL) {
+      state.done = true;
+      ctx.dbg.push(`✋ [${sectionType}] 连续 ${state.addStall} 次点了「添加」但行数不增加，停止扩块`);
+    }
+    return false;
+  }
+  state.addStall = 0;
+  ctx.progressMark += 1;
+  ctx.dbg.push(`➕ [${sectionType}] 已新增一行（${beforeRows} → ${afterRows}）`);
+  chaoDebug.ok(`[${sectionType}] 新增一行`, { 行数: afterRows });
+  return true;
+}
+
+/**
+ * 分区「行数体检」：只做诊断与游标初始化，不再批量补行。
+ * 批量补行已被主循环里的 growOneRow 取代，节奏改为「加一条 → 扫一次 → 填一条」。
+ */
+function inspectSectionRows(sectionType, ctx) {
   const pool = ctx.entries[sectionType] || [];
   const state = ctx.sectionState.get(sectionType);
   if (!pool.length || !state || state.done) return;
@@ -627,50 +708,13 @@ async function ensureRowCapacity(sectionType, ctx) {
   const hasFields = scanEmptyFields(ctx).some((field) => field.sectionType === sectionType);
   const siteRows = countSitePrefilledRows(sectionType, ctx);
   if (!anchorExists && !hasFields && siteRows === 0) return;
-
-  let { count: emptyRows, groups } = countEmptyGroups(sectionType, ctx);
-  let pageRows = emptyRows + siteRows;
-  let stall = 0;
-  const target = pool.length;
-  ctx.dbg.push(`🧮 [${sectionType}] 档案 ${target} 条 / 页面已有 ${pageRows} 行（站点已填 ${siteRows}）`);
+  const { count: emptyRows, groups } = countEmptyGroups(sectionType, ctx);
+  ctx.dbg.push(`🧮 [${sectionType}] 档案 ${pool.length} 条 / 页面空行 ${emptyRows} / 站点已填 ${siteRows}`);
   const sampleFields = scanEmptyFields(ctx).filter((field) => field.sectionType === sectionType);
   ctx.dbg.push(`   本区空字段 ${sampleFields.length} 个：${sampleFields
     .slice(0, 8).map((field) => truncate(field.blob, 12)).join(' / ') || '（无）'}`);
   ctx.dbg.push(`   行分组：${groups.map((group) => `[${group
     .map((item) => `${item.sub}${item.part ? `.${item.part}` : ''}`).join(' ')}]`).join(' , ') || '（无）'}`);
-  while (pageRows < target && state.addRounds < MAX_ADD_ROUNDS_PER_SECTION) {
-    const button = findAddButton(sectionType, ctx);
-    if (!button) {
-      ctx.dbg.push(`✋ [${sectionType}] 还需 ${target - pageRows} 行，但没找到该分区的「添加」按钮`);
-      chaoDebug.fail(`[${sectionType}] 找不到「添加」按钮`, { 需要行数: target, 当前行数: pageRows });
-      break;
-    }
-    ctx.progress.update(`➕ [${sectionType}] 正在补齐行数：${pageRows}/${target}`);
-    chaoDebug.op(`点击「添加」补齐 [${sectionType}] 行`, { 当前: pageRows, 目标: target });
-    button.scrollIntoView({ block: 'center' });
-    button.click();
-    state.addRounds += 1;
-    await sleep(700);
-    const recounted = countEmptyGroups(sectionType, ctx);
-    emptyRows = recounted.count;
-    groups = recounted.groups;
-    const nextPageRows = emptyRows + siteRows;
-    if (nextPageRows <= pageRows) {
-      stall += 1;
-      chaoDebug.fail(`[${sectionType}] 点了「添加」但行数没增加`, { 当前: pageRows, 次数: stall });
-      if (stall >= MAX_ADD_STALL) {
-        ctx.dbg.push(`✋ [${sectionType}] 连续 ${stall} 次点了「添加」但行数不增加，停止补行`);
-        break;
-      }
-    } else {
-      stall = 0;
-      pageRows = nextPageRows;
-    }
-  }
-  if (pageRows > 0) {
-    ctx.dbg.push(`✅ [${sectionType}] 行数就绪：${pageRows} 行（目标 ${target}）`);
-    chaoDebug.ok(`[${sectionType}] 行数就绪`, { 行数: pageRows, 目标: target });
-  }
 }
 
 /* ============================ 阶段 G：任务调度 ============================ */
@@ -691,16 +735,27 @@ function nextUnconsumedEntry(sectionType, ctx) {
 
 /**
  * 取下一个要处理的「空」。
- * 优先级：① 已动过但仍有空的行（用同一段档案补）→ ② 空行 / 散字段（按文档序）→ ③ 补行。
+ *
+ * 优先级（数字越小越先做，同档按文档序）：
+ *   0 → 补填「已动过但仍有空」的行（用同一段档案继续补）
+ *   1 → 行任务（带锚点的完整空行 / 无锚点分区的空行）
+ *   2 → 散字段（基本信息、教育散字段等）
+ *   3 → grow：点一次「添加」补一行
+ *
+ * 结果：只要有空格就先填；某个分区填不动了才去补行，
+ * 因此天然形成「加一条 → 扫一次 → 填一条 → 再核对」的节奏。
  */
 function pickNextTask(ctx, fields) {
   const candidates = [];
   const notes = [];
 
-  // ① + ② 行任务
+  // 0 / 1 行任务
   ROW_SECTION_TYPES.forEach((sectionType) => {
     const state = ctx.sectionState.get(sectionType);
     if (!state || state.done) return;
+    // 每轮先归零：否则「本轮没有空字段」时会保留上一轮的旧值，
+    // 让「该加行」被误判成「还有空行」，补行永远不会发生（多行分区只填第一条）。
+    state.emptyGroups = 0;
     const sectionFields = fields.filter((field) => field.sectionType === sectionType);
     if (!sectionFields.length) return;
     const groups = buildSectionGroups(sectionType, sectionFields);
@@ -745,9 +800,9 @@ function pickNextTask(ctx, fields) {
     });
   });
 
-  // ② 散字段
+  // 2 散字段
   fields.filter((field) => !ROW_SECTION_TYPES.includes(field.sectionType)).forEach((field) => {
-    candidates.push({ kind: 'basic', field, priority: 1, order: field.el });
+    candidates.push({ kind: 'basic', field, priority: 2, order: field.el });
   });
 
   if (candidates.length) {
@@ -761,7 +816,7 @@ function pickNextTask(ctx, fields) {
   }
   if (notes.length) ctx.dbg.push(`▶ 调度：无候选项（${notes.join('；')}）`);
 
-  // ③ 需要补行（只有该分区一个空组都没有时才补，避免「一边有空格一边狂加行」）
+  // 3 grow：该分区还有未消耗档案、但页面上已经没有空行 → 点一次「添加」
   for (const sectionType of ROW_SECTION_TYPES) {
     const state = ctx.sectionState.get(sectionType);
     if (!state || state.done) continue;
@@ -771,39 +826,18 @@ function pickNextTask(ctx, fields) {
       state.done = true;
       continue;
     }
-    return { kind: 'add', sectionType };
+    // 页面上完全没有这个分区时不要硬点添加（避免在别的分区乱加）
+    const anchorExists = ctx.anchors.some((anchor) => anchor.type === sectionType);
+    const hasFields = fields.some((field) => field.sectionType === sectionType);
+    if (!anchorExists && !hasFields) continue;
+    return { kind: 'grow', sectionType };
   }
   return null;
 }
 
-/** 执行「补行」任务 */
-async function runAddTask(task, ctx) {
-  const { sectionType } = task;
-  const state = ctx.sectionState.get(sectionType);
-  const button = findAddButton(sectionType, ctx);
-  if (!button) {
-    state.done = true;
-    ctx.dbg.push(`✋ [${sectionType}] 还有未填档案，但没找到「添加」按钮`);
-    return;
-  }
-  const before = countEmptyGroups(sectionType, ctx).count;
-  ctx.progress.update(`➕ [${sectionType}] 正在补行…`);
-  button.scrollIntoView({ block: 'center' });
-  button.click();
-  state.addRounds += 1;
-  await sleep(700);
-  const after = countEmptyGroups(sectionType, ctx).count;
-  if (after <= before) {
-    state.addStall += 1;
-    if (state.addStall >= MAX_ADD_STALL) {
-      state.done = true;
-      ctx.dbg.push(`✋ [${sectionType}] 连续补行无效，停止该分区`);
-    }
-    return;
-  }
-  state.addStall = 0;
-  ctx.progressMark += 1;
-  ctx.dbg.push(`➕ [${sectionType}] 已新增一行`);
+/** 执行「补一行」任务：点一次添加，确认行数 +1；具体填写留给下一轮扫描 */
+async function runGrowTask(task, ctx) {
+  await growOneRow(task.sectionType, ctx);
 }
 
 /** 执行「填一个散字段」任务 */
@@ -812,8 +846,11 @@ async function runBasicTask(task, ctx) {
   let matchedKey = matchAutofillKey(field.blob, ctx.availableKeys, ctx.customRules)
     || relaxedMatchAutofillKey(field.blob, ctx.availableKeys);
   if (!matchedKey) {
-    ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
+    // 判定完了就永久跳过：不重复扫、不影响后续字段；同时计作一次「有效推进」，
+    // 否则页面上大量「档案里没有对应项」的字段会把主循环的守卫耗尽而提前结束。
+    ctx.done.add(field.el);
     ctx.unmatched.push(field);
+    ctx.progressMark += 1;
     chaoDebug.skip(`「${field.blob}」`, '没有任何档案字段与它对应');
     return;
   }
@@ -827,7 +864,9 @@ async function runBasicTask(task, ctx) {
   }
   const valueItem = ctx.values.find((item) => item.key === matchedKey);
   if (!valueItem) {
+    ctx.done.add(field.el);
     ctx.unmatched.push(field);
+    ctx.progressMark += 1;
     return;
   }
   const result = await writeField(field, valueItem.value);
@@ -838,7 +877,10 @@ async function runBasicTask(task, ctx) {
     ctx.progressMark += 1;
     ctx.dbg.push(debugLine('✓', field.blob, ` → ${valueItem.label}${isOptionControl(field) ? '（点选）' : ''}`));
   } else {
-    ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
+    const tried = (ctx.attempts.get(field.el) || 0) + 1;
+    ctx.attempts.set(field.el, tried);
+    // 试满上限仍写不进去才彻底跳过，避免同一格反复霸占轮次
+    if (tried >= MAX_FIELD_RETRY) ctx.done.add(field.el);
     ctx.missed.push({ label: field.blob, reason: `${valueItem.label}：${result.reason}` });
     ctx.dbg.push(debugLine('✗', field.blob, ` → ${valueItem.label}（${result.reason}）`));
   }
@@ -1066,12 +1108,11 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
     if (siteRows) state.cursor = Math.min(siteRows, (entries[sectionType] || []).length);
   });
 
-  // 阶段一：先把每个分区的行数补齐到档案条数
-  for (const sectionType of ROW_SECTION_TYPES) {
-    await ensureRowCapacity(sectionType, ctx);
-  }
+  // 阶段一：只做「行数体检 + 诊断」（不再批量补行；补行改由主循环按需一条一条加）
+  ROW_SECTION_TYPES.forEach((sectionType) => inspectSectionRows(sectionType, ctx));
 
-  // 阶段二：一次一个空，按文档序写入
+  // 阶段二：一个空一个空写入。补行是按需的：某个分区填不出空行了，才点一次「添加」，
+  // 因此整体节奏就是「加一条 → 扫一次 → 填一条 → 再核对」。
   chaoDebug.stage('逐格写入');
   let lastProgress = -1;
   for (let step = 0; step < MAX_STEPS; step += 1) {
@@ -1086,7 +1127,7 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
       字段数: fields.length,
     });
     if (task.kind === 'row') await runRowTask(task, ctx);
-    else if (task.kind === 'add') await runAddTask(task, ctx);
+    else if (task.kind === 'grow') await runGrowTask(task, ctx);
     else await runBasicTask(task, ctx);
 
     if (ctx.progressMark === lastProgress) {
@@ -1110,9 +1151,22 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
   verifyFilled(ctx);
   chaoDebug.stageEnd();
 
-  // 汇总：未识别 + 没地方填的档案条目
+  // 汇总：未识别 + 行分区里「匹配不上」的字段 + 没地方填的档案条目
   ctx.unmatched.forEach((field) => {
     ctx.missed.push({ label: field.blob, reason: '没有任何档案字段与它对应（宁缺勿错）' });
+  });
+  // 行分区里认不出的空（例如「学校所在地」「部门」这类没有对应规则的格子）也要报出来，
+  // 否则用户只看到「必填项未填写」，却不知道具体是哪一格漏了。
+  ROW_SECTION_TYPES.forEach((sectionType) => {
+    const sectionFields = scanEmptyFields(ctx).filter((field) => field.sectionType === sectionType);
+    if (!sectionFields.length) return;
+    const { leftovers } = resolveSectionEntries(sectionType, sectionFields);
+    leftovers.forEach((field) => {
+      ctx.missed.push({
+        label: field.blob,
+        reason: `「${sectionType}」里没有匹配到对应档案字段（宁缺勿错，已留空待手填）`,
+      });
+    });
   });
   ROW_SECTION_TYPES.forEach((sectionType) => {
     const pool = ctx.entries[sectionType] || [];
