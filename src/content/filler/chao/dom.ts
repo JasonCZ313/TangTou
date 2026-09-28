@@ -523,25 +523,59 @@ export function clearAutofillHighlights() {
     .forEach((el) => el.classList.remove(AUTOFILL_FILL_CLASS, AUTOFILL_MISS_CLASS));
 }
 
-/** 页面常驻进度条：长流程必须让用户看到「还在跑」 */
+/**
+ * 躺投品牌视觉令牌（与 src/shared/ui/brand.css 同源）。
+ * 内容脚本被注入到第三方页面里，读不到扩展的 CSS 变量，
+ * 所以这里内联同一套色值，保证页面上的进度提示和 Popup / 侧栏是同一套观感。
+ */
+const TOAST_BRAND = {
+  surface: '#ffffff',
+  border: '#99f6e4',
+  text: '#134e4a',
+  secondary: '#14b8a6',
+  primarySoft: '#ccfbf1',
+  font: '"Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+};
+
+/**
+ * 页面常驻进度条：长流程必须让用户看到「还在跑」。
+ * 视觉沿用躺投的品牌语言：白底卡片 + 青绿描边 + 圆角 + 左侧状态圆点 + 青绿光晕。
+ */
 export function toastProgress(initialMessage) {
   let tip = document.getElementById('tangtou-chao-progress');
-  if (!tip) {
+  let label = tip?.querySelector('[data-tt-label]');
+  // 没有节点、或节点是旧结构（没有文字层）时，重建一次
+  if (!tip || !label) {
+    if (tip) tip.remove();
     tip = document.createElement('div');
     tip.id = 'tangtou-chao-progress';
     tip.style.cssText = 'position:fixed;z-index:2147483646;left:50%;top:16px;transform:translateX(-50%);'
-      + 'padding:10px 16px;border-radius:8px;background:#111;color:#fff;font:13px/1.4 sans-serif;'
-      + 'box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:90vw;';
+      + 'display:flex;align-items:center;gap:10px;box-sizing:border-box;max-width:min(90vw,560px);'
+      + `padding:10px 18px;border:1px solid ${TOAST_BRAND.border};border-radius:14px;`
+      + `background:${TOAST_BRAND.surface};color:${TOAST_BRAND.text};`
+      + `font:600 13px/1.5 ${TOAST_BRAND.font};letter-spacing:.01em;`
+      + 'box-shadow:0 10px 30px rgba(15,118,110,.18),0 2px 6px rgba(19,78,74,.06);';
+    // 左侧状态圆点：与侧栏「小节标题」前的圆点同一套样式
+    const mark = document.createElement('span');
+    mark.setAttribute('data-tt-mark', '1');
+    mark.style.cssText = `flex:0 0 auto;width:8px;height:8px;border-radius:50%;`
+      + `background:${TOAST_BRAND.secondary};box-shadow:0 0 0 4px ${TOAST_BRAND.primarySoft};`;
+    label = document.createElement('span');
+    label.setAttribute('data-tt-label', '1');
+    label.style.cssText = 'min-width:0;word-break:break-word;';
+    tip.append(mark, label);
     document.body.appendChild(tip);
   }
-  tip.textContent = initialMessage;
+  const setMessage = (message) => {
+    label.textContent = String(message || '');
+  };
+  setMessage(initialMessage);
   return {
     update(nextMessage) {
-      if (tip) tip.textContent = nextMessage;
+      setMessage(nextMessage);
     },
     done(finalMessage) {
-      if (!tip) return;
-      tip.textContent = finalMessage;
+      setMessage(finalMessage);
       setTimeout(() => tip?.remove(), 2200);
     },
   };
