@@ -71,9 +71,28 @@ const NAV_CONTAINER_SELECTOR = 'nav, aside, [role="navigation"], [role="tablist"
   + ' [class*="menu" i], [class*="nav" i], [class*="sidebar" i], [class*="step" i],'
   + ' [class*="anchor" i], [class*="catalog" i], [class*="toc" i], [class*="aside" i]';
 
+/**
+ * 标题是不是落在「导航 / 目录」里。
+ *
+ * 判据必须同时满足：命中导航类容器 **且** 该容器内没有任何输入控件。
+ * 不能直接写 el.closest(NAV_CONTAINER_SELECTOR)：很多网申表单的外层 class 就含
+ * step / nav / menu（如 class="form step-content"），一刀切会把整页分区标题全丢掉。
+ * 标题一旦全丢，分区根容器会一路爬上整页，把后面所有分区的字段吸进同一个分区
+ * —— 这是「乱填 / 串区 / 不点添加 / 只填前两行」的总根因。
+ */
+function isInsideNavChrome(el) {
+  let node = el.parentElement;
+  for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+    if (!node.matches?.(NAV_CONTAINER_SELECTOR)) continue;
+    // 容器里有输入控件 → 这是表单区域，不是目录
+    if (node.querySelector('input, textarea, select, [role="combobox"]')) return false;
+    return true;
+  }
+  return false;
+}
+
 /** 单步上限，防止极端页面死循环 */
-const MAX_STEPS = 800;
-/** 单个分区最多点几次「添加」 */
+const MAX_STEPS = 800;/** 单个分区最多点几次「添加」 */
 const MAX_ADD_ROUNDS_PER_SECTION = 25;
 /** 点了「添加」但行数没增加，连续几次就放弃该分区 */
 const MAX_ADD_STALL = 2;
@@ -120,7 +139,7 @@ function buildSectionAnchors() {
   all.forEach((el) => {
     if (!(el instanceof HTMLElement)) return;
     if (el.closest(`#${PANEL_ID}`)) return;
-    if (el.closest(NAV_CONTAINER_SELECTOR)) return;
+    if (isInsideNavChrome(el)) return;
     if (el.tagName === 'A' || el.closest('a')) return;
     // 字段标签不是分区标题
     if (el.tagName === 'LABEL' || el.closest('label')) return;
