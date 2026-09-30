@@ -1,39 +1,21 @@
 /**
- * Popup 主逻辑：选档案、按 fillMode 执行扫描/规划/预览或直接填写、撤销与入口跳转。
- * 经 Background 编排 LLM；SCAN/APPLY/UNDO 经 Background 转发到活动标签 content。
+ * Popup 主逻辑：选档案、一键「扫描并填写」、撤销与入口跳转。
+ * 流程与侧边助手完全一致：点一次就扫完并写完，不再按 fillMode 分流。
+ * SCAN/APPLY/UNDO 经 Background 转发到活动标签 content。
  */
 import { setActiveProfileId } from '../../shared/storage/profileStore';
-import {
-  formatTokenUsageBrief,
-} from '../../shared/storage/usageStore';
 import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
-import {
-  requestFillPlanWithWait,
-  scanActivePage,
-} from '../../shared/messaging/pageScan';
+import { scanActivePage } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
-import { PENDING_POPUP_SCAN_REQUEST_KEY } from '../../shared/messaging/popupScanHandoff';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import type { ExtensionMessage } from '../../shared/types/messages';
-import type { FieldDescriptor, FillPlan } from '../../shared/types/fill';
-import type { AppSettings, FillMode, Profile } from '../../shared/types/profile';
+import type { AppSettings, Profile } from '../../shared/types/profile';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
-
-/**
- * Side Panel（Task 8）读取的会话待确认载荷：plan + 扫描字段（供展示 label）。
- * 存于 chrome.storage.session，键名 pendingFillSession。
- */
-interface PendingFillSession {
-  plan: FillPlan;
-  fields: FieldDescriptor[];
-  /** 模型超时等仍要在侧栏红框里说明的话 */
-  notice?: string;
-}
 
 /** 内存中的档案列表，供下拉渲染 */
 let cachedProfiles: Profile[] = [];
@@ -47,10 +29,7 @@ let cachedActiveProfileId: string | null = null;
  */
 let popupTabId: number | undefined;
 
-/** 打开弹窗时读到的填写模式。预览模式要点击当下就打开侧栏。 */
-let cachedFillMode: FillMode = 'preview';
-
-/** 弹窗一出现就记下当前网申标签，供后面的点击同步打开侧栏。 */
+/** 弹窗一出现就记下当前网申标签，供后面打开侧栏时同步使用。 */
 const popupTabReady = chrome.tabs
   .query({ active: true, currentWindow: true })
   .then((tabs) => {
@@ -204,7 +183,6 @@ async function loadState(): Promise<{
     throw new Error('无法读取扩展状态');
   }
   renderProfileOptions(response.profiles, response.settings.activeProfileId);
-  cachedFillMode = response.settings.fillMode;
   return { settings: response.settings, profiles: response.profiles };
 }
 
@@ -223,14 +201,32 @@ async function maybePersistDefaultProfile(profileId: string): Promise<void> {
 }
 
 /**
- * 主填写流程：扫描字段 → Background 构建 FillPlan → 按 fillMode 预览或直接写入。
- * 直接填写在本弹窗里写完。预览模式不走这里打开侧栏：扫完再 open 会丢掉用户点击。
+ * 主填写流程：扫描本页 → 直接写入。
+ * 与侧边助手的「扫描并填写」是同一条路：点一次就扫完并写完，中途不再二次确认。
+ *
+ * 为什么不再按 fillMode 分流：预览模式原来只把扫描甩给侧栏，
+ * 弹窗自己一次也不写，于是出现「弹窗点了只扫描、侧栏点了才填写」的差异。
+ * 为什么不再先要一份 LLM 计划：真正写入用的是 content 里的规则引擎
+ * （applyFillPlan 不消费 plan），先要计划只是白等一次网络往返。
  */
 async function runFillFlow(profileId: string): Promise<void> {
   stopButton.hidden = false;
   try {
-  if (cachedFillMode === 'direct') {
-    showScanProgress(8, '正在逐格对照档案并写入。');
+    showScanProgress(4, '正在扫描页面，准备一面扫一面写。');
+    const scanResult = await scanActivePage(createRequestId(), (progress) => {
+      showScanProgress(Math.min(40, progress.percent), progress.message);
+    });
+    const scannedFields = scanResult.fields;
+    if (scannedFields.length === 0) {
+      showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
+      showError(
+        scanResult.notice ??
+          '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再试一次。',
+      );
+      return;
+    }
+
+    showScanProgress(50, `发现 ${scannedFields.length} 个输入框，开始写入…`);
     const applyResponse = await requestBackground({
       type: 'APPLY_FILL_PLAN',
       requestId: createRequestId(),
@@ -244,106 +240,13 @@ async function runFillFlow(profileId: string): Promise<void> {
     showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
     showStatus(
       missCount > 0
-        ? `已经写入 ${applyResponse.filled} 项。有 ${missCount} 项没写上，请打开侧栏查看「没写上的」表。`
-        : `已经写入 ${applyResponse.filled} 项。`,
+        ? `已经写入 ${applyResponse.filled} 项。还有 ${missCount} 项没写上，可打开侧边助手看「没写上的」表。`
+        : `已经写入 ${applyResponse.filled} 项。请在页面上检查，需要的话可以撤销本轮。`,
       missCount > 0 ? 'error' : 'success',
     );
-    return;
-  }
-  const scanResult = await scanActivePage(createRequestId(), (progress) => {
-    showScanProgress(progress.percent, progress.message);
-  });
-  const scannedFields = scanResult.fields;
-  if (scannedFields.length === 0) {
-    showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
-    showError(
-      scanResult.notice ??
-        '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再扫一次。',
-    );
-    return;
-  }
-
-  const planResponse = await requestFillPlanWithWait(
-    createRequestId(),
-    profileId,
-    scannedFields,
-    (elapsedSeconds) => {
-      const waitPercent = Math.min(99, 90 + Math.floor(elapsedSeconds / 15));
-      showScanProgress(waitPercent, `正在对照档案，已等待 ${elapsedSeconds} 秒。`);
-    },
-  );
-  showScanProgress(
-    100,
-    scanResult.notice
-      ? `对照完成，${planResponse.plan.items.length} 项可以填。${scanResult.notice}`
-      : `对照完成，${planResponse.plan.items.length} 项可以填。`,
-  );
-  const fillPlan = planResponse.plan;
-
-  const stateResponse = await requestBackground({
-    type: 'GET_STATE',
-    requestId: createRequestId(),
-  });
-  if (stateResponse.type !== 'GET_STATE_RESULT') {
-    throw new Error('无法读取填写模式设置');
-  }
-  const { fillMode } = stateResponse.settings;
-
-  if (fillMode === 'preview') {
-    const pendingFillSession: PendingFillSession = {
-      plan: fillPlan,
-      fields: scannedFields,
-      notice: planResponse.notice,
-    };
-    await chrome.storage.session.set({ pendingFillSession });
-    const usageTip = fillPlanResponseUsageText(planResponse.usage);
-    const openHint = '对照已经完成。请点「打开侧边助手」查看预览后再写入。';
-    if (planResponse.notice) {
-      showError(`${planResponse.notice} ${openHint}`);
-      return;
-    }
-    showStatus(
-      `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${fillPlan.items.length} 项可以填。${openHint}${usageTip}`,
-      'success',
-    );
-    return;
-  }
-
-  const applyResponse = await requestBackground({
-    type: 'APPLY_FILL_PLAN',
-    requestId: createRequestId(),
-    plan: fillPlan,
-    profileId,
-  });
-  if (applyResponse.type !== 'APPLY_FILL_RESULT') {
-    throw new Error('写入页面失败');
-  }
-  const usageTip = fillPlanResponseUsageText(planResponse.usage);
-  if (planResponse.notice) {
-    showError(
-      `${planResponse.notice} 已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。`,
-    );
-    return;
-  }
-  showStatus(
-    `已经写入 ${applyResponse.filled} 项，跳过 ${applyResponse.skipped} 项。请在页面上检查，需要的话可以撤销本轮。${usageTip}`,
-    'success',
-  );
   } finally {
     stopButton.hidden = true;
   }
-}
-
-/**
- * 把 FILL_PLAN 带回的 usage 格式成状态后缀。
- */
-function fillPlanResponseUsageText(
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null | undefined,
-): string {
-  if (!usage) {
-    return '';
-  }
-  return ` · Token ${formatTokenUsageBrief(usage)}`;
 }
 
 /**
@@ -372,27 +275,6 @@ function openSidePanelForCurrentTab(): Promise<void> {
     return Promise.reject(new Error('无法确定当前标签页'));
   }
   return chrome.sidePanel.open({ tabId: popupTabId });
-}
-
-/**
- * 预览模式：把档案交给侧栏，并在这次点击里打开它。
- * 扫描放在侧栏里做，弹窗被关掉也不会把对照做一半。
- */
-function handScanToSidePanel(profileId: string): void {
-  void maybePersistDefaultProfile(profileId);
-  void chrome.storage.session.set({
-    [PENDING_POPUP_SCAN_REQUEST_KEY]: {
-      profileId,
-      requestId: createRequestId(),
-    },
-  });
-  void openSidePanelForCurrentTab()
-    .then(() => {
-      showStatus('侧边助手已打开，正在那边扫描并对照。', 'info');
-    })
-    .catch((error: unknown) => {
-      showError(describeUserFacingError(error));
-    });
 }
 
 /**
@@ -458,13 +340,9 @@ function bindEvents(): void {
       showError('请先选择档案');
       return;
     }
-    // 预览模式必须在这次点击里打开侧栏，不能等扫描结束。
-    if (cachedFillMode !== 'direct') {
-      handScanToSidePanel(selectedProfileId);
-      return;
-    }
+    // 与侧边助手的「扫描并填写」完全一致：点一次就扫描并写入，不再按填写模式分流。
     void withBusy(async () => {
-      showStatus('正在滚动页面，已发现 0 个输入框。', 'info');
+      showStatus('正在扫描并写入本页…', 'info');
       await maybePersistDefaultProfile(selectedProfileId);
       await runFillFlow(selectedProfileId);
     });
@@ -521,7 +399,7 @@ async function bootstrapPopup(): Promise<void> {
     if (profiles.length === 0) {
       showStatus('暂无档案，请点击「打开设置」创建', 'info');
     } else {
-      showStatus('就绪：扫描后请在侧边助手核对预览', 'info');
+      showStatus('就绪：点「扫描并填写」即可自动填写本页', 'info');
     }
   } catch (error: unknown) {
     showError(describeUserFacingError(error));
