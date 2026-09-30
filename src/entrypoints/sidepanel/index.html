@@ -59,28 +59,18 @@
               <span class="field-label">模型</span>
               <input id="modelInput" type="text" placeholder="gpt-4o-mini" />
             </label>
-            <fieldset class="fill-mode-fieldset">
-              <legend class="field-label">填写模式</legend>
-              <label class="radio-row">
-                <input
-                  type="radio"
-                  name="fillMode"
-                  id="fillModePreview"
-                  value="preview"
-                  checked
-                />
-                <span>预览后写入（推荐）</span>
-              </label>
-              <label class="radio-row">
-                <input
-                  type="radio"
-                  name="fillMode"
-                  id="fillModeDirect"
-                  value="direct"
-                />
-                <span>直接填写</span>
-              </label>
-            </fieldset>
+            <label class="field">
+              <span class="field-label">本机 Laya 模型 URL（可选）</span>
+              <input
+                id="layaModelUrlInput"
+                type="url"
+                placeholder="模型资源根地址，可改"
+              />
+            </label>
+            <label class="checkbox-row" for="layaEnabledCheckbox">
+              <input type="checkbox" id="layaEnabledCheckbox" checked />
+              <span>启用本机 Laya 判断（未就绪时自动用你的 API）</span>
+            </label>
             <div class="settings-form-actions">
               <button type="submit" class="btn btn-primary" id="saveSettingsButton">
                 保存设置
@@ -148,7 +138,7 @@
             <tbody id="mappingTableBody">
               <tr class="empty-row">
                 <td colspan="3">
-                  选好档案后，点下方「扫描本页」。扫完会在这里列出要填的字段，确认后再写入。
+                  选好档案后，点下方「扫描本页」。扫完在此核对映射，再点「确认写入」。
                 </td>
               </tr>
             </tbody>
@@ -182,8 +172,11 @@
       </dialog>
 
       <section class="sidepanel-actions" aria-label="助手操作">
-        <button type="button" id="scanFillButton" class="btn btn-primary action-confirm">
-          扫描并写入
+        <button type="button" id="confirmWriteButton" class="btn btn-primary action-confirm">
+          确认写入
+        </button>
+        <button type="button" id="scanPageButton" class="btn btn-secondary action-scan">
+          扫描本页
         </button>
         <button type="button" id="stopButton" class="btn btn-ghost action-stop" hidden>
           停止

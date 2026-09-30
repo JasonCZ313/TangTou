@@ -92,30 +92,24 @@
         </div>
       </section>
 
-      <!-- 分区 2：填写模式（预览 / 直接） -->
-      <section class="panel" id="fillModeSection" aria-labelledby="fillModeHeading">
-        <h2 id="fillModeHeading">填写模式</h2>
-        <fieldset class="radio-group">
-          <legend class="sr-only">选择填写模式</legend>
-          <label class="radio-option">
-            <input
-              type="radio"
-              name="fillMode"
-              value="preview"
-              id="fillModePreview"
-            />
-            <span>预览后写入（推荐）</span>
-          </label>
-          <label class="radio-option">
-            <input
-              type="radio"
-              name="fillMode"
-              value="direct"
-              id="fillModeDirect"
-            />
-            <span>直接填写</span>
-          </label>
-        </fieldset>
+      <!-- 分区 2：本机 Laya 判断（P2 下载；此处先可配置 URL） -->
+      <section class="panel" id="layaSection" aria-labelledby="layaHeading">
+        <h2 id="layaHeading">本机 Laya 判断</h2>
+        <p class="hint">
+          填写一律「预览后写入」。判断将优先走本机 Laya；模型未就绪时用你的 API Key。
+        </p>
+        <label class="field">
+          <span class="field-label">Laya 模型 URL</span>
+          <input
+            id="layaModelUrlInput"
+            type="url"
+            placeholder="模型资源根地址"
+          />
+        </label>
+        <label class="checkbox-row" for="layaEnabledCheckbox">
+          <input type="checkbox" id="layaEnabledCheckbox" checked />
+          <span>启用本机 Laya</span>
+        </label>
       </section>
 
       <!-- 分区 3：档案列表 -->

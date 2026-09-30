@@ -1,15 +1,17 @@
 /**
- * Popup 主逻辑：选档案、一键「扫描并填写」、撤销与入口跳转。
- * 流程与侧边助手完全一致：点一次就扫完并写完，不再按 fillMode 分流。
- * SCAN/APPLY/UNDO 经 Background 转发到活动标签 content。
+ * Popup 主逻辑：选档案、一键交给侧栏「扫描并预览」、撤销与入口跳转。
+ * 一律预览后写入：本弹窗不直接写页，打开侧栏并由侧栏对照映射。
  */
 import { setActiveProfileId } from '../../shared/storage/profileStore';
 import {
   createRequestId,
   sendRuntimeMessage,
 } from '../../shared/messaging/send';
-import { scanActivePage } from '../../shared/messaging/pageScan';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import {
+  PENDING_POPUP_SCAN_REQUEST_KEY,
+  type PendingPopupScanRequest,
+} from '../../shared/messaging/popupScanHandoff';
 import { mountAppVersionLabel } from '../../shared/appVersion';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { AppSettings, Profile } from '../../shared/types/profile';
@@ -201,52 +203,19 @@ async function maybePersistDefaultProfile(profileId: string): Promise<void> {
 }
 
 /**
- * 主填写流程：扫描本页 → 直接写入。
- * 与侧边助手的「扫描并填写」是同一条路：点一次就扫完并写完，中途不再二次确认。
- *
- * 为什么不再按 fillMode 分流：预览模式原来只把扫描甩给侧栏，
- * 弹窗自己一次也不写，于是出现「弹窗点了只扫描、侧栏点了才填写」的差异。
- * 为什么不再先要一份 LLM 计划：真正写入用的是 content 里的规则引擎
- * （applyFillPlan 不消费 plan），先要计划只是白等一次网络往返。
+ * 主流程：立刻打开侧栏，并把「请扫描并生成预览」交给侧边助手。
+ * sidePanel.open 必须在用户点击的同步调用链里发出，不能先 await 扫描。
  */
 async function runFillFlow(profileId: string): Promise<void> {
-  stopButton.hidden = false;
-  try {
-    showScanProgress(4, '正在扫描页面，准备一面扫一面写。');
-    const scanResult = await scanActivePage(createRequestId(), (progress) => {
-      showScanProgress(Math.min(40, progress.percent), progress.message);
-    });
-    const scannedFields = scanResult.fields;
-    if (scannedFields.length === 0) {
-      showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
-      showError(
-        scanResult.notice ??
-          '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再试一次。',
-      );
-      return;
-    }
-
-    showScanProgress(50, `发现 ${scannedFields.length} 个输入框，开始写入…`);
-    const applyResponse = await requestBackground({
-      type: 'APPLY_FILL_PLAN',
-      requestId: createRequestId(),
-      plan: { items: [], skippedFieldIds: [] },
-      profileId,
-    });
-    if (applyResponse.type !== 'APPLY_FILL_RESULT') {
-      throw new Error('写入页面失败');
-    }
-    const missCount = applyResponse.misses?.length ?? 0;
-    showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
-    showStatus(
-      missCount > 0
-        ? `已经写入 ${applyResponse.filled} 项。还有 ${missCount} 项没写上，可打开侧边助手看「没写上的」表。`
-        : `已经写入 ${applyResponse.filled} 项。请在页面上检查，需要的话可以撤销本轮。`,
-      missCount > 0 ? 'error' : 'success',
-    );
-  } finally {
-    stopButton.hidden = true;
-  }
+  const scanRequest: PendingPopupScanRequest = {
+    profileId,
+    requestId: createRequestId(),
+  };
+  await chrome.storage.session.set({
+    [PENDING_POPUP_SCAN_REQUEST_KEY]: scanRequest,
+  });
+  await openSidePanelForCurrentTab();
+  showStatus('已打开侧边助手，正在扫描并生成预览，请在侧栏核对后再确认写入。', 'success');
 }
 
 /**
@@ -340,12 +309,16 @@ function bindEvents(): void {
       showError('请先选择档案');
       return;
     }
-    // 与侧边助手的「扫描并填写」完全一致：点一次就扫描并写入，不再按填写模式分流。
-    void withBusy(async () => {
-      showStatus('正在扫描并写入本页…', 'info');
-      await maybePersistDefaultProfile(selectedProfileId);
-      await runFillFlow(selectedProfileId);
-    });
+    // 同步打开侧栏并投递扫描请求；预览与确认写入都在侧栏完成。
+    void (async () => {
+      try {
+        await maybePersistDefaultProfile(selectedProfileId);
+        showStatus('正在打开侧边助手…', 'info');
+        await runFillFlow(selectedProfileId);
+      } catch (error: unknown) {
+        showError(describeUserFacingError(error));
+      }
+    })();
   });
 
   openSidePanelButton.addEventListener('click', () => {
@@ -399,7 +372,7 @@ async function bootstrapPopup(): Promise<void> {
     if (profiles.length === 0) {
       showStatus('暂无档案，请点击「打开设置」创建', 'info');
     } else {
-      showStatus('就绪：点「扫描并填写」即可自动填写本页', 'info');
+      showStatus('就绪：点「扫描并填写」会在侧栏生成预览，核对后再写入', 'info');
     }
   } catch (error: unknown) {
     showError(describeUserFacingError(error));

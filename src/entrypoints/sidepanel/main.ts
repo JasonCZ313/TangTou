@@ -31,24 +31,22 @@ import {
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { mountApiGuide } from '../../shared/ui/apiGuide';
 import { mountAppVersionLabel } from '../../shared/appVersion';
+import {
+  clearFillSession,
+  loadFillSession,
+  saveFillSession,
+} from '../../shared/session/sessionStore';
+import {
+  FILL_SESSION_STORAGE_KEY,
+  type FillSession,
+} from '../../shared/session/types';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import type { FieldDescriptor, FillMiss, FillPlan } from '../../shared/types/fill';
-import type { FillMode, Profile } from '../../shared/types/profile';
+import type { Profile } from '../../shared/types/profile';
 import type { LlmTokenUsage, TokenUsageStats } from '../../shared/types/usage';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
-
-/**
- * Popup / 本页扫描写入的会话载荷。
- * 存于 chrome.storage.session，键名 pendingFillSession。
- */
-interface PendingFillSession {
-  plan: FillPlan;
-  fields: FieldDescriptor[];
-  /** 模型超时等仍要红框说明的话 */
-  notice?: string;
-}
 
 /** Popup「打开设置」写入，侧栏启动时展开设置区 */
 const FOCUS_SETTINGS_SESSION_KEY = 'sidePanelFocusSettings';
@@ -58,7 +56,7 @@ let popupScanHandoffActive = false;
 
 let cachedProfiles: Profile[] = [];
 let cachedActiveProfileId: string | null = null;
-let currentSession: PendingFillSession | null = null;
+let currentSession: FillSession | null = null;
 let isBusy = false;
 
 const settingsDetails = document.getElementById(
@@ -72,11 +70,11 @@ const apiBaseUrlInput = document.getElementById(
 ) as HTMLInputElement;
 const apiKeyInput = document.getElementById('apiKeyInput') as HTMLInputElement;
 const modelInput = document.getElementById('modelInput') as HTMLInputElement;
-const fillModePreview = document.getElementById(
-  'fillModePreview',
+const layaModelUrlInput = document.getElementById(
+  'layaModelUrlInput',
 ) as HTMLInputElement;
-const fillModeDirect = document.getElementById(
-  'fillModeDirect',
+const layaEnabledCheckbox = document.getElementById(
+  'layaEnabledCheckbox',
 ) as HTMLInputElement;
 const testApiButton = document.getElementById(
   'testApiButton',
@@ -119,8 +117,11 @@ const fillDoneClose = document.getElementById('fillDoneClose') as HTMLButtonElem
 const skippedSummaryElement = document.getElementById(
   'skippedSummary',
 ) as HTMLParagraphElement;
-const scanFillButton = document.getElementById(
-  'scanFillButton',
+const scanPageButton = document.getElementById(
+  'scanPageButton',
+) as HTMLButtonElement;
+const confirmWriteButton = document.getElementById(
+  'confirmWriteButton',
 ) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
 const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
@@ -144,7 +145,7 @@ const tokenUsageLine = document.getElementById(
 ) as HTMLParagraphElement;
 
 const EMPTY_MAPPING_HINT =
-  '选好档案后，点下方「扫描并写入」。会一边扫描一边写入，写完会在这里列出结果。';
+  '选好档案后，点下方「扫描本页」。扫完核对映射表，再点「确认写入」。';
 
 /** 已经扫过，但没有可以填的项 */
 const EMPTY_MAPPING_AFTER_SCAN =
@@ -358,11 +359,16 @@ function sessionHasMappingRows(): boolean {
 }
 
 /**
- * 单按钮模式下不再切换主次；保留函数名避免改动调用点。
- * 扫描结果里有可填项时用主色，否则也用主色（一次点击即可完成扫描+写入）。
+ * 有预览时可确认写入为主色；扫描始终为次按钮。
  */
 function syncActionButtonHierarchy(): void {
-  scanFillButton.className = 'btn btn-primary action-confirm';
+  const canConfirm = sessionHasMappingRows();
+  confirmWriteButton.className = canConfirm
+    ? 'btn btn-primary action-confirm'
+    : 'btn btn-secondary action-confirm';
+  scanPageButton.className = canConfirm
+    ? 'btn btn-secondary action-scan'
+    : 'btn btn-primary action-scan';
 }
 
 function syncBusyUi(): void {
@@ -370,7 +376,9 @@ function syncBusyUi(): void {
   const selectedProfileId = profileSelect.value;
   const atLimit = cachedProfiles.length >= MAX_PROFILES;
 
-  scanFillButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
+  scanPageButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
+  confirmWriteButton.disabled =
+    isBusy || !hasProfiles || !selectedProfileId || !sessionHasMappingRows();
   undoButton.disabled = isBusy;
   profileSelect.disabled = isBusy;
   setDefaultCheckbox.disabled = isBusy || !selectedProfileId;
@@ -388,13 +396,14 @@ function fillSettingsForm(settings: {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
-  fillMode: FillMode;
+  layaModelUrl: string;
+  layaEnabled: boolean;
 }): void {
   apiBaseUrlInput.value = settings.apiBaseUrl;
   apiKeyInput.value = settings.apiKey;
   modelInput.value = settings.model;
-  fillModePreview.checked = settings.fillMode === 'preview';
-  fillModeDirect.checked = settings.fillMode === 'direct';
+  layaModelUrlInput.value = settings.layaModelUrl;
+  layaEnabledCheckbox.checked = settings.layaEnabled;
 }
 
 function renderProfileOptions(
@@ -593,23 +602,12 @@ async function requestBackground(
   return response;
 }
 
-async function loadPendingSession(): Promise<PendingFillSession | null> {
-  const storageSnapshot = await chrome.storage.session.get('pendingFillSession');
-  const rawSession = storageSnapshot.pendingFillSession as
-    | PendingFillSession
-    | undefined;
-  if (!rawSession || !rawSession.plan || !Array.isArray(rawSession.plan.items)) {
-    return null;
-  }
-  return {
-    plan: rawSession.plan,
-    fields: Array.isArray(rawSession.fields) ? rawSession.fields : [],
-    notice: typeof rawSession.notice === 'string' ? rawSession.notice : undefined,
-  };
+async function loadPendingSession(): Promise<FillSession | null> {
+  return loadFillSession();
 }
 
 async function clearPendingSession(): Promise<void> {
-  await chrome.storage.session.remove('pendingFillSession');
+  await clearFillSession();
   currentSession = null;
 }
 
@@ -697,14 +695,15 @@ function readSettingsDraft(): {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
-  fillMode: FillMode;
+  layaModelUrl: string;
+  layaEnabled: boolean;
 } {
-  const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
   return {
     apiBaseUrl: apiBaseUrlInput.value.trim(),
     apiKey: apiKeyInput.value.trim(),
     model: modelInput.value.trim() || 'gpt-4o-mini',
-    fillMode,
+    layaModelUrl: layaModelUrlInput.value.trim(),
+    layaEnabled: layaEnabledCheckbox.checked,
   };
 }
 
@@ -987,13 +986,22 @@ async function runConfirmWrite(): Promise<void> {
     showError('请先选择档案');
     return;
   }
+  if (!currentSession) {
+    showError('请先扫描本页，核对映射后再确认写入。');
+    return;
+  }
+  const editedPlan = collectEditedFillPlan();
+  if (editedPlan.items.length === 0) {
+    showError('映射表里没有可写入的项。请先扫描，或在跳过栏里手填后再试。');
+    return;
+  }
   stopButton.hidden = false;
-  showScanProgress(8, '正在逐格对照档案并写入。');
+  showScanProgress(8, '正在按预览计划写入页面。');
   try {
     const applyResponse = await requestBackground({
       type: 'APPLY_FILL_PLAN',
       requestId: createRequestId(),
-      plan: { items: [], skippedFieldIds: [] },
+      plan: editedPlan,
       profileId: selectedProfileId,
     });
     if (applyResponse.type !== 'APPLY_FILL_RESULT') {
@@ -1059,12 +1067,13 @@ async function runRescanFlow(profileId: string): Promise<void> {
       ? `对照完成，${planResponse.plan.items.length} 项可以填。${scanResult.notice}`
       : `对照完成，${planResponse.plan.items.length} 项可以填。`,
   );
-  const pendingFillSession: PendingFillSession = {
+  const pendingFillSession: FillSession = {
     plan: planResponse.plan,
     fields: scannedFields,
     notice: planResponse.notice,
+    profileId,
   };
-  await chrome.storage.session.set({ pendingFillSession });
+  await saveFillSession(pendingFillSession);
   currentSession = pendingFillSession;
   renderMappingTable();
   if (planResponse.notice) {
@@ -1076,34 +1085,6 @@ async function runRescanFlow(profileId: string): Promise<void> {
     );
   }
   await refreshUsageLine(planResponse.usage ?? null);
-  } finally {
-    stopButton.hidden = true;
-  }
-}
-
-/**
- * 一键流程：先扫描（让用户看到命中清单），紧接着直接写入。
- * 合并了原来的「扫描本页」与「确认写入」两个按钮，中途不再要求二次确认。
- */
-async function runScanAndFillFlow(profileId: string): Promise<void> {
-  stopButton.hidden = false;
-  try {
-    showScanProgress(4, '正在扫描页面，准备一面扫一面写。');
-    const scanResult = await scanActivePage(createRequestId(), (progress) => {
-      showScanProgress(Math.min(40, progress.percent), progress.message);
-    });
-    if (scanResult.fields.length === 0) {
-      await clearPendingSession();
-      renderMappingTable();
-      showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
-      showError(
-        scanResult.notice ??
-          '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再试一次。',
-      );
-      return;
-    }
-    showScanProgress(50, `发现 ${scanResult.fields.length} 个输入框，开始写入…`);
-    await runConfirmWrite();
   } finally {
     stopButton.hidden = true;
   }
@@ -1235,15 +1216,23 @@ function bindEvents(): void {
     fillDoneDialog.close();
   });
 
-  // 一键「扫描并写入」：先扫描（仅为展示命中清单），紧接着直接写入，中途不再要求二次确认
-  scanFillButton.addEventListener('click', () => {
+  // 「扫描本页」：只对照出预览，不写入
+  scanPageButton.addEventListener('click', () => {
     void withBusy(async () => {
       const selectedProfileId = profileSelect.value;
       if (!selectedProfileId) {
         showError('请先选择档案');
         return;
       }
-      await runScanAndFillFlow(selectedProfileId);
+      await runRescanFlow(selectedProfileId);
+    });
+  });
+
+  // 「确认写入」：按映射表（含用户改值）写入页面
+  confirmWriteButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      showStatus('正在按预览计划写入…', 'info');
+      await runConfirmWrite();
     });
   });
 
@@ -1275,7 +1264,7 @@ function bindEvents(): void {
     if (changes[PENDING_POPUP_SCAN_REQUEST_KEY]?.newValue) {
       void startRequestedPopupScan();
     }
-    if (!changes.pendingFillSession || isBusy) {
+    if (!changes[FILL_SESSION_STORAGE_KEY] || isBusy) {
       return;
     }
     void (async () => {

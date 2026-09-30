@@ -1,13 +1,19 @@
-/** 填写模式：预览确认后再写入，或直接写入页面 */
-export type FillMode = 'preview' | 'direct';
-
-/** 全局设置（与档案分离，含 API 与默认档案指针） */
+/**
+ * 全局设置（与档案分离，含 API、默认档案、本机 Laya 模型地址）。
+ * 已取消「直接填写」：一律预览确认后再写入。
+ */
 export interface AppSettings {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
-  fillMode: FillMode;
   activeProfileId: string | null;
+  /**
+   * 本机 Laya ONNX 资源根 URL（需能取到 encoder/head 等文件）。
+   * 空字符串表示尚未配置；P2 下载与推理使用。
+   */
+  layaModelUrl: string;
+  /** 是否启用本机 Laya（未下载或失败时自动回退用户 API 判断） */
+  layaEnabled: boolean;
 }
 
 /**

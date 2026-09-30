@@ -42,7 +42,7 @@ import {
   getTokenUsageStats,
   resetTokenUsageStats,
 } from '../../shared/storage/usageStore';
-import type { FillMode, Profile, ProfileData, RegionSelection } from '../../shared/types/profile';
+import type { Profile, ProfileData, RegionSelection } from '../../shared/types/profile';
 import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
@@ -81,8 +81,9 @@ interface ExportPayload {
     apiBaseUrl: string;
     apiKey: string;
     model: string;
-    fillMode: FillMode;
     activeProfileId: string | null;
+    layaModelUrl?: string;
+    layaEnabled?: boolean;
   };
 }
 
@@ -191,11 +192,11 @@ const tokenUsageSummary = document.getElementById(
 const resetTokenUsageButton = document.getElementById(
   'resetTokenUsageButton',
 ) as HTMLButtonElement;
-const fillModePreview = document.getElementById(
-  'fillModePreview',
+const layaModelUrlInput = document.getElementById(
+  'layaModelUrlInput',
 ) as HTMLInputElement;
-const fillModeDirect = document.getElementById(
-  'fillModeDirect',
+const layaEnabledCheckbox = document.getElementById(
+  'layaEnabledCheckbox',
 ) as HTMLInputElement;
 const profileListElement = document.getElementById(
   'profileList',
@@ -524,8 +525,8 @@ async function bootstrapOptionsPage(): Promise<void> {
     apiBaseUrlInput.value = settings.apiBaseUrl;
     apiKeyInput.value = settings.apiKey;
     modelInput.value = settings.model;
-    fillModePreview.checked = settings.fillMode === 'preview';
-    fillModeDirect.checked = settings.fillMode === 'direct';
+    layaModelUrlInput.value = settings.layaModelUrl;
+    layaEnabledCheckbox.checked = settings.layaEnabled;
     renderTokenUsageSummary(tokenUsage);
 
     renderProfileList();
@@ -663,8 +664,10 @@ async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
       apiBaseUrl: apiBaseUrlInput.value.trim(),
       apiKey: apiKeyInput.value,
       model: modelInput.value.trim(),
+      layaModelUrl: layaModelUrlInput.value.trim(),
+      layaEnabled: layaEnabledCheckbox.checked,
     });
-    showStatus('API 设置已保存', 'success');
+    showStatus('API 与 Laya 设置已保存', 'success');
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   }
@@ -718,14 +721,13 @@ function handleTestApiConnection(): void {
   }
 }
 
-async function handleFillModeChange(): Promise<void> {
-  const fillMode: FillMode = fillModeDirect.checked ? 'direct' : 'preview';
+async function handleLayaSettingsChange(): Promise<void> {
   try {
-    await saveSettings({ fillMode });
-    showStatus(
-      fillMode === 'preview' ? '已切换为预览后写入' : '已切换为直接填写',
-      'success',
-    );
+    await saveSettings({
+      layaModelUrl: layaModelUrlInput.value.trim(),
+      layaEnabled: layaEnabledCheckbox.checked,
+    });
+    showStatus('本机 Laya 设置已保存', 'success');
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   }
@@ -1428,16 +1430,20 @@ async function handleImportFileChange(): Promise<void> {
           typeof importedSettings.model === 'string'
             ? importedSettings.model
             : currentSettings.model,
-        fillMode:
-          importedSettings.fillMode === 'preview' ||
-          importedSettings.fillMode === 'direct'
-            ? importedSettings.fillMode
-            : currentSettings.fillMode,
         apiKey:
           typeof importedSettings.apiKey === 'string' &&
           importedSettings.apiKey.length > 0
             ? importedSettings.apiKey
             : currentSettings.apiKey,
+        layaModelUrl:
+          typeof importedSettings.layaModelUrl === 'string' &&
+          importedSettings.layaModelUrl.trim()
+            ? importedSettings.layaModelUrl.trim()
+            : currentSettings.layaModelUrl,
+        layaEnabled:
+          typeof importedSettings.layaEnabled === 'boolean'
+            ? importedSettings.layaEnabled
+            : currentSettings.layaEnabled,
       });
     }
 
@@ -1473,11 +1479,11 @@ function bindEventListeners(): void {
       }
     })();
   });
-  fillModePreview.addEventListener('change', () => {
-    void handleFillModeChange();
+  layaModelUrlInput.addEventListener('change', () => {
+    void handleLayaSettingsChange();
   });
-  fillModeDirect.addEventListener('change', () => {
-    void handleFillModeChange();
+  layaEnabledCheckbox.addEventListener('change', () => {
+    void handleLayaSettingsChange();
   });
   createProfileForm.addEventListener('submit', (event) => {
     void handleCreateProfile(event);

@@ -1,12 +1,20 @@
 /**
- * 页面写入入口：确认填写后走超你 offer 的「边扫边写」规则引擎。
- * 不再使用旧的先扫再建 FillPlan / walkPageAgainstProfile 乱填路径。
- * 附件上传仍用躺投档案里的文件载荷，在规则填完后单独落 file 控件。
+ * 页面写入入口：确认填写后，严格按预览计划（FillPlan）逐格写入。
+ * 预览里改过的值就是最终写入值；不再忽略 plan 去跑 Chao 边扫边写。
+ * 附件仍按 plan 中的 attachmentId 或档案附件库落到 file 控件。
  */
 import type { FillMiss, FillPlan, SectionAddRequest } from '../../shared/types/fill';
 import type { ProfileData } from '../../shared/types/profile';
 import type { FileUploadPayload } from '../../shared/types/messages';
-import { runChaoRuleAutofill, profileToChaoEditable } from './chaoAutofill';
+import { prepareFieldForWrite } from '../scanner/scanFields';
+import {
+  AUTOFILL_FILL_CLASS,
+  AUTOFILL_MISS_CLASS,
+  classifyControl,
+  ensureHighlightStyles,
+  fieldLabelBlob,
+  writeField,
+} from './chao/dom';
 
 /** 撤销快照：写入前控件原值，方便 undoLastFill 还原 */
 let lastUndoSnapshots: Array<{ element: Element; previousValue: string; isFile: boolean }> =
@@ -77,27 +85,23 @@ function restoreElementValue(element: Element, previousValue: string): boolean {
 }
 
 /**
- * 在规则填写前，给页面上可见的可编辑控件打撤销快照。
+ * 在写入前，给即将动到的控件打撤销快照。
  */
-function captureUndoSnapshots(): void {
+function captureUndoSnapshotsForElements(elements: Element[]): void {
   lastUndoSnapshots = [];
-  const nodes = document.querySelectorAll('input, textarea, select, [contenteditable="true"]');
-  nodes.forEach((node) => {
-    if (!(node instanceof HTMLElement)) {
-      return;
+  const seen = new WeakSet<Element>();
+  for (const node of elements) {
+    if (!(node instanceof HTMLElement) || seen.has(node)) {
+      continue;
     }
-    const style = window.getComputedStyle(node);
-    if (style.display === 'none' || style.visibility === 'hidden') {
-      return;
-    }
-    const isFile =
-      node instanceof HTMLInputElement && node.type === 'file';
+    seen.add(node);
+    const isFile = node instanceof HTMLInputElement && node.type === 'file';
     lastUndoSnapshots.push({
       element: node,
       previousValue: readElementValue(node),
       isFile,
     });
-  });
+  }
 }
 
 /**
@@ -159,7 +163,7 @@ function fileInputHint(inputElement: HTMLInputElement): string {
 }
 
 /**
- * 规则填完后，按文案把档案附件落到页面 file 控件（躺投自有能力，案例无此步）。
+ * 按文案把档案附件落到页面 file 控件。
  */
 function applyFilePayloads(filePayloads: FileUploadPayload[]): {
   filled: number;
@@ -181,18 +185,31 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
   });
 
   for (const payload of filePayloads) {
-    const hintPreferred =
-      /头像|照片|证件照|avatar|photo|portrait|image/.test(
-        `${payload.fileName} ${payload.mimeType}`.toLowerCase(),
-      );
-    const matched =
-      fileInputs.find((inputElement) => {
-        const hint = fileInputHint(inputElement);
-        if (hintPreferred) {
-          return /头像|照片|证件照|avatar|photo|portrait|image/.test(hint);
-        }
-        return /简历|附件|上传|文件|resume|cv|pdf|portfolio|作品/.test(hint) || hint.length > 0;
-      }) || fileInputs[0];
+    const byField = document.querySelector(
+      `[data-raf-id="${CSS.escape(payload.fieldId)}"]`,
+    );
+    let matched: HTMLInputElement | undefined =
+      byField instanceof HTMLInputElement && byField.type === 'file'
+        ? byField
+        : undefined;
+
+    if (!matched) {
+      const hintPreferred =
+        /头像|照片|证件照|avatar|photo|portrait|image/.test(
+          `${payload.fileName} ${payload.mimeType}`.toLowerCase(),
+        );
+      matched =
+        fileInputs.find((inputElement) => {
+          const hint = fileInputHint(inputElement);
+          if (hintPreferred) {
+            return /头像|照片|证件照|avatar|photo|portrait|image/.test(hint);
+          }
+          return (
+            /简历|附件|上传|文件|resume|cv|pdf|portfolio|作品/.test(hint) ||
+            hint.length > 0
+          );
+        }) || fileInputs[0];
+    }
 
     if (!matched) {
       misses.push({
@@ -203,7 +220,7 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
     }
     if (assignFilePayload(matched, payload)) {
       filled += 1;
-      matched.classList.add('raf-autofill-filled');
+      matched.classList.add(AUTOFILL_FILL_CLASS);
     } else {
       misses.push({
         label: payload.fileName || '附件',
@@ -215,37 +232,96 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
 }
 
 /**
- * 确认写入：档案 → 超你 offer 结构 → 规则边扫边写；可选再落附件。
- * _plan / sectionAdds 保留签名兼容消息协议，主路不再使用。
+ * 确认写入：严格按用户确认后的 FillPlan 逐格写入并回读。
+ * sectionAdds / profileData 留作后续补行增强；P0 主路径不依赖 Chao 整页乱填。
  */
 export async function applyFillPlan(
-  _plan: FillPlan,
+  plan: FillPlan,
   filePayloads: FileUploadPayload[] = [],
   _profileId?: string,
   _sectionAdds: SectionAddRequest[] = [],
-  profileData?: ProfileData,
+  _profileData?: ProfileData,
 ): Promise<{
   filled: number;
   skipped: number;
   misses: FillMiss[];
 }> {
-  if (!profileData) {
+  ensureHighlightStyles();
+
+  const writableItems = plan.items.filter(
+    (item) => item.value.trim().length > 0 || item.attachmentId,
+  );
+  if (writableItems.length === 0 && filePayloads.length === 0) {
     return {
       filled: 0,
-      skipped: 0,
-      misses: [{ label: '档案', reason: '没有读到档案，无法填写' }],
+      skipped: plan.skippedFieldIds.length,
+      misses: [
+        {
+          label: '预览计划',
+          reason: '没有可写入的项。请先扫描本页并核对映射表后再点确认写入。',
+        },
+      ],
     };
   }
 
-  captureUndoSnapshots();
-  const editable = profileToChaoEditable(profileData);
-  const ruleResult = await runChaoRuleAutofill(editable);
+  const preparedElements: Element[] = [];
+  for (const item of writableItems) {
+    if (item.attachmentId) {
+      continue;
+    }
+    const element = await prepareFieldForWrite(item.fieldId);
+    if (element) {
+      preparedElements.push(element);
+    }
+  }
+  captureUndoSnapshotsForElements(preparedElements);
+
+  let filled = 0;
+  const misses: FillMiss[] = [];
+
+  for (const item of writableItems) {
+    if (item.attachmentId) {
+      continue;
+    }
+    const element = await prepareFieldForWrite(item.fieldId);
+    if (!(element instanceof HTMLElement)) {
+      misses.push({
+        label: item.reason || item.fieldId,
+        reason: '页面上找不到这个输入框（可能已收起或刷新）',
+      });
+      continue;
+    }
+    const labelText =
+      element.getAttribute('data-raf-label') ||
+      fieldLabelBlob(element) ||
+      item.fieldId;
+    const writeResult = await writeField(
+      {
+        el: element,
+        blob: labelText,
+        control: classifyControl(element),
+      },
+      item.value,
+    );
+    if (writeResult.ok) {
+      filled += 1;
+      element.classList.add(AUTOFILL_FILL_CLASS);
+      element.classList.remove(AUTOFILL_MISS_CLASS);
+    } else {
+      misses.push({
+        label: labelText,
+        reason: writeResult.reason || '写入失败',
+      });
+      element.classList.add(AUTOFILL_MISS_CLASS);
+    }
+  }
+
   const fileResult = applyFilePayloads(filePayloads);
 
   return {
-    filled: ruleResult.filled + fileResult.filled,
-    skipped: ruleResult.skipped,
-    misses: [...ruleResult.misses, ...fileResult.misses],
+    filled: filled + fileResult.filled,
+    skipped: plan.skippedFieldIds.length,
+    misses: [...misses, ...fileResult.misses],
   };
 }
 
@@ -259,7 +335,7 @@ export function undoLastFill(): { restored: number } {
       continue;
     }
     if (restoreElementValue(snapshot.element, snapshot.previousValue)) {
-      snapshot.element.classList.remove('raf-autofill-filled', 'raf-autofill-missed');
+      snapshot.element.classList.remove(AUTOFILL_FILL_CLASS, AUTOFILL_MISS_CLASS);
       restored += 1;
     }
   }
