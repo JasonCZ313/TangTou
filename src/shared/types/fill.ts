@@ -22,7 +22,7 @@ export interface FieldDescriptor {
  * - rule：本地启发式规则
  * - laya：本机判断（含轻量包 / 未来 ORT）
  * - llm：用户云端 API
- * - probe：智能探活 Playbook（P7，预留）
+ * - probe：智能探活 Playbook（P7b 合并进预览）
  */
 export type FillIntentSource = 'user' | 'rule' | 'laya' | 'llm' | 'probe';
 

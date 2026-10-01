@@ -1,6 +1,11 @@
 import type { FieldDescriptor, FillMiss, FillPlan, SectionAddRequest } from './fill';
 import type { Profile, AppSettings, ProfileData } from './profile';
 import type { LlmTokenUsage, TokenUsageStats } from './usage';
+import type {
+  EvidencePack,
+  PlaybookStep,
+  SitePlaybook,
+} from '../playbook/types';
 
 /** 写入页面 file 控件时附带的文件字节（Base64） */
 export interface FileUploadPayload {
@@ -216,6 +221,55 @@ export type ExtensionMessage =
       /** OCR 得到的页面可见区文字；失败时为空串 */
       ocrText: string;
       notice?: string;
+    }
+  | {
+      /** P7：收集页内证据；P7c 可开启预算内探测点击（永不提交） */
+      type: 'COLLECT_PAGE_EVIDENCE';
+      requestId: string;
+      /** 默认 false；智能探活流程会传 true */
+      enableProbeClicks?: boolean;
+    }
+  | {
+      type: 'COLLECT_PAGE_EVIDENCE_RESULT';
+      requestId: string;
+      evidence: EvidencePack;
+    }
+  | {
+      /** P7：根据证据生成 SitePlaybook（分析；执行另走 EXECUTE） */
+      type: 'BUILD_SITE_PLAYBOOK';
+      requestId: string;
+      profileId: string;
+      /** 可空：由后台自行收集；侧栏也可先收集再传入 */
+      evidence?: EvidencePack;
+      /** P7c：收集时做受控探测点击；默认 true */
+      enableProbeClicks?: boolean;
+      /** P7c：把可见区截图送进云端（不支持则自动回退纯文本）；默认 true */
+      enableMultimodal?: boolean;
+    }
+  | {
+      type: 'BUILD_SITE_PLAYBOOK_RESULT';
+      requestId: string;
+      playbook: SitePlaybook;
+      usage?: LlmTokenUsage | null;
+      notice?: string;
+    }
+  | {
+      /**
+       * P7b：执行用户确认过的探活写入步（逐步 + 回读）。
+       * userConfirmed 必须为 true，否则 Background 拒绝。
+       */
+      type: 'EXECUTE_PLAYBOOK';
+      requestId: string;
+      steps: PlaybookStep[];
+      userConfirmed: true;
+    }
+  | {
+      type: 'EXECUTE_PLAYBOOK_RESULT';
+      requestId: string;
+      completed: number;
+      stopped: boolean;
+      misses?: FillMiss[];
+      results?: Array<{ stepId: string; ok: boolean; message: string }>;
     }
   | {
       /** Background → Content：把截图 dataURL 交给页内 OCR */

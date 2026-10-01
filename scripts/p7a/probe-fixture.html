@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>躺投 P7a 探活 Fixture（变态页）</title>
+  <style>
+    body { font-family: "Segoe UI", sans-serif; max-width: 780px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 1.35rem; }
+    h2 { font-size: 1.05rem; margin-top: 28px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+    .row { margin: 12px 0; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; }
+    .ant-like { border: 1px solid #ccc; padding: 8px 10px; min-height: 34px; cursor: pointer; background: #fff; }
+    .dropdown { display: none; border: 1px solid #999; background: #fff; max-height: 160px; overflow: auto; }
+    .dropdown.open { display: block; }
+    .dropdown div { padding: 6px 10px; cursor: pointer; }
+    .dropdown div:hover { background: #f3f4f6; }
+    .edu-block { border: 1px dashed #94a3b8; padding: 12px; margin-top: 10px; border-radius: 8px; }
+    .actions { margin-top: 28px; display: flex; gap: 10px; flex-wrap: wrap; }
+    button { padding: 8px 14px; cursor: pointer; }
+    .danger { background: #dc2626; color: #fff; border: 0; border-radius: 6px; }
+    .hint { color: #64748b; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <!--
+    本地变态页：自定义下拉年份、分区添加、危险提交按钮。
+    用法：用浏览器打开本文件 → 加载躺投 → 侧栏选档案 →「智能探活」。
+    预期：看到步骤列表；页面控件值不变；提交按钮未被点击。
+  -->
+  <h1>P7a 探活 Fixture</h1>
+  <p class="hint">本页用于验证「智能探活」只分析不执行。请勿手动点红色提交按钮以外的验收步骤以外操作。</p>
+
+  <form id="weirdForm" onsubmit="event.preventDefault(); document.getElementById('log').textContent='表单被提交了（扩展不应触发）';">
+    <h2>基本信息</h2>
+    <div class="row">
+      <label for="fullName">姓名</label>
+      <input id="fullName" name="fullName" />
+    </div>
+    <div class="row">
+      <label>现居城市（仿 Ant 下拉）</label>
+      <div id="cityTrigger" class="ant-like" role="combobox" tabindex="0">请选择</div>
+      <div id="cityDropdown" class="dropdown" role="listbox">
+        <div data-value="北京">北京</div>
+        <div data-value="上海">上海</div>
+        <div data-value="深圳">深圳</div>
+      </div>
+    </div>
+
+    <h2>教育经历</h2>
+    <button type="button" id="addEducation">添加教育</button>
+    <div id="educationList">
+      <div class="edu-block" data-edu-row="0">
+        <div class="row">
+          <label>入学年</label>
+          <div class="ant-like year-trigger" role="combobox" tabindex="0" data-year-for="0">请选择年</div>
+          <div class="dropdown year-dropdown" data-year-panel="0"></div>
+        </div>
+        <div class="row">
+          <label>入学月</label>
+          <div class="ant-like month-trigger" role="combobox" tabindex="0" data-month-for="0">请选择月</div>
+          <div class="dropdown month-dropdown" data-month-panel="0"></div>
+        </div>
+        <div class="row">
+          <label>学校</label>
+          <input name="school0" />
+        </div>
+      </div>
+    </div>
+
+    <h2>项目经历</h2>
+    <button type="button" id="addProject">新增一段</button>
+    <div id="projectList"></div>
+
+    <div class="actions">
+      <button type="button" id="saveDraft">保存草稿</button>
+      <button type="submit" id="submitBtn" class="danger">提交投递</button>
+    </div>
+  </form>
+
+  <pre id="log" class="hint"></pre>
+
+  <script>
+    const cityTrigger = document.getElementById('cityTrigger');
+    const cityDropdown = document.getElementById('cityDropdown');
+    cityTrigger.addEventListener('click', () => cityDropdown.classList.toggle('open'));
+    cityDropdown.querySelectorAll('[data-value]').forEach((node) => {
+      node.addEventListener('click', () => {
+        cityTrigger.textContent = node.getAttribute('data-value');
+        cityDropdown.classList.remove('open');
+      });
+    });
+
+    function fillYearPanel(panel) {
+      panel.replaceChildren();
+      for (let year = 2026; year >= 2000; year -= 1) {
+        const option = document.createElement('div');
+        option.textContent = String(year);
+        option.dataset.value = String(year);
+        panel.appendChild(option);
+      }
+    }
+
+    function fillMonthPanel(panel) {
+      panel.replaceChildren();
+      for (let month = 1; month <= 12; month += 1) {
+        const option = document.createElement('div');
+        option.textContent = String(month);
+        option.dataset.value = String(month);
+        panel.appendChild(option);
+      }
+    }
+
+    function wireYearMonth(root) {
+      root.querySelectorAll('.year-trigger').forEach((trigger) => {
+        const index = trigger.getAttribute('data-year-for');
+        const panel = root.querySelector(`[data-year-panel="${index}"]`);
+        if (!(panel instanceof HTMLElement)) return;
+        fillYearPanel(panel);
+        trigger.addEventListener('click', () => panel.classList.toggle('open'));
+        panel.querySelectorAll('[data-value]').forEach((option) => {
+          option.addEventListener('click', () => {
+            trigger.textContent = option.getAttribute('data-value') || '';
+            panel.classList.remove('open');
+          });
+        });
+      });
+      root.querySelectorAll('.month-trigger').forEach((trigger) => {
+        const index = trigger.getAttribute('data-month-for');
+        const panel = root.querySelector(`[data-month-panel="${index}"]`);
+        if (!(panel instanceof HTMLElement)) return;
+        fillMonthPanel(panel);
+        trigger.addEventListener('click', () => panel.classList.toggle('open'));
+        panel.querySelectorAll('[data-value]').forEach((option) => {
+          option.addEventListener('click', () => {
+            trigger.textContent = option.getAttribute('data-value') || '';
+            panel.classList.remove('open');
+          });
+        });
+      });
+    }
+
+    wireYearMonth(document.getElementById('educationList'));
+
+    let eduIndex = 1;
+    document.getElementById('addEducation').addEventListener('click', () => {
+      const block = document.createElement('div');
+      block.className = 'edu-block';
+      block.dataset.eduRow = String(eduIndex);
+      block.innerHTML = `
+        <div class="row">
+          <label>入学年</label>
+          <div class="ant-like year-trigger" role="combobox" tabindex="0" data-year-for="${eduIndex}">请选择年</div>
+          <div class="dropdown year-dropdown" data-year-panel="${eduIndex}"></div>
+        </div>
+        <div class="row">
+          <label>入学月</label>
+          <div class="ant-like month-trigger" role="combobox" tabindex="0" data-month-for="${eduIndex}">请选择月</div>
+          <div class="dropdown month-dropdown" data-month-panel="${eduIndex}"></div>
+        </div>
+        <div class="row">
+          <label>学校</label>
+          <input name="school${eduIndex}" />
+        </div>`;
+      document.getElementById('educationList').appendChild(block);
+      wireYearMonth(block);
+      eduIndex += 1;
+      document.getElementById('log').textContent = `已添加教育行，当前 ${eduIndex} 行（扩展探活不应自动点添加）`;
+    });
+
+    let projectIndex = 0;
+    document.getElementById('addProject').addEventListener('click', () => {
+      projectIndex += 1;
+      const block = document.createElement('div');
+      block.className = 'edu-block';
+      block.innerHTML = `<div class="row"><label>项目名称</label><input name="project${projectIndex}" /></div>`;
+      document.getElementById('projectList').appendChild(block);
+      document.getElementById('log').textContent = `已添加项目 ${projectIndex}`;
+    });
+
+    document.getElementById('saveDraft').addEventListener('click', () => {
+      document.getElementById('log').textContent = '保存草稿被点击（探活不应点）';
+    });
+  </script>
+</body>
+</html>

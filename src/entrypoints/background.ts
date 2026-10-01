@@ -28,6 +28,8 @@ import {
   proposeFromPageOcr,
 } from '../shared/decision/visionAssist';
 import { hitsToSourcedItems } from '../shared/decision/toFillPlan';
+import { buildSitePlaybook } from '../shared/decision/playbookEngine';
+import type { EvidencePack } from '../shared/playbook/types';
 import { sendToActiveTab } from '../shared/messaging/send';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
 import type { FieldDescriptor } from '../shared/types/fill';
@@ -218,25 +220,52 @@ async function resolveActiveTabSiteAdapterName(): Promise<string | undefined> {
 }
 
 /**
+ * 对当前活动标签可见区截图（jpeg，控制体积便于多模态）。
+ * 失败返回空串与 notice，不抛错。
+ */
+async function captureActiveTabImage(
+  _requestId: string,
+): Promise<{ imageDataUrl: string; notice?: string }> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const activeTab = tabs[0];
+    if (activeTab?.id === undefined || activeTab.windowId === undefined) {
+      return { imageDataUrl: '', notice: '没有活动标签，跳过截图' };
+    }
+    const imageDataUrl = await chrome.tabs.captureVisibleTab(activeTab.windowId, {
+      format: 'jpeg',
+      quality: 55,
+    });
+    return { imageDataUrl };
+  } catch (error: unknown) {
+    return {
+      imageDataUrl: '',
+      notice: `截图跳过：${describeUserFacingError(error)}`,
+    };
+  }
+}
+
+/**
  * 对当前活动标签截图，并交给内容脚本做 OCR（P4b）。
  * 失败时返回空字符串与 notice，不抛错，以免挡住主填写链路。
  */
 async function captureActiveTabOcrText(
   requestId: string,
-): Promise<{ ocrText: string; notice?: string }> {
+): Promise<{ ocrText: string; notice?: string; imageDataUrl?: string }> {
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const activeTab = tabs[0];
     if (activeTab?.id === undefined || activeTab.windowId === undefined) {
       return { ocrText: '', notice: '没有活动标签，跳过截图识字' };
     }
-    const imageDataUrl = await chrome.tabs.captureVisibleTab(activeTab.windowId, {
-      format: 'png',
-    });
+    const imageCapture = await captureActiveTabImage(requestId);
+    if (!imageCapture.imageDataUrl) {
+      return { ocrText: '', notice: imageCapture.notice };
+    }
     const ocrResponse = await chrome.tabs.sendMessage(activeTab.id, {
       type: 'RUN_PAGE_OCR',
       requestId,
-      imageDataUrl,
+      imageDataUrl: imageCapture.imageDataUrl,
     } satisfies ExtensionMessage);
     if (
       ocrResponse &&
@@ -247,7 +276,10 @@ async function captureActiveTabOcrText(
         ExtensionMessage,
         { type: 'RUN_PAGE_OCR_RESULT' }
       >;
-      return { ocrText: typed.ocrText ?? '' };
+      return {
+        ocrText: typed.ocrText ?? '',
+        imageDataUrl: imageCapture.imageDataUrl,
+      };
     }
     if (
       ocrResponse &&
@@ -255,9 +287,17 @@ async function captureActiveTabOcrText(
       (ocrResponse as ExtensionMessage).type === 'ERROR'
     ) {
       const typed = ocrResponse as Extract<ExtensionMessage, { type: 'ERROR' }>;
-      return { ocrText: '', notice: typed.message };
+      return {
+        ocrText: '',
+        notice: typed.message,
+        imageDataUrl: imageCapture.imageDataUrl,
+      };
     }
-    return { ocrText: '', notice: '页内识字未返回结果' };
+    return {
+      ocrText: '',
+      notice: '页内识字未返回结果',
+      imageDataUrl: imageCapture.imageDataUrl,
+    };
   } catch (error: unknown) {
     return {
       ocrText: '',
@@ -504,6 +544,153 @@ async function handleBuildFillPlan(
     primaryEngine: decisionResult.primaryEngine,
     siteAdapterName,
   };
+}
+
+/**
+ * P7：收集证据（可含受控探测 / OCR / 多模态）并生成 SitePlaybook，不自动执行写入。
+ */
+async function handleBuildSitePlaybook(
+  message: Extract<ExtensionMessage, { type: 'BUILD_SITE_PLAYBOOK' }>,
+): Promise<ExtensionMessage> {
+  const profile = await getProfile(message.profileId);
+  if (!profile) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'PROFILE_NOT_FOUND',
+      message: '未找到所选档案',
+    };
+  }
+
+  // P7c：默认开启受控探测；显式 false 可关掉
+  const enableProbeClicks = message.enableProbeClicks !== false;
+  const enableMultimodal = message.enableMultimodal !== false;
+
+  let evidence: EvidencePack | undefined = message.evidence;
+  const notices: string[] = [];
+
+  if (!evidence) {
+    try {
+      const collectResponse = await sendToActiveTab({
+        type: 'COLLECT_PAGE_EVIDENCE',
+        requestId: message.requestId,
+        enableProbeClicks,
+      });
+      if (collectResponse.type === 'COLLECT_PAGE_EVIDENCE_RESULT') {
+        evidence = collectResponse.evidence;
+      } else if (collectResponse.type === 'ERROR') {
+        return collectResponse;
+      }
+    } catch (error: unknown) {
+      return {
+        type: 'ERROR',
+        requestId: message.requestId,
+        code: 'EVIDENCE_FAILED',
+        message: describeUserFacingError(error),
+      };
+    }
+  }
+
+  if (!evidence) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'EVIDENCE_FAILED',
+      message: '未能收集到页内证据',
+    };
+  }
+
+  // 有 P3 适配器时强调快路径（证据里可能已有，再钉一条给侧栏 notice）
+  if (evidence.siteAdapterName) {
+    notices.push(
+      `已命中适配器「${evidence.siteAdapterName}」：可优先「扫描本页」；探活为增强。`,
+    );
+  }
+
+  // 截图一次：OCR +（可选）多模态共用
+  const ocrCapture = await captureActiveTabOcrText(`${message.requestId}-probe-ocr`);
+  if (ocrCapture.ocrText.trim()) {
+    evidence = {
+      ...evidence,
+      ocrText: ocrCapture.ocrText,
+    };
+  } else if (ocrCapture.notice) {
+    notices.push(ocrCapture.notice);
+  }
+
+  const settings = await getSettings();
+  const screenshotDataUrl =
+    enableMultimodal &&
+    settings.apiBaseUrl.trim() &&
+    settings.apiKey.trim() &&
+    ocrCapture.imageDataUrl
+      ? ocrCapture.imageDataUrl
+      : undefined;
+
+  const { playbook, usage } = await buildSitePlaybook({
+    evidence,
+    profileData: profile.data,
+    apiBaseUrl: settings.apiBaseUrl,
+    apiKey: settings.apiKey,
+    model: settings.model,
+    screenshotDataUrl,
+  });
+
+  // 再次钉死：引擎产出不可直接执行
+  playbook.executable = false;
+
+  if (usage) {
+    await recordTokenUsage(usage);
+  }
+
+  const probeSummary =
+    evidence.probeClickEnabled === true
+      ? `探测点击 ${(evidence.probeClicks ?? []).filter((item) => item.ok).length} 次`
+      : '未做探测点击';
+
+  return {
+    type: 'BUILD_SITE_PLAYBOOK_RESULT',
+    requestId: message.requestId,
+    playbook,
+    usage: usage ?? null,
+    notice:
+      notices.length > 0
+        ? `${notices.join('；')} ｜ ${probeSummary}`
+        : playbook.engine === 'heuristic'
+          ? `启发式方案（${probeSummary}）。可合并进预览或确认执行。`
+          : `云端方案已生成（${probeSummary}${screenshotDataUrl ? '；已尝试多模态' : ''}）。可合并进预览或确认执行。`,
+  };
+}
+
+/**
+ * P7b：仅当 userConfirmed===true 时转发探活逐步执行到活动页。
+ * 不得根据 playbook.executable 放行（引擎产出恒为 false）。
+ */
+async function handleExecutePlaybook(
+  message: Extract<ExtensionMessage, { type: 'EXECUTE_PLAYBOOK' }>,
+): Promise<ExtensionMessage> {
+  if (message.userConfirmed !== true) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'PLAYBOOK_NOT_CONFIRMED',
+      message: '未确认执行。请先在侧栏点「确认执行探活方案」。',
+    };
+  }
+  if (!Array.isArray(message.steps) || message.steps.length === 0) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'PLAYBOOK_EMPTY',
+      message: '没有可执行的探活步骤。',
+    };
+  }
+  return forwardToActiveTab({
+    type: 'EXECUTE_PLAYBOOK',
+    requestId: message.requestId,
+    steps: message.steps,
+    userConfirmed: true,
+  });
 }
 
 /**
@@ -854,6 +1041,10 @@ async function dispatchMessage(
       return handleLayaModelClear(message.requestId);
     case 'CAPTURE_PAGE_OCR':
       return handleCapturePageOcr(message.requestId);
+    case 'BUILD_SITE_PLAYBOOK':
+      return handleBuildSitePlaybook(message);
+    case 'EXECUTE_PLAYBOOK':
+      return handleExecutePlaybook(message);
     case 'OPEN_SIDE_PANEL':
       return handleOpenSidePanel(message.requestId, sender.tab?.id);
     case 'RESET_TOKEN_USAGE':
@@ -873,6 +1064,7 @@ async function dispatchMessage(
       return message;
     case 'PAGE_OVERLAY_UPDATE':
     case 'PAGE_OVERLAY_HIDE':
+    case 'COLLECT_PAGE_EVIDENCE':
     case 'SCAN_FIELDS':
     case 'STOP_PAGE_WORK':
     case 'UNDO_LAST_FILL':

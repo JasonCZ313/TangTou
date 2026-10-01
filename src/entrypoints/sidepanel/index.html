@@ -201,12 +201,33 @@
         <button type="button" id="fillDoneClose" class="btn btn-primary">知道了</button>
       </dialog>
 
+      <section class="sidepanel-section mapping-section" aria-labelledby="playbookHeading">
+        <h2 id="playbookHeading" class="section-label">智能探活方案</h2>
+        <p class="hint tip-inline">
+          收集证据时可做<strong>预算内探测点击</strong>（只开下拉/展开，永不提交）。有 P3 适配器的站仍建议先「扫描本页」。云端可用时会尝试附带截图（不支持则回退纯文本）。
+        </p>
+        <p id="playbookSummary" class="playbook-summary" hidden></p>
+        <ol id="playbookStepList" class="playbook-step-list"></ol>
+        <p id="playbookEmptyHint" class="hint">尚未探活。选好档案后点下方「智能探活」。</p>
+        <div class="playbook-actions" role="group" aria-label="探活后续操作">
+          <button type="button" id="mergePlaybookButton" class="btn btn-secondary" disabled>
+            合并进预览
+          </button>
+          <button type="button" id="executePlaybookButton" class="btn btn-secondary" disabled>
+            确认执行探活方案
+          </button>
+        </div>
+      </section>
+
       <section class="sidepanel-actions" aria-label="助手操作">
         <button type="button" id="confirmWriteButton" class="btn btn-primary action-confirm">
           确认写入
         </button>
         <button type="button" id="scanPageButton" class="btn btn-secondary action-scan">
           扫描本页
+        </button>
+        <button type="button" id="probePageButton" class="btn btn-secondary action-probe">
+          智能探活
         </button>
         <button type="button" id="stopButton" class="btn btn-ghost action-stop" hidden>
           停止

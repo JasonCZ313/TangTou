@@ -1,7 +1,7 @@
 ﻿# 躺投 × Laya 双引擎完整技术方案（现行版）
 
 **日期：** 2026-09-30  
-**状态：** P0～P1、P2a、P2b、P3、P4a、P4b 已编码；**P2c / P5～P6 / P7 待做**  
+**状态：** P0～P1、P2a、P2b、P3、P4a、P4b、P5、P7a、P7b、**P7c** 已编码；**P2c / P6 待做**  
 **产品约束（锁定）：**
 
 1. 双引擎：本机 Laya（判断）+ 用户 API（映射/润色/视觉兜底）  
@@ -33,7 +33,7 @@
 | **P4b** | 截图 + OCR 辅助进预览 | **已完成** | P4a |
 | **P5** | 驾驶舱 UI + README 纠偏（来源列/徽章/去 direct 文档） | **已完成** | P2b/P4 已齐 |
 | **P6** | 打磨上架 | 待做 | P5 |
-| **P7** | **大厂/特殊 ATS 智能探活与安全填写** | **已立项，后续编码** | P3+P4b；建议 P5 前后启动 |
+| **P7** | **大厂/特殊 ATS 智能探活与安全填写** | **P7a/P7b/P7c 已完成** | P3+P4b+P5 |
 
 **推荐节奏：**  
 `P2b`（本机模型）与 `P4a`（浮层）可二选一优先 → `P4b` → **`P7` 设计与 POC** → `P5` → `P6`。  
@@ -158,16 +158,17 @@ P2c 仅高级用户需要时再做。
 | `content/probe/collectEvidence.ts` | P7a | DOM 摘要 + 调已有 OCR；**无点击** |
 | `shared/decision/playbookEngine.ts` | P7a | Evidence → Playbook（用户 API；无 Key 则规则/占位说明） |
 | 侧栏「智能探活」+ 步骤列表 | P7a | 只展示；可复制说明；不合并写入 |
-| Playbook → FillPlan 合并 | P7b | 进预览；来源标「探活」 |
-| 逐步执行器 | P7b | 确认后执行；复用 overlay + 回读 |
-| `content/probe/safeClick.ts` | P7c | 预算内探测点击；黑名单 |
-| 多模态截图进 API | P7c | 可选增强；纯文本 OCR 仍为默认 |
+| Playbook → FillPlan 合并 | **P7b 已完成** | `mergeToPlan`；来源 `probe`；侧栏「合并进预览」 |
+| 逐步执行器 | **P7b 已完成** | `executePlaybook` + `EXECUTE_PLAYBOOK`；确认后执行；overlay + 回读 |
+| `content/probe/safeClick.ts` | **P7c 已完成** | 预算内探测点击；黑名单；不点添加行 |
+| 多模态截图进 API | **P7c 已完成** | jpeg 截图可选送云端；失败回退 OCR/纯文本 |
+| `shared/playbook/megaCorpCatalog.ts` | **P7c 已完成** | 大厂 hostname 样例 + P3 快路径提示 |
 
 ### 4.6 验收（P7）
 
-- [ ] P7a：点探活能看到步骤列表；零写入、零提交  
-- [ ] P7b：至少 1 个变态页手工：探活→预览→写入→回读；低置信不假成功  
-- [ ] P7c：探测过程零提交；有适配器的站仍可走 P3 快路径  
+- [x] P7a：点探活能看到步骤列表；零写入、零提交  
+- [x] P7b：合并进预览（source=probe）+ 确认后逐步执行 + 回读闸；低置信不假成功（置信阈值过滤）  
+- [x] P7c：探测过程零提交；有适配器的站仍可走 P3 快路径；多模态可选 + `scripts/p7c/probe-fixture.html`  
 
 ### 4.7 分期建议（修订）
 
@@ -214,13 +215,13 @@ P2c 仅高级用户需要时再做。
 **修订后的编码顺序：**
 
 1. ~~**下一步：P5（驾驶舱 + 文档纠偏）**~~ **已完成** — 正式 `source` 字段、来源列、引擎徽章、README 去 direct。  
-2. **下一步：P7a** — EvidencePack + Playbook 只展示不执行；对标先本地变态 HTML。  
-3. **再：P7b** — 合并预览 + 逐步执行 + 回读闸。  
-4. **再：P7c** — 受控探测点击 + 多模态样例。  
-5. **最后：P6** — 上架打磨。  
+2. ~~**下一步：P7a**~~ **已完成** — EvidencePack + Playbook 只展示；本地 fixture `scripts/p7a/probe-fixture.html`。  
+3. ~~**下一步：P7b**~~ **已完成** — 合并预览 + 逐步执行 + 回读闸（`EXECUTE_PLAYBOOK` 需 userConfirmed）。  
+4. ~~**下一步：P7c**~~ **已完成** — 受控探测点击 + 多模态（可回退）+ 大厂样例目录。  
+5. **下一步：P6** — 上架打磨。  
 6. **可插：P2c** — Laya Server / ORT 真推理（有权重再做）。
 
-**若只选一个下一编码步：`P7a`（对标本地 HTML）。**
+**若只选一个下一编码步：`P6`。**
 
 ---
 
@@ -233,3 +234,6 @@ P2c 仅高级用户需要时再做。
 | 2026-09-30 | **P2b + P4a + P4b 落地**：内置轻量包/下载缓存/Offscreen ORT 骨架；页内浮层；截图 OCR 辅助预览 |
 | 2026-10-01 | **盘点现码后修订 P5～P7**：P5 收窄为来源列+徽章+文档纠偏；P7 明确复用 overlay/OCR/黑名单/回读；推荐顺序改为 P5→P7a→P7b→P7c→P6 |
 | 2026-10-01 | **P5 落地**：`FillMappingItem.source` 正式字段；FILL_PLAN/会话带 primaryEngine+站点名；侧栏来源列与驾驶舱徽章；README/验收去「直接填写」 |
+| 2026-10-01 | **P7a 落地**：EvidencePack 收集、启发式/云端 Playbook、侧栏「智能探活」只展示；`scripts/p7a/probe-fixture.html` |
+| 2026-10-01 | **P7b 落地**：`mergePlaybookIntoFillPlan`（source=probe）；侧栏合并/确认执行；`EXECUTE_PLAYBOOK`+逐步回读；永不点提交 |
+| 2026-10-01 | **P7c 落地**：`safeClick` 预算探测；Evidence 并入 probeClicks；多模态截图可回退；`megaCorpCatalog`+`scripts/p7c/probe-fixture.html` |

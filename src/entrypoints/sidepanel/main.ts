@@ -52,6 +52,15 @@ import {
 } from '../../shared/types/fill';
 import type { Profile } from '../../shared/types/profile';
 import type { LlmTokenUsage, TokenUsageStats } from '../../shared/types/usage';
+import type { SitePlaybook } from '../../shared/playbook/types';
+import {
+  PLAYBOOK_RISK_LABEL,
+  PLAYBOOK_STEP_KIND_LABEL,
+} from '../../shared/playbook/types';
+import {
+  mergePlaybookIntoFillPlan,
+  selectExecutablePlaybookSteps,
+} from '../../shared/playbook/mergeToPlan';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'error';
@@ -65,6 +74,8 @@ let popupScanHandoffActive = false;
 let cachedProfiles: Profile[] = [];
 let cachedActiveProfileId: string | null = null;
 let currentSession: FillSession | null = null;
+/** 最近一次智能探活产出的方案（合并/执行用） */
+let latestPlaybook: SitePlaybook | null = null;
 let isBusy = false;
 
 const settingsDetails = document.getElementById(
@@ -148,6 +159,24 @@ const skippedSummaryElement = document.getElementById(
 ) as HTMLParagraphElement;
 const scanPageButton = document.getElementById(
   'scanPageButton',
+) as HTMLButtonElement;
+const probePageButton = document.getElementById(
+  'probePageButton',
+) as HTMLButtonElement;
+const playbookSummaryElement = document.getElementById(
+  'playbookSummary',
+) as HTMLParagraphElement;
+const playbookStepList = document.getElementById(
+  'playbookStepList',
+) as HTMLOListElement;
+const playbookEmptyHint = document.getElementById(
+  'playbookEmptyHint',
+) as HTMLParagraphElement;
+const mergePlaybookButton = document.getElementById(
+  'mergePlaybookButton',
+) as HTMLButtonElement;
+const executePlaybookButton = document.getElementById(
+  'executePlaybookButton',
 ) as HTMLButtonElement;
 const confirmWriteButton = document.getElementById(
   'confirmWriteButton',
@@ -406,6 +435,10 @@ function syncBusyUi(): void {
   const atLimit = cachedProfiles.length >= MAX_PROFILES;
 
   scanPageButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
+  probePageButton.disabled = isBusy || !hasProfiles || !selectedProfileId;
+  const hasPlaybookSteps = (latestPlaybook?.steps.length ?? 0) > 0;
+  mergePlaybookButton.disabled = isBusy || !hasPlaybookSteps;
+  executePlaybookButton.disabled = isBusy || !hasPlaybookSteps;
   confirmWriteButton.disabled =
     isBusy || !hasProfiles || !selectedProfileId || !sessionHasMappingRows();
   undoButton.disabled = isBusy;
@@ -416,6 +449,237 @@ function syncBusyUi(): void {
   testApiButton.disabled = isBusy;
   openFullEditorButton.disabled = isBusy;
   syncActionButtonHierarchy();
+}
+
+/**
+ * 渲染探活方案列表，并刷新合并/执行按钮状态。
+ */
+function renderPlaybook(playbook: SitePlaybook | null, notice?: string): void {
+  latestPlaybook = playbook;
+  playbookStepList.replaceChildren();
+  if (!playbook || playbook.steps.length === 0) {
+    playbookSummaryElement.hidden = true;
+    playbookSummaryElement.textContent = '';
+    playbookEmptyHint.hidden = false;
+    syncBusyUi();
+    return;
+  }
+  playbookEmptyHint.hidden = true;
+  const warningText =
+    playbook.warnings.length > 0
+      ? `警告：${playbook.warnings.slice(0, 3).join('；')}`
+      : '';
+  const mergeableCount = playbook.steps.filter(
+    (step) =>
+      step.isWrite &&
+      (step.kind === 'fill_field' || step.kind === 'select_option') &&
+      Boolean(step.targetFieldId?.trim()) &&
+      Boolean(step.suggestedValue?.trim()),
+  ).length;
+  playbookSummaryElement.hidden = false;
+  playbookSummaryElement.textContent = [
+    playbook.summary,
+    `引擎：${playbook.engine === 'cloud' ? '云端' : '启发式'}`,
+    `可合并预览约 ${mergeableCount} 步`,
+    notice ?? '',
+    warningText,
+  ]
+    .filter(Boolean)
+    .join(' ｜ ');
+
+  for (const step of playbook.steps) {
+    const listItem = document.createElement('li');
+    if (step.risk === 'high') {
+      listItem.classList.add('is-high-risk');
+    }
+    const title = document.createElement('span');
+    title.className = 'step-title';
+    title.textContent = `${PLAYBOOK_STEP_KIND_LABEL[step.kind]} · ${step.title}`;
+    const meta = document.createElement('span');
+    meta.className = 'step-meta';
+    meta.textContent = [
+      step.detail,
+      `风险 ${PLAYBOOK_RISK_LABEL[step.risk]}`,
+      `置信 ${Math.round(step.confidence * 100)}%`,
+      step.suggestedValue ? `建议值「${step.suggestedValue}」` : '',
+      step.isWrite ? '写入类' : '只读',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    listItem.append(title, meta);
+    playbookStepList.appendChild(listItem);
+  }
+  syncBusyUi();
+}
+
+/**
+ * 读取侧栏置信度阈值（与 Decision 共用同一输入）。
+ */
+function readDecisionMinConfidence(): number {
+  const parsed = Number(decisionMinConfidenceInput.value);
+  if (!Number.isFinite(parsed)) {
+    return 0.55;
+  }
+  return Math.min(0.99, Math.max(0.1, parsed));
+}
+
+/**
+ * P7b：把可映射探活步合并进 FillSession.plan（source=probe），不写页。
+ */
+async function mergeLatestPlaybookIntoPreview(): Promise<void> {
+  if (!latestPlaybook || latestPlaybook.steps.length === 0) {
+    showError('请先完成智能探活');
+    return;
+  }
+  const minConfidence = readDecisionMinConfidence();
+  const basePlan: FillPlan = currentSession?.plan ?? {
+    items: [],
+    skippedFieldIds: [],
+  };
+  const { plan, mergedCount, skippedStepCount } = mergePlaybookIntoFillPlan(
+    basePlan,
+    latestPlaybook,
+    minConfidence,
+  );
+  if (mergedCount === 0) {
+    showError(
+      skippedStepCount > 0
+        ? '有可写步但缺少 fieldId/建议值或置信不足，未能合并。可先扫描本页再探活。'
+        : '当前方案没有可合并进预览的填写步。',
+    );
+    return;
+  }
+
+  // 为新出现的 fieldId 补标签行，便于预览表展示
+  const existingFields = currentSession?.fields ?? [];
+  const fieldById = new Map(
+    existingFields.map((field) => [field.fieldId, field] as const),
+  );
+  for (const item of plan.items) {
+    if (fieldById.has(item.fieldId)) {
+      continue;
+    }
+    const matchedStep = latestPlaybook.steps.find(
+      (step) => step.targetFieldId === item.fieldId,
+    );
+    const syntheticField: FieldDescriptor = {
+      fieldId: item.fieldId,
+      tag: 'input',
+      type: 'text',
+      label: matchedStep?.title?.replace(/^常规字段：/, '') || item.fieldId,
+      required: false,
+      selectorHint: `[data-raf-id="${item.fieldId}"]`,
+    };
+    fieldById.set(item.fieldId, syntheticField);
+  }
+
+  const nextSession: FillSession = {
+    plan,
+    fields: [...fieldById.values()],
+    notice: currentSession?.notice,
+      profileId: currentSession?.profileId ?? (profileSelect.value || undefined),
+    primaryEngine: currentSession?.primaryEngine,
+    siteAdapterName: currentSession?.siteAdapterName,
+  };
+  await saveFillSession(nextSession);
+  currentSession = nextSession;
+  renderMappingTable();
+  syncBusyUi();
+  showStatus(
+    `已合并 ${mergedCount} 项探活建议进预览（来源=探活）。请核对后再点「确认写入」或「确认执行探活方案」。`,
+    'success',
+  );
+}
+
+/**
+ * P7b：用户二次确认后，逐步执行可写探活步（含添加/打开选择器/填写）。
+ */
+async function executeLatestPlaybookConfirmed(): Promise<void> {
+  if (!latestPlaybook || latestPlaybook.steps.length === 0) {
+    showError('请先完成智能探活');
+    return;
+  }
+  const minConfidence = readDecisionMinConfidence();
+  const steps = selectExecutablePlaybookSteps(latestPlaybook, minConfidence);
+  if (steps.length === 0) {
+    showError('没有达到置信阈值的可执行写入步。');
+    return;
+  }
+  const confirmed = window.confirm(
+    `将逐步执行 ${steps.length} 步探活写入（含回读）。\n不会点击提交/投递。\n低置信步骤已跳过。\n\n确定执行？`,
+  );
+  if (!confirmed) {
+    showStatus('已取消执行探活方案。', 'info');
+    return;
+  }
+  showStatus('正在按探活方案逐步执行…', 'info');
+  showScanProgress(10, '探活执行中…');
+  const response = await sendRuntimeMessage({
+    type: 'EXECUTE_PLAYBOOK',
+    requestId: createRequestId(),
+    steps,
+    userConfirmed: true,
+  });
+  if (response.type === 'ERROR') {
+    scanProgressElement.hidden = true;
+    showError(response.message);
+    return;
+  }
+  if (response.type !== 'EXECUTE_PLAYBOOK_RESULT') {
+    scanProgressElement.hidden = true;
+    showError('探活执行返回异常，请重试');
+    return;
+  }
+  showScanProgress(
+    100,
+    response.stopped
+      ? `已停止：完成 ${response.completed}/${steps.length}`
+      : `探活执行完成：${response.completed} 步`,
+  );
+  if (response.misses && response.misses.length > 0) {
+    renderMissTable(response.misses);
+  }
+  showStatus(
+    response.stopped
+      ? `探活执行中途停止（完成 ${response.completed} 步）。请查看未填原因。`
+      : `探活方案已执行完 ${response.completed} 步。`,
+    response.stopped ? 'error' : 'success',
+  );
+}
+
+/**
+ * 智能探活：收集证据（含 P7c 受控探测）→ 生成 Playbook → 展示，并可合并/确认执行。
+ */
+async function runProbeAnalyzeFlow(profileId: string): Promise<void> {
+  showStatus('正在智能探活（含受控探测，不提交）…', 'info');
+  showScanProgress(8, '收集页内证据与探测点击…');
+  const response = await sendRuntimeMessage({
+    type: 'BUILD_SITE_PLAYBOOK',
+    requestId: createRequestId(),
+    profileId,
+    enableProbeClicks: true,
+    enableMultimodal: true,
+  });
+  if (response.type === 'ERROR') {
+    scanProgressElement.hidden = true;
+    showError(response.message);
+    return;
+  }
+  if (response.type !== 'BUILD_SITE_PLAYBOOK_RESULT') {
+    scanProgressElement.hidden = true;
+    showError('探活返回异常，请重试');
+    return;
+  }
+  renderPlaybook(response.playbook, response.notice);
+  showScanProgress(100, `探活完成：${response.playbook.steps.length} 步方案`);
+  showStatus(
+    response.notice ??
+      `已生成 ${response.playbook.steps.length} 步探活方案。可合并进预览或确认执行。`,
+    'success',
+  );
+  if (response.usage) {
+    await refreshUsageLine(response.usage);
+  }
 }
 
 /**
@@ -1509,6 +1773,32 @@ function bindEvents(): void {
         return;
       }
       await runRescanFlow(selectedProfileId);
+    });
+  });
+
+  // 「智能探活」：先生成方案步骤；合并/执行需另点按钮
+  probePageButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      const selectedProfileId = profileSelect.value;
+      if (!selectedProfileId) {
+        showError('请先选择档案');
+        return;
+      }
+      await runProbeAnalyzeFlow(selectedProfileId);
+    });
+  });
+
+  // 「合并进预览」：探活步 → FillSession.plan（source=probe），不写页
+  mergePlaybookButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await mergeLatestPlaybookIntoPreview();
+    });
+  });
+
+  // 「确认执行探活方案」：二次确认后逐步写页 + 回读
+  executePlaybookButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await executeLatestPlaybookConfirmed();
     });
   });
 

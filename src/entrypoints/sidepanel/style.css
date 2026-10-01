@@ -150,6 +150,47 @@ body {
   color: var(--tt-text-secondary, #374151);
 }
 
+.playbook-summary {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #9a3412;
+}
+
+.playbook-step-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.playbook-step-list li {
+  margin-bottom: 8px;
+}
+
+.playbook-step-list .step-meta {
+  display: block;
+  color: var(--tt-muted, #6b7280);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.playbook-step-list .is-high-risk .step-title {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.playbook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .skipped-summary {
   margin: 10px 0 0;
   font-size: 12px;

@@ -7,6 +7,8 @@ import {
   updatePageOverlay,
 } from '../content/ui/pageOverlay';
 import { recognizePageImageDataUrl } from '../content/vision/pageOcr';
+import { collectPageEvidence } from '../content/probe/collectEvidence';
+import { executeApprovedPlaybookSteps } from '../content/probe/executePlaybook';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
 import type { ExtensionMessage } from '../shared/types/messages';
 
@@ -81,6 +83,45 @@ export default defineContentScript({
                 type: 'ERROR',
                 requestId: message.requestId,
                 code: 'PAGE_OCR_FAILED',
+                message: describeUserFacingError(error),
+              } satisfies ExtensionMessage);
+            });
+          return true;
+        }
+
+        if (message.type === 'COLLECT_PAGE_EVIDENCE') {
+          const enableProbeClicks = message.enableProbeClicks === true;
+          updatePageOverlay({
+            percent: 15,
+            message: enableProbeClicks
+              ? '正在收集证据（含受控探测，不提交）…'
+              : '正在收集页内证据（只读，不点击）…',
+            showCancel: enableProbeClicks,
+          });
+          void collectPageEvidence({
+            enableProbeClicks,
+            onProgress: (progressMessage) => {
+              updatePageOverlay({
+                percent: 35,
+                message: progressMessage,
+                showCancel: enableProbeClicks,
+              });
+            },
+          })
+            .then((evidence) => {
+              hidePageOverlay();
+              sendResponse({
+                type: 'COLLECT_PAGE_EVIDENCE_RESULT',
+                requestId: message.requestId,
+                evidence,
+              } satisfies ExtensionMessage);
+            })
+            .catch((error: unknown) => {
+              hidePageOverlay();
+              sendResponse({
+                type: 'ERROR',
+                requestId: message.requestId,
+                code: 'EVIDENCE_FAILED',
                 message: describeUserFacingError(error),
               } satisfies ExtensionMessage);
             });
@@ -210,6 +251,37 @@ export default defineContentScript({
                 type: 'ERROR',
                 requestId: message.requestId,
                 code: 'FILL_FAILED',
+                message: describeUserFacingError(error),
+              } satisfies ExtensionMessage);
+            });
+          return true;
+        }
+
+        // P7b：用户确认后的探活逐步执行（含回读；永不点提交）
+        if (message.type === 'EXECUTE_PLAYBOOK') {
+          clearFillStop();
+          updatePageOverlay({
+            percent: 5,
+            message: '正在按确认过的探活方案逐步执行…',
+            showCancel: true,
+          });
+          void executeApprovedPlaybookSteps(message.steps)
+            .then((result) => {
+              sendResponse({
+                type: 'EXECUTE_PLAYBOOK_RESULT',
+                requestId: message.requestId,
+                completed: result.completed,
+                stopped: result.stopped,
+                misses: result.misses,
+                results: result.results,
+              } satisfies ExtensionMessage);
+            })
+            .catch((error: unknown) => {
+              hidePageOverlay();
+              sendResponse({
+                type: 'ERROR',
+                requestId: message.requestId,
+                code: 'PLAYBOOK_EXEC_FAILED',
                 message: describeUserFacingError(error),
               } satisfies ExtensionMessage);
             });

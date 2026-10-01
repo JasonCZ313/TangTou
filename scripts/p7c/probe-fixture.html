@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>躺投 P7c 探活 Fixture（受控探测）</title>
+  <style>
+    body { font-family: "Segoe UI", sans-serif; max-width: 780px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 1.35rem; }
+    h2 { font-size: 1.05rem; margin-top: 28px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+    .row { margin: 12px 0; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; }
+    .ant-like { border: 1px solid #ccc; padding: 8px 10px; min-height: 34px; cursor: pointer; background: #fff; }
+    .dropdown { display: none; border: 1px solid #999; background: #fff; max-height: 160px; overflow: auto; }
+    .dropdown.open { display: block; }
+    .dropdown div { padding: 6px 10px; cursor: pointer; }
+    .dropdown div:hover { background: #f3f4f6; }
+    .edu-block { border: 1px dashed #94a3b8; padding: 12px; margin-top: 10px; border-radius: 8px; }
+    .actions { margin-top: 28px; display: flex; gap: 10px; flex-wrap: wrap; }
+    button { padding: 8px 14px; cursor: pointer; }
+    .danger { background: #dc2626; color: #fff; border: 0; border-radius: 6px; }
+    .hint { color: #64748b; font-size: 13px; }
+    .folded { display: none; margin-top: 8px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; }
+    .folded.open { display: block; }
+  </style>
+</head>
+<body>
+  <!--
+    P7c 验收页：选项隐藏在下拉里，需受控探测点击才能读到。
+    用法：浏览器打开本文件 → 加载躺投 → 侧栏选档案 →「智能探活」。
+    预期：
+    1) 方案里出现「受控探测已读选项」或控件带 optionsSample；
+    2) 红色「提交投递」与「添加教育」未被自动点；
+    3) 表单值未写入（除非用户再确认执行）。
+  -->
+  <h1>P7c 探活 Fixture（受控探测）</h1>
+  <p class="hint">探测应只打开下拉/展开区读选项，然后关掉；不得点提交或添加行。</p>
+
+  <form id="weirdForm" onsubmit="event.preventDefault(); document.getElementById('log').textContent='表单被提交了（扩展不应触发）';">
+    <h2>基本信息</h2>
+    <div class="row">
+      <label for="fullName">姓名</label>
+      <input id="fullName" name="fullName" />
+    </div>
+    <div class="row">
+      <label>现居城市（仿 Ant 下拉）</label>
+      <div id="cityTrigger" class="ant-like" role="combobox" tabindex="0">请选择</div>
+      <div id="cityDropdown" class="dropdown" role="listbox">
+        <div role="option" data-value="北京">北京</div>
+        <div role="option" data-value="上海">上海</div>
+        <div role="option" data-value="深圳">深圳</div>
+      </div>
+    </div>
+
+    <h2>折叠补充</h2>
+    <button type="button" id="expandMore" aria-expanded="false">展开更多信息</button>
+    <div id="morePanel" class="folded">
+      <div class="row">
+        <label for="emailExtra">备用邮箱</label>
+        <input id="emailExtra" name="emailExtra" />
+      </div>
+    </div>
+
+    <h2>教育经历</h2>
+    <button type="button" id="addEducation">添加教育</button>
+    <div id="educationList">
+      <div class="edu-block" data-edu-row="0">
+        <div class="row">
+          <label>入学年</label>
+          <div class="ant-like year-trigger" role="combobox" tabindex="0" data-year-for="0">请选择年</div>
+          <div class="dropdown year-dropdown" data-year-panel="0" role="listbox"></div>
+        </div>
+        <div class="row">
+          <label>入学月</label>
+          <div class="ant-like month-trigger" role="combobox" tabindex="0" data-month-for="0">请选择月</div>
+          <div class="dropdown month-dropdown" data-month-panel="0" role="listbox"></div>
+        </div>
+        <div class="row">
+          <label>学校</label>
+          <input name="school0" />
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="saveDraft">保存草稿</button>
+      <button type="submit" id="submitBtn" class="danger">提交投递</button>
+    </div>
+  </form>
+
+  <pre id="log" class="hint"></pre>
+
+  <script>
+    const clickLog = [];
+    function note(text) {
+      clickLog.push(text);
+      document.getElementById('log').textContent = clickLog.slice(-8).join('\n');
+    }
+
+    const cityTrigger = document.getElementById('cityTrigger');
+    const cityDropdown = document.getElementById('cityDropdown');
+    cityTrigger.addEventListener('click', () => {
+      cityDropdown.classList.toggle('open');
+      note('城市下拉被打开/关闭（探测允许）');
+    });
+    cityDropdown.querySelectorAll('[data-value]').forEach((node) => {
+      node.addEventListener('click', () => {
+        cityTrigger.textContent = node.getAttribute('data-value');
+        cityDropdown.classList.remove('open');
+        note('城市选项被选中（探测阶段不应选值，只读选项）');
+      });
+    });
+
+    document.getElementById('expandMore').addEventListener('click', () => {
+      const panel = document.getElementById('morePanel');
+      const open = panel.classList.toggle('open');
+      document.getElementById('expandMore').setAttribute('aria-expanded', open ? 'true' : 'false');
+      note(open ? '展开更多信息（探测允许）' : '收起更多信息');
+    });
+
+    function fillYearPanel(panel) {
+      panel.replaceChildren();
+      for (let year = 2026; year >= 2000; year -= 1) {
+        const option = document.createElement('div');
+        option.setAttribute('role', 'option');
+        option.textContent = String(year);
+        option.dataset.value = String(year);
+        panel.appendChild(option);
+      }
+    }
+
+    function fillMonthPanel(panel) {
+      panel.replaceChildren();
+      for (let month = 1; month <= 12; month += 1) {
+        const option = document.createElement('div');
+        option.setAttribute('role', 'option');
+        option.textContent = String(month);
+        option.dataset.value = String(month);
+        panel.appendChild(option);
+      }
+    }
+
+    function wireYearMonth(root) {
+      root.querySelectorAll('.year-trigger').forEach((trigger) => {
+        const index = trigger.getAttribute('data-year-for');
+        const panel = root.querySelector(`[data-year-panel="${index}"]`);
+        if (!(panel instanceof HTMLElement)) return;
+        fillYearPanel(panel);
+        trigger.addEventListener('click', () => {
+          panel.classList.toggle('open');
+          note('年份下拉被打开/关闭（探测允许）');
+        });
+        panel.querySelectorAll('[data-value]').forEach((option) => {
+          option.addEventListener('click', () => {
+            trigger.textContent = option.getAttribute('data-value') || '';
+            panel.classList.remove('open');
+          });
+        });
+      });
+      root.querySelectorAll('.month-trigger').forEach((trigger) => {
+        const index = trigger.getAttribute('data-month-for');
+        const panel = root.querySelector(`[data-month-panel="${index}"]`);
+        if (!(panel instanceof HTMLElement)) return;
+        fillMonthPanel(panel);
+        trigger.addEventListener('click', () => {
+          panel.classList.toggle('open');
+          note('月份下拉被打开/关闭（探测允许）');
+        });
+        panel.querySelectorAll('[data-value]').forEach((option) => {
+          option.addEventListener('click', () => {
+            trigger.textContent = option.getAttribute('data-value') || '';
+            panel.classList.remove('open');
+          });
+        });
+      });
+    }
+
+    wireYearMonth(document.getElementById('educationList'));
+
+    document.getElementById('addEducation').addEventListener('click', () => {
+      note('添加教育被点击（扩展探测不应触发）');
+    });
+    document.getElementById('saveDraft').addEventListener('click', () => {
+      note('保存草稿被点击（扩展探测不应触发）');
+    });
+  </script>
+</body>
+</html>
