@@ -7,6 +7,7 @@ import type { FillMiss, FillPlan, SectionAddRequest } from '../../shared/types/f
 import type { ProfileData } from '../../shared/types/profile';
 import type { FileUploadPayload } from '../../shared/types/messages';
 import { prepareFieldForWrite } from '../scanner/scanFields';
+import { ensureSectionRows } from './ensureSectionRows';
 import {
   AUTOFILL_FILL_CLASS,
   AUTOFILL_MISS_CLASS,
@@ -19,6 +20,38 @@ import {
 /** 撤销快照：写入前控件原值，方便 undoLastFill 还原 */
 let lastUndoSnapshots: Array<{ element: Element; previousValue: string; isFile: boolean }> =
   [];
+
+/**
+ * 给用户看的字段名：优先 DOM 上的 data-raf-label，其次短 fieldId，绝不拿 mapping reason 当标签。
+ */
+function resolveMissLabel(fieldId: string, fallbackElement?: Element | null): string {
+  if (fallbackElement instanceof HTMLElement) {
+    const fromElement =
+      fallbackElement.getAttribute('data-raf-label') || fieldLabelBlob(fallbackElement);
+    if (fromElement.trim()) {
+      return fromElement.trim();
+    }
+  }
+  try {
+    const registered = document.querySelector(
+      `[data-raf-id="${CSS.escape(fieldId)}"]`,
+    );
+    if (registered instanceof HTMLElement) {
+      const fromDom =
+        registered.getAttribute('data-raf-label') || fieldLabelBlob(registered);
+      if (fromDom.trim()) {
+        return fromDom.trim();
+      }
+    }
+  } catch {
+    /* 非法 fieldId 时忽略选择器错误 */
+  }
+  // UUID 太长吓人：只露前 8 位作兜底
+  if (fieldId.length > 16) {
+    return `字段 ${fieldId.slice(0, 8)}…`;
+  }
+  return fieldId;
+}
 
 /**
  * 读控件当前值，供写入前记快照。
@@ -46,11 +79,13 @@ function readElementValue(element: Element): string {
 }
 
 /**
- * 把值写回普通控件（撤销用）；file 控件只能清空。
+ * 把值写回普通控件（撤销用）；file 控件只能清空并派发 change（浏览器无法恢复原文件）。
  */
 function restoreElementValue(element: Element, previousValue: string): boolean {
   if (element instanceof HTMLInputElement && element.type === 'file') {
     element.value = '';
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   }
   if (element instanceof HTMLSelectElement) {
@@ -85,11 +120,19 @@ function restoreElementValue(element: Element, previousValue: string): boolean {
 }
 
 /**
- * 在写入前，给即将动到的控件打撤销快照。
+ * 在写入前，给即将动到的控件打撤销快照（可追加到已有快照，附件写入前会再调一次）。
  */
-function captureUndoSnapshotsForElements(elements: Element[]): void {
-  lastUndoSnapshots = [];
+function captureUndoSnapshotsForElements(
+  elements: Element[],
+  append = false,
+): void {
+  if (!append) {
+    lastUndoSnapshots = [];
+  }
   const seen = new WeakSet<Element>();
+  for (const snapshot of lastUndoSnapshots) {
+    seen.add(snapshot.element);
+  }
   for (const node of elements) {
     if (!(node instanceof HTMLElement) || seen.has(node)) {
       continue;
@@ -164,6 +207,7 @@ function fileInputHint(inputElement: HTMLInputElement): string {
 
 /**
  * 按文案把档案附件落到页面 file 控件。
+ * 写入前把目标 file 框追加进撤销快照，撤销时只能清空（清除本轮上传）。
  */
 function applyFilePayloads(filePayloads: FileUploadPayload[]): {
   filled: number;
@@ -218,6 +262,8 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
       });
       continue;
     }
+    // 写入前入快照，撤销=清空本轮上传
+    captureUndoSnapshotsForElements([matched], true);
     if (assignFilePayload(matched, payload)) {
       filled += 1;
       matched.classList.add(AUTOFILL_FILL_CLASS);
@@ -233,13 +279,14 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
 
 /**
  * 确认写入：严格按用户确认后的 FillPlan 逐格写入并回读。
- * sectionAdds / profileData 留作后续补行增强；P0 主路径不依赖 Chao 整页乱填。
+ * 写入前可按 sectionAdds 兜底补行（不偷偷填值）；正文只来自 plan。
+ * 写入过程更新页内浮层进度，并响应停止请求。
  */
 export async function applyFillPlan(
   plan: FillPlan,
   filePayloads: FileUploadPayload[] = [],
   _profileId?: string,
-  _sectionAdds: SectionAddRequest[] = [],
+  sectionAdds: SectionAddRequest[] = [],
   _profileData?: ProfileData,
 ): Promise<{
   filled: number;
@@ -247,11 +294,24 @@ export async function applyFillPlan(
   misses: FillMiss[];
 }> {
   ensureHighlightStyles();
+  const { updatePageOverlay, hidePageOverlay } = await import('../ui/pageOverlay');
+  const { shouldFillStop } = await import('../fillAbort');
+
+  // 兜底：预览期间若用户删了行，再补一次；新框无 plan 项则不会被填
+  if (sectionAdds.length > 0) {
+    updatePageOverlay({
+      percent: 4,
+      message: '正在按档案补齐分区行数…',
+      showCancel: true,
+    });
+    await ensureSectionRows(sectionAdds);
+  }
 
   const writableItems = plan.items.filter(
     (item) => item.value.trim().length > 0 || item.attachmentId,
   );
   if (writableItems.length === 0 && filePayloads.length === 0) {
+    hidePageOverlay();
     return {
       filled: 0,
       skipped: plan.skippedFieldIds.length,
@@ -278,23 +338,39 @@ export async function applyFillPlan(
 
   let filled = 0;
   const misses: FillMiss[] = [];
+  const totalWriteSteps = Math.max(
+    writableItems.filter((item) => !item.attachmentId).length,
+    1,
+  );
+  let writeStepIndex = 0;
 
   for (const item of writableItems) {
+    if (shouldFillStop()) {
+      misses.push({
+        label: '用户停止',
+        reason: '已按停止请求中断写入',
+      });
+      break;
+    }
     if (item.attachmentId) {
       continue;
     }
+    writeStepIndex += 1;
     const element = await prepareFieldForWrite(item.fieldId);
+    const labelText = resolveMissLabel(item.fieldId, element);
+    updatePageOverlay({
+      percent: Math.min(92, Math.round((writeStepIndex / totalWriteSteps) * 90) + 5),
+      message: `正在写入：${labelText}`,
+      highlightFieldIds: [item.fieldId],
+      showCancel: true,
+    });
     if (!(element instanceof HTMLElement)) {
       misses.push({
-        label: item.reason || item.fieldId,
+        label: resolveMissLabel(item.fieldId),
         reason: '页面上找不到这个输入框（可能已收起或刷新）',
       });
       continue;
     }
-    const labelText =
-      element.getAttribute('data-raf-label') ||
-      fieldLabelBlob(element) ||
-      item.fieldId;
     const writeResult = await writeField(
       {
         el: element,
@@ -316,7 +392,25 @@ export async function applyFillPlan(
     }
   }
 
+  if (!shouldFillStop()) {
+    updatePageOverlay({
+      percent: 96,
+      message: '正在处理附件上传…',
+      showCancel: true,
+    });
+  }
   const fileResult = applyFilePayloads(filePayloads);
+  updatePageOverlay({
+    percent: 100,
+    message: shouldFillStop()
+      ? '已停止写入'
+      : `写入完成：成功 ${filled + fileResult.filled} 项`,
+    showCancel: false,
+  });
+  // 稍留可见结果后收起，避免挡页面
+  window.setTimeout(() => {
+    hidePageOverlay();
+  }, 1600);
 
   return {
     filled: filled + fileResult.filled,
@@ -326,19 +420,24 @@ export async function applyFillPlan(
 }
 
 /**
- * 撤销上一轮：尽量把控件恢复到写入前快照；file 只能清空。
+ * 撤销上一轮：普通控件还原快照；file 只能清空（清除本轮上传）。
  */
-export function undoLastFill(): { restored: number } {
+export function undoLastFill(): { restored: number; clearedFiles: number } {
   let restored = 0;
+  let clearedFiles = 0;
   for (const snapshot of lastUndoSnapshots) {
     if (!document.contains(snapshot.element)) {
       continue;
     }
     if (restoreElementValue(snapshot.element, snapshot.previousValue)) {
       snapshot.element.classList.remove(AUTOFILL_FILL_CLASS, AUTOFILL_MISS_CLASS);
-      restored += 1;
+      if (snapshot.isFile) {
+        clearedFiles += 1;
+      } else {
+        restored += 1;
+      }
     }
   }
   lastUndoSnapshots = [];
-  return { restored };
+  return { restored, clearedFiles };
 }

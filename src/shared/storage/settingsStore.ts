@@ -1,10 +1,46 @@
+/**
+ * 把旧版设置里的 fillMode 等废弃字段丢掉，并补上 Laya / Decision 默认值。
+ */
 import type { AppSettings } from '../types/profile';
-import { DEFAULT_SETTINGS } from './defaults';
+import {
+  DEFAULT_SETTINGS,
+  LEGACY_DEFAULT_LAYA_MODEL_URL,
+} from './defaults';
 
 const SETTINGS_STORAGE_KEY = 'settings';
 
 /**
- * 把旧版设置里的 fillMode 等废弃字段丢掉，并补上 Laya 相关默认值。
+ * 把置信度夹到 0..1；非法值回退默认。
+ */
+function normalizeMinConfidence(rawValue: unknown): number {
+  if (typeof rawValue !== 'number' || !Number.isFinite(rawValue)) {
+    return DEFAULT_SETTINGS.decisionMinConfidence;
+  }
+  if (rawValue < 0) {
+    return 0;
+  }
+  if (rawValue > 1) {
+    return 1;
+  }
+  return rawValue;
+}
+
+/**
+ * 归一化 Laya URL：允许空字符串；旧版 HF 默认迁为空占位。
+ */
+function normalizeLayaModelUrl(rawValue: unknown): string {
+  if (typeof rawValue !== 'string') {
+    return DEFAULT_SETTINGS.layaModelUrl;
+  }
+  const trimmed = rawValue.trim();
+  if (!trimmed || trimmed === LEGACY_DEFAULT_LAYA_MODEL_URL) {
+    return '';
+  }
+  return trimmed;
+}
+
+/**
+ * 归一化存储中的设置对象，兼容缺字段的旧数据。
  */
 function normalizeStoredSettings(
   rawSettings: Partial<AppSettings> & { fillMode?: string },
@@ -13,14 +49,16 @@ function normalizeStoredSettings(
   return {
     ...DEFAULT_SETTINGS,
     ...rest,
-    layaModelUrl:
-      typeof rest.layaModelUrl === 'string' && rest.layaModelUrl.trim()
-        ? rest.layaModelUrl.trim()
-        : DEFAULT_SETTINGS.layaModelUrl,
+    layaModelUrl: normalizeLayaModelUrl(rest.layaModelUrl),
     layaEnabled:
       typeof rest.layaEnabled === 'boolean'
         ? rest.layaEnabled
         : DEFAULT_SETTINGS.layaEnabled,
+    decisionPreferLocal:
+      typeof rest.decisionPreferLocal === 'boolean'
+        ? rest.decisionPreferLocal
+        : DEFAULT_SETTINGS.decisionPreferLocal,
+    decisionMinConfidence: normalizeMinConfidence(rest.decisionMinConfidence),
   };
 }
 
@@ -56,4 +94,3 @@ export async function saveSettings(
   await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: mergedSettings });
   return mergedSettings;
 }
-

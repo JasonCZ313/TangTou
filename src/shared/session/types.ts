@@ -20,6 +20,10 @@ export interface FillSession {
   notice?: string;
   /** 选用的档案 id（写入时带上） */
   profileId?: string;
+  /** 本轮 Decision 主引擎（侧栏徽章；旧会话可能缺失） */
+  primaryEngine?: 'rule' | 'local' | 'cloud';
+  /** 当前页命中的站点适配器展示名（无则通用扫） */
+  siteAdapterName?: string;
 }
 
 /**
@@ -46,5 +50,15 @@ export function parseFillSession(rawValue: unknown): FillSession | null {
     notice: typeof candidate.notice === 'string' ? candidate.notice : undefined,
     profileId:
       typeof candidate.profileId === 'string' ? candidate.profileId : undefined,
+    primaryEngine:
+      candidate.primaryEngine === 'rule' ||
+      candidate.primaryEngine === 'local' ||
+      candidate.primaryEngine === 'cloud'
+        ? candidate.primaryEngine
+        : undefined,
+    siteAdapterName:
+      typeof candidate.siteAdapterName === 'string'
+        ? candidate.siteAdapterName
+        : undefined,
   };
 }

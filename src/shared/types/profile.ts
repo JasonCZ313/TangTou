@@ -8,12 +8,22 @@ export interface AppSettings {
   model: string;
   activeProfileId: string | null;
   /**
-   * 本机 Laya ONNX 资源根 URL（需能取到 encoder/head 等文件）。
-   * 空字符串表示尚未配置；P2 下载与推理使用。
+   * 本机 Laya ONNX / Server 资源根 URL。
+   * 空字符串表示未配置（推荐默认）；P2b 下载或 P2c Server 使用。
    */
   layaModelUrl: string;
   /** 是否启用本机 Laya（未下载或失败时自动回退用户 API 判断） */
   layaEnabled: boolean;
+  /**
+   * 本机就绪时是否优先走 Laya（关闭则直接云端/规则）。
+   * P1 本机为桩时该开关不改变实际路径，仅预留行为。
+   */
+  decisionPreferLocal: boolean;
+  /**
+   * Decision 写入预览的最低置信度（0..1）。
+   * 低于此值的云端/本机提案进跳过列表，不进可写项。
+   */
+  decisionMinConfidence: number;
 }
 
 /**

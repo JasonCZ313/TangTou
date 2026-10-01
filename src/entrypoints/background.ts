@@ -1,8 +1,4 @@
-import { applyLocalHeuristics } from '../shared/llm/localHeuristics';
-import { buildFillPrompt } from '../shared/llm/prompt';
-import {
-  ensureHostPermission,
-  requestFillPlan,
+import { ensureHostPermission,
   requestResumeProfilePatch,
   requestTextPolish,
   testApiConnection,
@@ -18,20 +14,25 @@ import {
   recordTokenUsage,
   resetTokenUsageStats,
 } from '../shared/storage/usageStore';
-import type { FillPlan, SectionAddRequest } from '../shared/types/fill';
-import type { ProfileData } from '../shared/types/profile';
 import type { ExtensionMessage } from '../shared/types/messages';
+import { buildSectionAdds } from '../shared/fill/sectionAdds';
+import { buildFillPlanViaDecision } from '../shared/decision/router';
 import {
-  notesForFieldIds,
-  SKIP_REASON_NO_MODEL,
-  SKIP_REASON_TIMEOUT,
-  SKIP_REASON_UNSURE,
-} from '../shared/fill/skipReasons';
+  clearLayaModelCache,
+  downloadLayaModelFromUrl,
+  enableBuiltinLayaChoicePackage,
+  getLayaModelStatus,
+} from '../shared/decision/layaModelStore';
+import {
+  enrichFieldsWithPageOcr,
+  proposeFromPageOcr,
+} from '../shared/decision/visionAssist';
+import { hitsToSourcedItems } from '../shared/decision/toFillPlan';
 import { sendToActiveTab } from '../shared/messaging/send';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
-
-/** 无 API Key 仅用启发式填写时的用户提示文案 */
-const HEURISTICS_ONLY_TIP = '未配置 API，仅填写高置信基础字段';
+import type { FieldDescriptor } from '../shared/types/fill';
+import type { ProfileData } from '../shared/types/profile';
+import { resolveSiteAdapter } from '../content/adapters/registry';
 
 /**
  * 将未知错误归一化为可展示的 code + message（绝不包含 apiKey）。
@@ -200,50 +201,184 @@ async function handleTestApi(
 }
 
 /**
- * 合并本地启发式 items 与 LLM 计划：同一 fieldId 以启发式为准，LLM 重复项丢弃。
- * 已经要写的字段不再出现在跳过列表里。
+ * 读取当前活动标签的 hostname，解析站点适配器展示名。
  */
-function mergeHeuristicAndLlmPlan(
-  heuristicPlan: FillPlan,
-  llmPlan: FillPlan,
-): FillPlan {
-  const heuristicFieldIds = new Set(
-    heuristicPlan.items.map((item) => item.fieldId),
-  );
-  const llmItemsWithoutHeuristicOverlap = llmPlan.items.filter(
-    (item) => !heuristicFieldIds.has(item.fieldId) && item.confidence >= 0.35,
-  );
-  const lowConfidenceFieldIds = llmPlan.items
-    .filter((item) => !heuristicFieldIds.has(item.fieldId) && item.confidence < 0.35)
-    .map((item) => item.fieldId);
-  const items = [...heuristicPlan.items, ...llmItemsWithoutHeuristicOverlap];
-  const filledFieldIds = new Set(items.map((item) => item.fieldId));
-  const skippedFieldIds = [
-    ...new Set([
-      ...heuristicPlan.skippedFieldIds,
-      ...llmPlan.skippedFieldIds,
-      ...lowConfidenceFieldIds,
-    ]),
-  ].filter((fieldId) => !filledFieldIds.has(fieldId));
-  const notedFieldIds = new Set(
-    (heuristicPlan.skippedNotes ?? []).map((note) => note.fieldId),
-  );
-  const skippedNotes = [
-    ...(heuristicPlan.skippedNotes ?? []),
-    ...notesForFieldIds(
-      skippedFieldIds.filter((fieldId) => !notedFieldIds.has(fieldId)),
-      SKIP_REASON_UNSURE,
-    ),
-  ];
+async function resolveActiveTabSiteAdapterName(): Promise<string | undefined> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const pageUrl = tabs[0]?.url;
+    if (!pageUrl) {
+      return undefined;
+    }
+    const hostname = new URL(pageUrl).hostname;
+    return resolveSiteAdapter(hostname)?.name;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 对当前活动标签截图，并交给内容脚本做 OCR（P4b）。
+ * 失败时返回空字符串与 notice，不抛错，以免挡住主填写链路。
+ */
+async function captureActiveTabOcrText(
+  requestId: string,
+): Promise<{ ocrText: string; notice?: string }> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const activeTab = tabs[0];
+    if (activeTab?.id === undefined || activeTab.windowId === undefined) {
+      return { ocrText: '', notice: '没有活动标签，跳过截图识字' };
+    }
+    const imageDataUrl = await chrome.tabs.captureVisibleTab(activeTab.windowId, {
+      format: 'png',
+    });
+    const ocrResponse = await chrome.tabs.sendMessage(activeTab.id, {
+      type: 'RUN_PAGE_OCR',
+      requestId,
+      imageDataUrl,
+    } satisfies ExtensionMessage);
+    if (
+      ocrResponse &&
+      typeof ocrResponse === 'object' &&
+      (ocrResponse as ExtensionMessage).type === 'RUN_PAGE_OCR_RESULT'
+    ) {
+      const typed = ocrResponse as Extract<
+        ExtensionMessage,
+        { type: 'RUN_PAGE_OCR_RESULT' }
+      >;
+      return { ocrText: typed.ocrText ?? '' };
+    }
+    if (
+      ocrResponse &&
+      typeof ocrResponse === 'object' &&
+      (ocrResponse as ExtensionMessage).type === 'ERROR'
+    ) {
+      const typed = ocrResponse as Extract<ExtensionMessage, { type: 'ERROR' }>;
+      return { ocrText: '', notice: typed.message };
+    }
+    return { ocrText: '', notice: '页内识字未返回结果' };
+  } catch (error: unknown) {
+    return {
+      ocrText: '',
+      notice: `截图识字跳过：${describeUserFacingError(error)}`,
+    };
+  }
+}
+
+/**
+ * 把本机模型状态快照转成消息回执。
+ */
+async function handleLayaModelStatus(
+  requestId: string,
+): Promise<ExtensionMessage> {
+  const status = await getLayaModelStatus();
   return {
-    items,
-    skippedFieldIds,
-    skippedNotes,
+    type: 'LAYA_MODEL_STATUS_RESULT',
+    requestId,
+    lifecycle: status.lifecycle,
+    progressPercent: status.progressPercent,
+    message: status.message,
+    format: status.format,
+    version: status.version,
+    sourceUrl: status.sourceUrl,
+    builtin: status.builtin,
+    updatedAt: status.updatedAt,
   };
 }
 
 /**
- * 处理 BUILD_FILL_PLAN：先跑本地启发式，仅将剩余字段送 LLM；无 Key 时软降级返回部分计划。
+ * 下载远端模型包（用消息里的 URL 或已保存设置）。
+ */
+async function handleLayaModelDownload(
+  message: Extract<ExtensionMessage, { type: 'LAYA_MODEL_DOWNLOAD' }>,
+): Promise<ExtensionMessage> {
+  const settings = await getSettings();
+  const modelUrl = (message.modelUrl ?? settings.layaModelUrl).trim();
+  try {
+    const status = await downloadLayaModelFromUrl(modelUrl);
+    return {
+      type: 'LAYA_MODEL_STATUS_RESULT',
+      requestId: message.requestId,
+      lifecycle: status.lifecycle,
+      progressPercent: status.progressPercent,
+      message: status.message,
+      format: status.format,
+      version: status.version,
+      sourceUrl: status.sourceUrl,
+      builtin: status.builtin,
+      updatedAt: status.updatedAt,
+    };
+  } catch (error: unknown) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'LAYA_DOWNLOAD_FAILED',
+      message:
+        error instanceof Error ? error.message : describeUserFacingError(error),
+    };
+  }
+}
+
+/**
+ * 启用内置轻量判断包。
+ */
+async function handleLayaModelEnableBuiltin(
+  requestId: string,
+): Promise<ExtensionMessage> {
+  const status = await enableBuiltinLayaChoicePackage();
+  return {
+    type: 'LAYA_MODEL_STATUS_RESULT',
+    requestId,
+    lifecycle: status.lifecycle,
+    progressPercent: status.progressPercent,
+    message: status.message,
+    format: status.format,
+    version: status.version,
+    sourceUrl: status.sourceUrl,
+    builtin: status.builtin,
+    updatedAt: status.updatedAt,
+  };
+}
+
+/**
+ * 清除本机模型缓存。
+ */
+async function handleLayaModelClear(
+  requestId: string,
+): Promise<ExtensionMessage> {
+  const status = await clearLayaModelCache();
+  return {
+    type: 'LAYA_MODEL_STATUS_RESULT',
+    requestId,
+    lifecycle: status.lifecycle,
+    progressPercent: status.progressPercent,
+    message: status.message,
+    format: status.format,
+    version: status.version,
+    sourceUrl: status.sourceUrl,
+    builtin: status.builtin,
+    updatedAt: status.updatedAt,
+  };
+}
+
+/**
+ * 单独触发截图 OCR（侧栏按钮 / 调试用）。
+ */
+async function handleCapturePageOcr(
+  requestId: string,
+): Promise<ExtensionMessage> {
+  const result = await captureActiveTabOcrText(requestId);
+  return {
+    type: 'CAPTURE_PAGE_OCR_RESULT',
+    requestId,
+    ocrText: result.ocrText,
+    notice: result.notice,
+  };
+}
+
+/**
+ * 处理 BUILD_FILL_PLAN：规则 → 本机 Laya → 云端；并尽力用截图 OCR 补强（P4b）。
  * 失败返回 ERROR；成功返回 FILL_PLAN_RESULT。绝不向 content 转发 apiKey。
  */
 async function handleBuildFillPlan(
@@ -259,125 +394,115 @@ async function handleBuildFillPlan(
     };
   }
 
-  // 先本地高置信映射，降低 Token；未命中字段再考虑调模型
-  const attachments = await listAttachments(message.profileId);
-  const { partialPlan, remainingFields } = applyLocalHeuristics(
-    profile.data,
-    message.fields,
-    attachments,
-  );
-
   const settings = await getSettings();
   const hasApiConfigured =
     settings.apiBaseUrl.trim().length > 0 && settings.apiKey.trim().length > 0;
 
-  // 无 Key：有启发式命中则返回部分计划（剩余字段进 skipped）；零命中才报错
-  if (!hasApiConfigured) {
-    if (partialPlan.items.length === 0) {
+  if (hasApiConfigured) {
+    const permissionGranted = await ensureHostPermission(settings.apiBaseUrl);
+    if (!permissionGranted) {
       return {
         type: 'ERROR',
         requestId: message.requestId,
-        code: 'API_NOT_CONFIGURED',
-        message: '请先在设置中配置 API Base URL 与 API Key',
+        code: 'HOST_PERMISSION_DENIED',
+        message: '未获得 API 主机访问权限',
       };
     }
-    const tippedItems = partialPlan.items.map((item) => ({
-      ...item,
-      reason: item.reason
-        ? `${item.reason}；${HEURISTICS_ONLY_TIP}`
-        : HEURISTICS_ONLY_TIP,
-    }));
-    return {
-      type: 'FILL_PLAN_RESULT',
-      requestId: message.requestId,
-      plan: {
-        items: tippedItems,
-        skippedFieldIds: [
-          ...partialPlan.skippedFieldIds,
-          ...remainingFields.map((field) => field.fieldId),
-        ],
-        skippedNotes: [
-          ...(partialPlan.skippedNotes ?? []),
-          ...notesForFieldIds(
-            remainingFields.map((field) => field.fieldId),
-            SKIP_REASON_NO_MODEL,
+  }
+
+  // P4b：截图识字（失败不挡主路径）
+  const ocrCapture = await captureActiveTabOcrText(message.requestId);
+  const fieldsForDecision: FieldDescriptor[] = enrichFieldsWithPageOcr(
+    message.fields,
+    ocrCapture.ocrText,
+  );
+
+  const attachments = await listAttachments(message.profileId);
+  const decisionResult = await buildFillPlanViaDecision({
+    profileData: profile.data,
+    fields: fieldsForDecision,
+    attachments,
+    apiBaseUrl: settings.apiBaseUrl,
+    apiKey: settings.apiKey,
+    model: settings.model,
+    layaEnabled: settings.layaEnabled,
+    decisionPreferLocal: settings.decisionPreferLocal,
+    decisionMinConfidence: settings.decisionMinConfidence,
+    layaModelUrl: settings.layaModelUrl,
+  });
+
+  // 把 OCR 轻量提案并入计划：只补尚未有提案的字段，不覆盖主路径结果
+  let plan = decisionResult.plan;
+  let notice = decisionResult.notice;
+  if (ocrCapture.ocrText.trim()) {
+    const visionHits = proposeFromPageOcr(
+      profile.data as ProfileData,
+      message.fields,
+      ocrCapture.ocrText,
+      settings.decisionMinConfidence,
+    );
+    const filledIds = new Set(plan.items.map((item) => item.fieldId));
+    const extraHits = visionHits.filter(
+      (hit) => !filledIds.has(hit.fieldId),
+    );
+    if (extraHits.length > 0) {
+      const visionSourced = hitsToSourcedItems(extraHits, 'local');
+      plan = {
+        ...plan,
+        items: [
+          ...plan.items,
+          ...visionSourced.map(
+            ({
+              fieldId,
+              value,
+              confidence,
+              reason,
+              attachmentId,
+              source,
+            }) => ({
+              fieldId,
+              value,
+              confidence,
+              reason,
+              attachmentId,
+              source,
+            }),
           ),
         ],
-      },
-    };
+        skippedFieldIds: plan.skippedFieldIds.filter(
+          (fieldId) =>
+            !extraHits.some((hit) => hit.fieldId === fieldId),
+        ),
+      };
+    }
+  } else if (ocrCapture.notice) {
+    notice = notice ?? ocrCapture.notice;
   }
 
-  // 启发式已覆盖全部字段，无需调 LLM
-  if (remainingFields.length === 0) {
-    return {
-      type: 'FILL_PLAN_RESULT',
-      requestId: message.requestId,
-      plan: partialPlan,
-    };
-  }
-
-  const permissionGranted = await ensureHostPermission(settings.apiBaseUrl);
-  if (!permissionGranted) {
+  // 无 Key 且规则零命中：与旧行为一致，要求先配置 API
+  if (!hasApiConfigured && plan.items.length === 0) {
     return {
       type: 'ERROR',
       requestId: message.requestId,
-      code: 'HOST_PERMISSION_DENIED',
-      message: '未获得 API 主机访问权限',
+      code: 'API_NOT_CONFIGURED',
+      message: '请先在设置中配置 API Base URL 与 API Key',
     };
   }
 
-  const { system, user } = buildFillPrompt(profile.data, remainingFields);
-  /** 对照档案单独给两分钟，避免长页面字段一多就被 60 秒掐断 */
-  const FILL_PLAN_TIMEOUT_MS = 120_000;
-  let llmPlan: FillPlan;
-  let usage: Awaited<ReturnType<typeof requestFillPlan>>['usage'];
-  try {
-    const llmResult = await requestFillPlan({
-      apiBaseUrl: settings.apiBaseUrl,
-      apiKey: settings.apiKey,
-      model: settings.model,
-      system,
-      user,
-      timeoutMs: FILL_PLAN_TIMEOUT_MS,
-    });
-    llmPlan = llmResult.plan;
-    usage = llmResult.usage;
-  } catch (error: unknown) {
-    const timedOut = error instanceof Error && error.name === 'AbortError';
-    if (!timedOut) {
-      throw error;
-    }
-    return {
-      type: 'FILL_PLAN_RESULT',
-      requestId: message.requestId,
-      plan: {
-        items: partialPlan.items,
-        skippedFieldIds: [
-          ...partialPlan.skippedFieldIds,
-          ...remainingFields.map((field) => field.fieldId),
-        ],
-        skippedNotes: [
-          ...(partialPlan.skippedNotes ?? []),
-          ...notesForFieldIds(
-            remainingFields.map((field) => field.fieldId),
-            SKIP_REASON_TIMEOUT,
-          ),
-        ],
-      },
-      notice: `模型超过 120 秒还没答完。本机已经配上 ${partialPlan.items.length} 项，其余 ${remainingFields.length} 项这次没配。可以再点一次扫描，或检查网络和模型地址。`,
-    };
+  if (decisionResult.usage) {
+    await recordTokenUsage(decisionResult.usage);
   }
 
-  // 有 usage 则累加到本机统计（部分兼容接口不返回 usage）
-  if (usage) {
-    await recordTokenUsage(usage);
-  }
+  const siteAdapterName = await resolveActiveTabSiteAdapterName();
 
   return {
     type: 'FILL_PLAN_RESULT',
     requestId: message.requestId,
-    plan: mergeHeuristicAndLlmPlan(partialPlan, llmPlan),
-    usage: usage ?? null,
+    plan,
+    usage: decisionResult.usage ?? null,
+    notice,
+    primaryEngine: decisionResult.primaryEngine,
+    siteAdapterName,
   };
 }
 
@@ -444,58 +569,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 /**
- * 只统计档案里真正写了内容的条目，空壳教育/项目不再拿去点「添加」。
- */
-function countNamedRows(values: string[]): number {
-  return values.filter((value) => value.trim().length > 0).length;
-}
-
-/**
- * 档案各段有几条有效记录。页面上的行不够时，写入阶段才点「添加」。
- */
-function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] {
-  const requests: SectionAddRequest[] = [
-    {
-      sectionPattern: '教育背景|教育经历',
-      neededRows: countNamedRows(profileData.education.map((item) => item.school || item.major || '')),
-    },
-    {
-      sectionPattern: '实习经历|工作经历',
-      neededRows: countNamedRows(profileData.experience.map((item) => item.company || '')),
-    },
-    {
-      sectionPattern: '项目经历|项目经验',
-      neededRows: countNamedRows(profileData.projects.map((item) => item.name || '')),
-    },
-    {
-      sectionPattern: '校内经历|校内任职|校园',
-      neededRows: countNamedRows(profileData.campusActivities.map((item) => item.organization || '')),
-    },
-    {
-      sectionPattern: '证书',
-      neededRows: countNamedRows(profileData.certificates.map((item) => item.name || '')),
-    },
-    {
-      sectionPattern: '获奖|奖项|荣誉',
-      neededRows: countNamedRows(profileData.awards.map((item) => item.name || '')),
-    },
-    {
-      sectionPattern: '论文|专利|著作',
-      neededRows: countNamedRows(profileData.publications.map((item) => item.title || '')),
-    },
-    {
-      sectionPattern: '培训',
-      neededRows: countNamedRows(profileData.trainings.map((item) => item.course || item.organization || '')),
-    },
-    {
-      sectionPattern: '个人能力|个人技能|专业技能|技能特长',
-      neededRows: countNamedRows(profileData.skills.map((item) => item.name || '')),
-    },
-  ];
-  return requests.filter((request) => request.neededRows > 0);
-}
-
-/**
  * 给填写计划附上附件字节后再转发到页面。
  * 直填（空 plan）时从档案附件库取简历/头像，供页面规则写完后落 file 控件。
  */
@@ -547,6 +620,40 @@ async function forwardApplyWithFiles(
     filePayloads,
     sectionAdds: profile ? buildSectionAdds(profile.data) : message.sectionAdds,
     profileData: profile?.data,
+  });
+}
+
+/**
+ * 扫描出预览前：按档案条数只转发「补行」请求到页面（不写正文）。
+ */
+async function forwardEnsureSectionRows(
+  message: Extract<ExtensionMessage, { type: 'ENSURE_SECTION_ROWS' }>,
+): Promise<ExtensionMessage> {
+  let sectionAdds = message.sectionAdds ?? [];
+  if (message.profileId) {
+    const profile = await getProfile(message.profileId);
+    if (!profile) {
+      return {
+        type: 'ERROR',
+        requestId: message.requestId,
+        code: 'PROFILE_NOT_FOUND',
+        message: '找不到选中的档案，请重新选择后再扫描。',
+      };
+    }
+    sectionAdds = buildSectionAdds(profile.data);
+  }
+  if (sectionAdds.length === 0) {
+    return {
+      type: 'ENSURE_SECTION_ROWS_RESULT',
+      requestId: message.requestId,
+      clicks: 0,
+      notices: [],
+    };
+  }
+  return forwardToActiveTab({
+    type: 'ENSURE_SECTION_ROWS',
+    requestId: message.requestId,
+    sectionAdds,
   });
 }
 
@@ -737,12 +844,24 @@ async function dispatchMessage(
       return handleTestApi(message);
     case 'BUILD_FILL_PLAN':
       return handleBuildFillPlan(message);
+    case 'LAYA_MODEL_STATUS':
+      return handleLayaModelStatus(message.requestId);
+    case 'LAYA_MODEL_DOWNLOAD':
+      return handleLayaModelDownload(message);
+    case 'LAYA_MODEL_ENABLE_BUILTIN':
+      return handleLayaModelEnableBuiltin(message.requestId);
+    case 'LAYA_MODEL_CLEAR':
+      return handleLayaModelClear(message.requestId);
+    case 'CAPTURE_PAGE_OCR':
+      return handleCapturePageOcr(message.requestId);
     case 'OPEN_SIDE_PANEL':
       return handleOpenSidePanel(message.requestId, sender.tab?.id);
     case 'RESET_TOKEN_USAGE':
       return handleResetTokenUsage(message.requestId);
     case 'APPLY_FILL_PLAN':
       return forwardApplyWithFiles(message);
+    case 'ENSURE_SECTION_ROWS':
+      return forwardEnsureSectionRows(message);
     case 'PARSE_RESUME':
       return handleParseResume(message);
     case 'POLISH_TEXT':
@@ -752,6 +871,8 @@ async function dispatchMessage(
     case 'SCAN_PROGRESS':
     case 'SCAN_FIELDS_RESULT':
       return message;
+    case 'PAGE_OVERLAY_UPDATE':
+    case 'PAGE_OVERLAY_HIDE':
     case 'SCAN_FIELDS':
     case 'STOP_PAGE_WORK':
     case 'UNDO_LAST_FILL':

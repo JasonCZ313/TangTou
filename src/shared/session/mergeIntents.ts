@@ -1,26 +1,31 @@
 /**
- * 合并写入意图：用户改值最高优先，其次模型/Laya，再次规则。
- * P0 侧栏已在 collect 时直接改 plan.items；本模块供后续多引擎提案合并。
+ * 合并写入意图：用户改值最高优先，其次模型/Laya/探活，再次规则。
+ * P0 侧栏已在 collect 时直接改 plan.items；本模块供多引擎提案合并。
  */
-import type { FillMappingItem, FillPlan } from '../types/fill';
+import type {
+  FillIntentSource,
+  FillMappingItem,
+  FillPlan,
+} from '../types/fill';
 
-/** 提案来源，写入预览「来源」列时用 */
-export type IntentSource = 'user' | 'laya' | 'llm' | 'rule';
+/** @deprecated 请用 FillIntentSource；保留别名以免旧 import 断裂 */
+export type IntentSource = FillIntentSource;
 
-/** 带来源的填写项（P1+ 决策层使用；P0 可只标 user/llm/rule） */
+/** 带来源的填写项（Decision 层合并用） */
 export interface SourcedMappingItem extends FillMappingItem {
-  source: IntentSource;
+  source: FillIntentSource;
 }
 
 /**
  * 按 fieldId 合并多路提案。后写入的同级不覆盖更高级来源。
- * 优先级：user > laya = llm > rule
+ * 优先级：user > probe = laya = llm > rule
  */
 export function mergeMappingItems(
   proposalLists: SourcedMappingItem[][],
 ): SourcedMappingItem[] {
-  const priority: Record<IntentSource, number> = {
+  const priority: Record<FillIntentSource, number> = {
     user: 40,
+    probe: 30,
     laya: 30,
     llm: 30,
     rule: 10,
@@ -41,27 +46,30 @@ export function mergeMappingItems(
 }
 
 /**
- * 把带来源的项收成普通 FillPlan（消息协议仍用 FillPlan）。
+ * 把带来源的项收成 FillPlan，并保留正式 source 字段。
  */
 export function sourcedItemsToFillPlan(
   items: SourcedMappingItem[],
   skippedFieldIds: string[] = [],
 ): FillPlan {
   return {
-    items: items.map(({ fieldId, value, confidence, reason, attachmentId }) => {
-      const mappingItem: FillMappingItem = {
-        fieldId,
-        value,
-        confidence,
-      };
-      if (reason) {
-        mappingItem.reason = reason;
-      }
-      if (attachmentId) {
-        mappingItem.attachmentId = attachmentId;
-      }
-      return mappingItem;
-    }),
+    items: items.map(
+      ({ fieldId, value, confidence, reason, attachmentId, source }) => {
+        const mappingItem: FillMappingItem = {
+          fieldId,
+          value,
+          confidence,
+          source,
+        };
+        if (reason) {
+          mappingItem.reason = reason;
+        }
+        if (attachmentId) {
+          mappingItem.attachmentId = attachmentId;
+        }
+        return mappingItem;
+      },
+    ),
     skippedFieldIds,
   };
 }

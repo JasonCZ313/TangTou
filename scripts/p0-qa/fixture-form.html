@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>躺投 P0 QA Fixture</title>
+  <style>
+    body { font-family: sans-serif; max-width: 720px; margin: 24px auto; }
+    label { display: block; margin: 12px 0 4px; }
+    .row { margin-bottom: 16px; }
+    .ant-like { border: 1px solid #ccc; padding: 8px; cursor: pointer; min-height: 32px; }
+    .dropdown { display: none; border: 1px solid #999; background: #fff; }
+    .dropdown.open { display: block; }
+    .dropdown div { padding: 6px 10px; cursor: pointer; }
+    .dropdown div:hover { background: #eee; }
+  </style>
+</head>
+<body>
+  <h1>P0 写入 Fixture</h1>
+  <form id="jobForm" onsubmit="return false;">
+    <div class="row">
+      <label for="fullName">姓名</label>
+      <input id="fullName" name="fullName" data-raf-id="f-name" data-raf-label="姓名" />
+    </div>
+    <div class="row">
+      <label for="phone">手机</label>
+      <input id="phone" name="phone" data-raf-id="f-phone" data-raf-label="手机" />
+    </div>
+    <div class="row">
+      <label for="email">邮箱</label>
+      <input id="email" name="email" type="email" data-raf-id="f-email" data-raf-label="邮箱" />
+    </div>
+    <div class="row">
+      <label for="degree">学历（原生 select）</label>
+      <select id="degree" name="degree" data-raf-id="f-degree" data-raf-label="学历">
+        <option value="">请选择</option>
+        <option value="bachelor">本科</option>
+        <option value="master">硕士</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>城市（仿组件下拉）</label>
+      <div id="cityTrigger" class="ant-like" role="combobox" data-raf-id="f-city" data-raf-label="城市" tabindex="0">请选择</div>
+      <div id="cityDropdown" class="dropdown">
+        <div data-value="北京">北京</div>
+        <div data-value="上海">上海</div>
+        <div data-value="深圳">深圳</div>
+      </div>
+    </div>
+    <div class="row">
+      <label for="bio">自我评价</label>
+      <div id="bio" contenteditable="true" data-raf-id="f-bio" data-raf-label="自我评价" style="border:1px solid #ccc;min-height:60px;padding:8px;"></div>
+    </div>
+    <div class="row">
+      <label for="idNumber">证件号（测长数字禁入下拉）</label>
+      <input id="idNumber" name="idNumber" data-raf-id="f-id" data-raf-label="证件号" />
+      <select id="idAsSelect" data-raf-id="f-id-select" data-raf-label="证件类型">
+        <option value="">请选择</option>
+        <option value="id">身份证</option>
+      </select>
+    </div>
+    <button type="submit" id="submitBtn">提交投递（扩展不应点）</button>
+  </form>
+  <pre id="log"></pre>
+  <script>
+    const trigger = document.getElementById('cityTrigger');
+    const dropdown = document.getElementById('cityDropdown');
+    trigger.addEventListener('click', () => dropdown.classList.toggle('open'));
+    dropdown.querySelectorAll('[data-value]').forEach((node) => {
+      node.addEventListener('click', () => {
+        trigger.textContent = node.getAttribute('data-value');
+        dropdown.classList.remove('open');
+      });
+    });
+    // React 风格受控：监听 input 后若没有用原生 setter，可能被脚本改回
+    const phone = document.getElementById('phone');
+    let phoneStore = '';
+    phone.addEventListener('input', () => {
+      phoneStore = phone.value;
+    });
+    window.__readPhoneStore = () => phoneStore;
+  </script>
+</body>
+</html>

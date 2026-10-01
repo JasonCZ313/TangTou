@@ -47,10 +47,13 @@ export function createEmptyProfileData(): ProfileData {
 }
 
 /**
- * 本机 Laya 模型默认下载根地址（用户可在设置里改）。
- * P2 接入下载前仅作占位；请换成你实际托管的目录 URL。
+ * 本机 Laya 模型下载根地址：默认空，由用户按引导填写（ModelScope / 自建 / 镜像）。
+ * 旧版曾默认 HuggingFace，读取设置时会迁为空以免国内下载失败误导。
  */
-export const DEFAULT_LAYA_MODEL_URL =
+export const DEFAULT_LAYA_MODEL_URL = '';
+
+/** 历史默认 HF 地址；仅用于把已写入的旧默认迁成空占位 */
+export const LEGACY_DEFAULT_LAYA_MODEL_URL =
   'https://huggingface.co/convaiinnovations/laya-multilingual/resolve/main';
 
 /** 首次安装默认全局配置 */
@@ -61,4 +64,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeProfileId: null,
   layaModelUrl: DEFAULT_LAYA_MODEL_URL,
   layaEnabled: true,
+  decisionPreferLocal: true,
+  decisionMinConfidence: 0.55,
 };

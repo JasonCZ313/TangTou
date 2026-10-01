@@ -203,19 +203,35 @@ async function maybePersistDefaultProfile(profileId: string): Promise<void> {
 }
 
 /**
- * 主流程：立刻打开侧栏，并把「请扫描并生成预览」交给侧边助手。
- * sidePanel.open 必须在用户点击的同步调用链里发出，不能先 await 扫描。
+ * 主流程：同步打开侧栏，并把「请扫描并生成预览」交给侧边助手。
+ * sidePanel.open 必须在用户点击的同步调用栈里发出，不能先 await。
  */
-async function runFillFlow(profileId: string): Promise<void> {
+function startPreviewHandoff(profileId: string): void {
+  if (popupTabId === undefined) {
+    showError('无法确定当前标签页');
+    return;
+  }
   const scanRequest: PendingPopupScanRequest = {
     profileId,
     requestId: createRequestId(),
   };
-  await chrome.storage.session.set({
+  // 同步发起：先 open，再写交接请求（不 await，避免打断手势）
+  const openPromise = chrome.sidePanel.open({ tabId: popupTabId });
+  void chrome.storage.session.set({
     [PENDING_POPUP_SCAN_REQUEST_KEY]: scanRequest,
   });
-  await openSidePanelForCurrentTab();
-  showStatus('已打开侧边助手，正在扫描并生成预览，请在侧栏核对后再确认写入。', 'success');
+  void openPromise
+    .then(() => {
+      showStatus(
+        '已打开侧边助手，正在扫描并生成预览，请在侧栏核对后再确认写入。',
+        'success',
+      );
+    })
+    .catch((error: unknown) => {
+      showError(describeUserFacingError(error));
+    });
+  // 设默认档案放在 open 之后异步做，绝不挡手势
+  void maybePersistDefaultProfile(profileId);
 }
 
 /**
@@ -229,10 +245,27 @@ async function runUndoFlow(): Promise<void> {
   if (undoResponse.type !== 'UNDO_FILL_RESULT') {
     throw new Error('撤销失败');
   }
-  showStatus(
-    `已撤销 ${undoResponse.restored} 项，页面恢复到写入前。`,
-    'success',
-  );
+  const clearedFiles = undoResponse.clearedFiles ?? 0;
+  const restored = undoResponse.restored;
+  if (restored === 0 && clearedFiles === 0) {
+    showStatus('没有可撤销的写入。', 'info');
+    return;
+  }
+  if (clearedFiles > 0 && restored > 0) {
+    showStatus(
+      `已还原 ${restored} 个填写框，并清除 ${clearedFiles} 个本轮上传的文件。`,
+      'success',
+    );
+    return;
+  }
+  if (clearedFiles > 0) {
+    showStatus(
+      `已清除 ${clearedFiles} 个本轮上传的文件（浏览器无法恢复原文件）。`,
+      'success',
+    );
+    return;
+  }
+  showStatus(`已撤销 ${restored} 项，页面恢复到写入前。`, 'success');
 }
 
 /**
@@ -309,16 +342,9 @@ function bindEvents(): void {
       showError('请先选择档案');
       return;
     }
-    // 同步打开侧栏并投递扫描请求；预览与确认写入都在侧栏完成。
-    void (async () => {
-      try {
-        await maybePersistDefaultProfile(selectedProfileId);
-        showStatus('正在打开侧边助手…', 'info');
-        await runFillFlow(selectedProfileId);
-      } catch (error: unknown) {
-        showError(describeUserFacingError(error));
-      }
-    })();
+    showStatus('正在打开侧边助手…', 'info');
+    // 同步栈内 open；禁止在此前 await
+    startPreviewHandoff(selectedProfileId);
   });
 
   openSidePanelButton.addEventListener('click', () => {
@@ -372,7 +398,7 @@ async function bootstrapPopup(): Promise<void> {
     if (profiles.length === 0) {
       showStatus('暂无档案，请点击「打开设置」创建', 'info');
     } else {
-      showStatus('就绪：点「扫描并填写」会在侧栏生成预览，核对后再写入', 'info');
+      showStatus('就绪：点「扫描并预览」会在侧栏生成预览，核对后再写入', 'info');
     }
   } catch (error: unknown) {
     showError(describeUserFacingError(error));

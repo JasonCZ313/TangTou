@@ -13,8 +13,22 @@ import { chaoDebug } from './debug';
 
 /** 面板 id：排除扩展自身 DOM，避免扫到自己画的浮层 */
 export const PANEL_ID = 'resume-autofill-panel';
+/** P4a 页内进度浮层 id，同样要从扫描/点选里排除 */
+export const PAGE_OVERLAY_ID = 'tangtou-page-overlay';
 export const AUTOFILL_FILL_CLASS = 'raf-autofill-filled';
 export const AUTOFILL_MISS_CLASS = 'raf-autofill-missed';
+
+/**
+ * 判断节点是否落在本扩展注入的 UI 内（旧面板或页内浮层）。
+ */
+export function isInsideTangtouUi(node: Element | null | undefined): boolean {
+  if (!(node instanceof Element)) {
+    return false;
+  }
+  return Boolean(
+    node.closest(`#${PANEL_ID}, #${PAGE_OVERLAY_ID}, [data-tangtou-ui]`),
+  );
+}
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -332,7 +346,7 @@ function collectPopupOptions(root) {
   const scope = root || document;
   const containers = [...scope.querySelectorAll(
     '[role="listbox"], [role="menu"], [class*="dropdown" i], [class*="select" i], [class*="picker" i], [class*="popper" i], [class*="cascader" i]',
-  )].filter((node) => node instanceof HTMLElement && !node.closest(`#${PANEL_ID}`) && isPageFieldVisible(node));
+  )].filter((node) => node instanceof HTMLElement && !isInsideTangtouUi(node) && isPageFieldVisible(node));
   const options = [];
   containers.forEach((container) => {
     container.querySelectorAll('[role="option"], li, [class*="option" i], [class*="item" i]')
@@ -341,7 +355,7 @@ function collectPopupOptions(root) {
   if (!options.length) options.push(...scope.querySelectorAll('[role="option"]'));
   const seen = new Set();
   return options.filter((option) => {
-    if (!(option instanceof HTMLElement) || seen.has(option) || option.closest(`#${PANEL_ID}`)) return false;
+    if (!(option instanceof HTMLElement) || seen.has(option) || isInsideTangtouUi(option)) return false;
     seen.add(option);
     if (!isPageFieldVisible(option)) return false;
     const text = option.textContent.replace(/\s+/g, ' ').trim();

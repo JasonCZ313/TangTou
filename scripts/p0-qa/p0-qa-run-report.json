@@ -1,0 +1,116 @@
+{
+  "findings": [
+    {
+      "id": "STATIC-GESTURE",
+      "caseId": "23,24",
+      "ok": false,
+      "detail": "Popup「扫描并预览」在 await 默认档案与 await storage.set 之后才 sidePanel.open，极易丢失用户手势导致侧栏打不开",
+      "severity": "critical"
+    },
+    {
+      "id": "STATIC-SECTION-ADDS",
+      "caseId": "34",
+      "ok": false,
+      "detail": "applyFillPlan 将 sectionAdds/profileData 标为未使用且不再调用 Chao，多段「添加」行能力在 P0 被旁路",
+      "severity": "high"
+    },
+    {
+      "id": "STATIC-FILLMODE-REMOVED",
+      "caseId": "13,14,15",
+      "ok": true,
+      "detail": "AppSettings 已无 fillMode，含 layaModelUrl",
+      "severity": "info"
+    },
+    {
+      "id": "STATIC-CONFIRM-PLAN",
+      "caseId": "1,2",
+      "ok": true,
+      "detail": "runConfirmWrite 使用 collectEditedFillPlan()",
+      "severity": "info"
+    },
+    {
+      "id": "STATIC-SESSION-LISTENER",
+      "caseId": "32",
+      "ok": true,
+      "detail": "侧栏监听 FILL_SESSION_STORAGE_KEY",
+      "severity": "info"
+    },
+    {
+      "id": "STATIC-MISS-LABEL",
+      "caseId": "7",
+      "ok": false,
+      "detail": "找不到控件时 Miss.label 优先用 item.reason，用户看到的是「映射理由」而非字段名",
+      "severity": "low"
+    },
+    {
+      "id": "STATIC-UNDO-FILES",
+      "caseId": "22,39",
+      "ok": false,
+      "detail": "写入快照在文本控件循环前采集；file 写入在 applyFilePayloads，撤销很可能无法还原文件框",
+      "severity": "medium"
+    },
+    {
+      "id": "STATIC-COPY-MISMATCH",
+      "caseId": "17",
+      "ok": false,
+      "detail": "按钮为「扫描并预览」但就绪文案仍写「扫描并填写」",
+      "severity": "low"
+    },
+    {
+      "id": "STATIC-SESSION-MODULE",
+      "caseId": "29,30",
+      "ok": true,
+      "detail": "FillSession 类型模块存在",
+      "severity": "info"
+    },
+    {
+      "id": "PW-NATIVE-SELECT",
+      "caseId": "10",
+      "ok": true,
+      "detail": "原生 select 选「硕士」后 value=master",
+      "severity": "info"
+    },
+    {
+      "id": "PW-PHONE-TYPE",
+      "caseId": "1,12",
+      "ok": true,
+      "detail": "键盘输入手机=13800138000 store=13800138000",
+      "severity": "info"
+    },
+    {
+      "id": "PW-WIDGET-CLICK",
+      "caseId": "9",
+      "ok": true,
+      "detail": "组件下拉点击后显示=深圳",
+      "severity": "info"
+    },
+    {
+      "id": "PW-CONTENT-EDITABLE",
+      "caseId": "11",
+      "ok": true,
+      "detail": "contenteditable=认真负责，逻辑清晰。",
+      "severity": "info"
+    },
+    {
+      "id": "PW-SETTER-NAME",
+      "caseId": "12",
+      "ok": true,
+      "detail": "原生 setter 写入姓名=测躺投",
+      "severity": "info"
+    },
+    {
+      "id": "PW-LONG-DIGIT-SELECT",
+      "caseId": "38",
+      "ok": true,
+      "detail": "若直接赋长数字给 select，当前 value=（扩展 writeField 应拒绝此类写入）",
+      "severity": "info"
+    },
+    {
+      "id": "PW-SUBMIT-PRESENT",
+      "caseId": "G",
+      "ok": true,
+      "detail": "Fixture 含提交按钮，人工测时确认扩展未点提交",
+      "severity": "info"
+    }
+  ]
+}

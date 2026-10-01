@@ -404,6 +404,30 @@ body {
   font-weight: 700;
 }
 
+/* 本机 Laya 下载进度条（P2b） */
+.scan-progress-track {
+  height: 8px;
+  margin: 0 0 12px;
+  border-radius: 999px;
+  background: var(--tt-border, #e5e7eb);
+  overflow: hidden;
+}
+
+.scan-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--tt-primary, #0ea5e9);
+  transition: width 0.2s ease;
+}
+
+#layaModelActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
 .tip-banner {
   padding: 10px 12px;
   border-radius: 10px;

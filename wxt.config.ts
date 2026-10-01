@@ -13,7 +13,15 @@ export default defineConfig({
     version: appVersionForManifest(),
     description:
       '躺投：本机档案 + 用户自备 API Key，通用站点智能填写简历表单（不自动提交）。',
-    permissions: ['storage', 'sidePanel', 'scripting'],
+    // offscreen：本机 ORT；unlimitedStorage：模型缓存；activeTab：截图 OCR（P4b）
+    permissions: [
+      'storage',
+      'sidePanel',
+      'scripting',
+      'offscreen',
+      'unlimitedStorage',
+      'activeTab',
+    ],
     host_permissions: ['http://*/*', 'https://*/*'],
     optional_host_permissions: [
       'https://*/*',
@@ -38,6 +46,13 @@ export default defineConfig({
     side_panel: {
       default_path: 'sidepanel.html',
     },
+    // 内容脚本 OCR / Offscreen ORT 需要读取扩展内静态资源
+    web_accessible_resources: [
+      {
+        resources: ['tesseract/*', 'ort/*', 'laya-sample/*'],
+        matches: ['http://*/*', 'https://*/*'],
+      },
+    ],
     // 本机识字需要在扩展页里编译 WASM
     content_security_policy: {
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",

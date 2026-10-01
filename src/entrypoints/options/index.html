@@ -92,23 +92,58 @@
         </div>
       </section>
 
-      <!-- 分区 2：本机 Laya 判断（P2 下载；此处先可配置 URL） -->
+      <!-- 分区 2：本机 Laya 判断（P2b：下载 / 内置轻量包） -->
       <section class="panel" id="layaSection" aria-labelledby="layaHeading">
         <h2 id="layaHeading">本机 Laya 判断</h2>
         <p class="hint">
-          填写一律「预览后写入」。判断将优先走本机 Laya；模型未就绪时用你的 API Key。
+          填写一律「预览后写入」。选项/是否类判断可优先走本机（内置轻量包或自备 ONNX 清单）；未启用或未就绪时用你的 API Key。自由文本映射始终走你的 API。
         </p>
         <label class="field">
-          <span class="field-label">Laya 模型 URL</span>
+          <span class="field-label">Laya 模型 URL（可选，默认留空）</span>
           <input
             id="layaModelUrlInput"
             type="url"
-            placeholder="模型资源根地址"
+            placeholder="模型根地址，需含 tangtou-laya-manifest.json；勿强依赖外网 HF"
           />
         </label>
+        <p class="hint">
+          推荐先点「启用内置轻量包」即可对本机选项题做判断。若自备
+          <code>tangtou-ort-v0</code> ONNX 包，填写根 URL 后点「下载本机包」。扩展内示例清单：
+          <code>/laya-sample/</code>。
+        </p>
+        <div class="settings-form-actions" id="layaModelActions">
+          <button type="button" class="btn btn-primary" id="layaEnableBuiltinButton">
+            启用内置轻量包
+          </button>
+          <button type="button" class="btn btn-secondary" id="layaDownloadButton">
+            下载本机包
+          </button>
+          <button type="button" class="btn btn-secondary" id="layaClearCacheButton">
+            清除缓存
+          </button>
+        </div>
+        <p id="layaModelStatusText" class="hint" aria-live="polite">本机判断：尚未检查</p>
+        <div class="scan-progress-track" id="layaDownloadProgressTrack" hidden>
+          <div class="scan-progress-bar" id="layaDownloadProgressBar" style="width: 0%"></div>
+        </div>
         <label class="checkbox-row" for="layaEnabledCheckbox">
           <input type="checkbox" id="layaEnabledCheckbox" checked />
           <span>启用本机 Laya</span>
+        </label>
+        <label class="checkbox-row" for="decisionPreferLocalCheckbox">
+          <input type="checkbox" id="decisionPreferLocalCheckbox" checked />
+          <span>本机就绪时优先用 Laya（否则直接走你的 API）</span>
+        </label>
+        <label class="field">
+          <span class="field-label">写入预览的最低置信度（0～1）</span>
+          <input
+            id="decisionMinConfidenceInput"
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            value="0.55"
+          />
         </label>
       </section>
 

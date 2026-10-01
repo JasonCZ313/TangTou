@@ -41,7 +41,15 @@ import {
   type FillSession,
 } from '../../shared/session/types';
 import type { ExtensionMessage } from '../../shared/types/messages';
-import type { FieldDescriptor, FillMiss, FillPlan } from '../../shared/types/fill';
+import type {
+  FieldDescriptor,
+  FillMiss,
+  FillPlan,
+} from '../../shared/types/fill';
+import {
+  FILL_PRIMARY_ENGINE_LABEL,
+  resolveFillSourceLabel,
+} from '../../shared/types/fill';
 import type { Profile } from '../../shared/types/profile';
 import type { LlmTokenUsage, TokenUsageStats } from '../../shared/types/usage';
 
@@ -76,6 +84,24 @@ const layaModelUrlInput = document.getElementById(
 const layaEnabledCheckbox = document.getElementById(
   'layaEnabledCheckbox',
 ) as HTMLInputElement;
+const decisionPreferLocalCheckbox = document.getElementById(
+  'decisionPreferLocalCheckbox',
+) as HTMLInputElement;
+const decisionMinConfidenceInput = document.getElementById(
+  'decisionMinConfidenceInput',
+) as HTMLInputElement;
+const layaEnableBuiltinButton = document.getElementById(
+  'layaEnableBuiltinButton',
+) as HTMLButtonElement;
+const layaDownloadButton = document.getElementById(
+  'layaDownloadButton',
+) as HTMLButtonElement;
+const layaClearCacheButton = document.getElementById(
+  'layaClearCacheButton',
+) as HTMLButtonElement;
+const layaModelStatusText = document.getElementById(
+  'layaModelStatusText',
+) as HTMLParagraphElement;
 const testApiButton = document.getElementById(
   'testApiButton',
 ) as HTMLButtonElement;
@@ -110,6 +136,9 @@ const setDefaultCheckbox = document.getElementById(
 const mappingTableBody = document.getElementById(
   'mappingTableBody',
 ) as HTMLTableSectionElement;
+const cockpitBadgeElement = document.getElementById(
+  'cockpitBadge',
+) as HTMLParagraphElement;
 const missTableBody = document.getElementById('missTableBody') as HTMLTableSectionElement;
 const fillDoneDialog = document.getElementById('fillDoneDialog') as HTMLDialogElement;
 const fillDoneText = document.getElementById('fillDoneText') as HTMLParagraphElement;
@@ -398,12 +427,120 @@ function fillSettingsForm(settings: {
   model: string;
   layaModelUrl: string;
   layaEnabled: boolean;
+  decisionPreferLocal: boolean;
+  decisionMinConfidence: number;
 }): void {
   apiBaseUrlInput.value = settings.apiBaseUrl;
   apiKeyInput.value = settings.apiKey;
   modelInput.value = settings.model;
   layaModelUrlInput.value = settings.layaModelUrl;
   layaEnabledCheckbox.checked = settings.layaEnabled;
+  decisionPreferLocalCheckbox.checked = settings.decisionPreferLocal;
+  decisionMinConfidenceInput.value = String(settings.decisionMinConfidence);
+  void refreshLayaModelStatus();
+}
+
+/**
+ * 渲染本机 Laya 状态文案。
+ */
+function renderLayaModelStatusFromMessage(response: {
+  type: string;
+  message?: string;
+  format?: string;
+  version?: string;
+  builtin?: boolean;
+}): void {
+  if (response.type !== 'LAYA_MODEL_STATUS_RESULT') {
+    return;
+  }
+  const formatPart = response.format
+    ? ` · ${response.format}${response.version ? `@${response.version}` : ''}`
+    : '';
+  const builtinPart = response.builtin ? ' · 内置' : '';
+  layaModelStatusText.textContent = `本机判断：${response.message ?? ''}${formatPart}${builtinPart}`;
+}
+
+/**
+ * 查询 Background 中的本机模型状态。
+ */
+async function refreshLayaModelStatus(): Promise<void> {
+  try {
+    const response = await sendRuntimeMessage({
+      type: 'LAYA_MODEL_STATUS',
+      requestId: createRequestId(),
+    });
+    if (response.type === 'ERROR') {
+      layaModelStatusText.textContent = `本机判断：${response.message}`;
+      return;
+    }
+    renderLayaModelStatusFromMessage(response);
+  } catch (error: unknown) {
+    layaModelStatusText.textContent = `本机判断：${describeUserFacingError(error)}`;
+  }
+}
+
+/**
+ * 侧栏：启用内置包 / 下载 / 清除。
+ */
+async function runLayaModelAction(
+  action: 'enable' | 'download' | 'clear',
+): Promise<void> {
+  try {
+    layaEnableBuiltinButton.disabled = true;
+    layaDownloadButton.disabled = true;
+    layaClearCacheButton.disabled = true;
+    if (action === 'download') {
+      layaModelStatusText.textContent = '本机判断：正在下载…';
+    }
+    const response =
+      action === 'enable'
+        ? await sendRuntimeMessage({
+            type: 'LAYA_MODEL_ENABLE_BUILTIN',
+            requestId: createRequestId(),
+          })
+        : action === 'download'
+          ? await sendRuntimeMessage({
+              type: 'LAYA_MODEL_DOWNLOAD',
+              requestId: createRequestId(),
+              modelUrl: layaModelUrlInput.value.trim(),
+            })
+          : await sendRuntimeMessage({
+              type: 'LAYA_MODEL_CLEAR',
+              requestId: createRequestId(),
+            });
+    if (response.type === 'ERROR') {
+      showInlineFeedback(
+        apiSettingsForm,
+        apiSettingsFeedback,
+        'bad',
+        response.message,
+      );
+      await refreshLayaModelStatus();
+      return;
+    }
+    renderLayaModelStatusFromMessage(response);
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'ok',
+      action === 'enable'
+        ? '已启用内置轻量判断包'
+        : action === 'download'
+          ? '本机包已就绪'
+          : '已清除本机判断缓存',
+    );
+  } catch (error: unknown) {
+    showInlineFeedback(
+      apiSettingsForm,
+      apiSettingsFeedback,
+      'bad',
+      describeUserFacingError(error),
+    );
+  } finally {
+    layaEnableBuiltinButton.disabled = false;
+    layaDownloadButton.disabled = false;
+    layaClearCacheButton.disabled = false;
+  }
 }
 
 function renderProfileOptions(
@@ -490,6 +627,41 @@ function optionMatchCaution(
   return '下拉里有多项接近，请改成选项原文';
 }
 
+/**
+ * 更新驾驶舱徽章：本轮引擎 + 当前站适配器。
+ */
+function renderCockpitBadge(session: FillSession | null): void {
+  if (!session) {
+    cockpitBadgeElement.hidden = true;
+    cockpitBadgeElement.textContent = '';
+    return;
+  }
+  const parts: string[] = [];
+  if (session.primaryEngine) {
+    parts.push(
+      `本轮引擎：${FILL_PRIMARY_ENGINE_LABEL[session.primaryEngine]}`,
+    );
+  }
+  if (session.siteAdapterName) {
+    parts.push(`当前站：${session.siteAdapterName}`);
+  } else {
+    parts.push('当前站：通用扫描');
+  }
+  const sourceCounts = new Map<string, number>();
+  for (const item of session.plan.items) {
+    const label = resolveFillSourceLabel(item.source, item.reason);
+    sourceCounts.set(label, (sourceCounts.get(label) ?? 0) + 1);
+  }
+  if (sourceCounts.size > 0) {
+    const breakdown = [...sourceCounts.entries()]
+      .map(([label, count]) => `${label}${count}`)
+      .join(' · ');
+    parts.push(`来源分布：${breakdown}`);
+  }
+  cockpitBadgeElement.textContent = parts.join(' ｜ ');
+  cockpitBadgeElement.hidden = parts.length === 0;
+}
+
 function renderMappingTable(): void {
   mappingTableBody.replaceChildren();
   const skippedNotes =
@@ -499,11 +671,13 @@ function renderMappingTable(): void {
       reason: '没有把握对上档案',
     }));
 
+  renderCockpitBadge(currentSession);
+
   if (!currentSession || (currentSession.plan.items.length === 0 && skippedNotes.length === 0)) {
     const emptyRow = document.createElement('tr');
     emptyRow.className = 'empty-row';
     const emptyCell = document.createElement('td');
-    emptyCell.colSpan = 3;
+    emptyCell.colSpan = 4;
     emptyCell.textContent = currentSession ? EMPTY_MAPPING_AFTER_SCAN : EMPTY_MAPPING_HINT;
     emptyRow.appendChild(emptyCell);
     mappingTableBody.appendChild(emptyRow);
@@ -531,6 +705,7 @@ function renderMappingTable(): void {
     valueInput.className = 'value-input';
     valueInput.value = mappingItem.value;
     valueInput.dataset.fieldId = mappingItem.fieldId;
+    valueInput.dataset.originalValue = mappingItem.value;
     if (mappingItem.attachmentId) {
       valueInput.readOnly = true;
       valueInput.title = '将上传此附件';
@@ -548,13 +723,23 @@ function renderMappingTable(): void {
       valueCell.appendChild(cautionLine);
     }
 
+    const sourceCell = document.createElement('td');
+    sourceCell.className = 'source-cell';
+    sourceCell.textContent = resolveFillSourceLabel(
+      mappingItem.source,
+      mappingItem.reason,
+    );
+    if (mappingItem.reason) {
+      sourceCell.title = mappingItem.reason;
+    }
+
     const confidenceCell = document.createElement('td');
     confidenceCell.className = 'confidence-cell';
     confidenceCell.textContent = formatConfidencePercent(
       mappingItem.confidence,
     );
 
-    tableRow.append(labelCell, valueCell, confidenceCell);
+    tableRow.append(labelCell, valueCell, sourceCell, confidenceCell);
     mappingTableBody.appendChild(tableRow);
   }
 
@@ -579,11 +764,15 @@ function renderMappingTable(): void {
     );
     valueCell.appendChild(valueInput);
 
+    const sourceCell = document.createElement('td');
+    sourceCell.className = 'source-cell';
+    sourceCell.textContent = '跳过';
+
     const confidenceCell = document.createElement('td');
     confidenceCell.className = 'confidence-cell';
     confidenceCell.textContent = '未填';
 
-    tableRow.append(labelCell, valueCell, confidenceCell);
+    tableRow.append(labelCell, valueCell, sourceCell, confidenceCell);
     mappingTableBody.appendChild(tableRow);
   }
 
@@ -619,9 +808,17 @@ function collectEditedFillPlan(): FillPlan {
     const valueInput = mappingTableBody.querySelector(
       `input.value-input[data-field-id="${CSS.escape(mappingItem.fieldId)}"]`,
     ) as HTMLInputElement | null;
+    const nextValue = valueInput ? valueInput.value : mappingItem.value;
+    const originalValue = valueInput?.dataset.originalValue ?? mappingItem.value;
+    const valueChanged = nextValue !== originalValue;
     return {
       ...mappingItem,
-      value: valueInput ? valueInput.value : mappingItem.value,
+      value: nextValue,
+      // 用户改过值则正式标为用户来源
+      source: valueChanged ? ('user' as const) : mappingItem.source,
+      reason: valueChanged
+        ? '用户在预览中修改'
+        : mappingItem.reason,
     };
   });
   const skippedNotes =
@@ -645,6 +842,7 @@ function collectEditedFillPlan(): FillPlan {
       value: typedValue,
       confidence: 1,
       reason: '手动填写',
+      source: 'user',
     });
   }
   return {
@@ -697,6 +895,8 @@ function readSettingsDraft(): {
   model: string;
   layaModelUrl: string;
   layaEnabled: boolean;
+  decisionPreferLocal: boolean;
+  decisionMinConfidence: number;
 } {
   return {
     apiBaseUrl: apiBaseUrlInput.value.trim(),
@@ -704,6 +904,8 @@ function readSettingsDraft(): {
     model: modelInput.value.trim() || 'gpt-4o-mini',
     layaModelUrl: layaModelUrlInput.value.trim(),
     layaEnabled: layaEnabledCheckbox.checked,
+    decisionPreferLocal: decisionPreferLocalCheckbox.checked,
+    decisionMinConfidence: Number(decisionMinConfidenceInput.value),
   };
 }
 
@@ -1028,63 +1230,129 @@ async function runUndoFlow(): Promise<void> {
   if (undoResponse.type !== 'UNDO_FILL_RESULT') {
     throw new Error('撤销失败');
   }
-  showStatus(
-    `已撤销 ${undoResponse.restored} 项，页面恢复到写入前。`,
-    'success',
-  );
+  const clearedFiles = undoResponse.clearedFiles ?? 0;
+  const restored = undoResponse.restored;
+  if (restored === 0 && clearedFiles === 0) {
+    showStatus('没有可撤销的写入。', 'info');
+    return;
+  }
+  if (clearedFiles > 0 && restored > 0) {
+    showStatus(
+      `已还原 ${restored} 个填写框，并清除 ${clearedFiles} 个本轮上传的文件。`,
+      'success',
+    );
+    return;
+  }
+  if (clearedFiles > 0) {
+    showStatus(
+      `已清除 ${clearedFiles} 个本轮上传的文件（浏览器无法恢复原文件）。`,
+      'success',
+    );
+    return;
+  }
+  showStatus(`已撤销 ${restored} 项，页面恢复到写入前。`, 'success');
+}
+
+/**
+ * 扫描出预览前：按档案条数只点「添加」补行，不写任何档案正文。
+ */
+async function ensureRowsBeforePlan(profileId: string): Promise<void> {
+  showScanProgress(72, '正在按档案条数补行…');
+  const ensureResponse = await requestBackground({
+    type: 'ENSURE_SECTION_ROWS',
+    requestId: createRequestId(),
+    profileId,
+  });
+  if (ensureResponse.type !== 'ENSURE_SECTION_ROWS_RESULT') {
+    return;
+  }
+  if (ensureResponse.clicks > 0) {
+    showScanProgress(
+      78,
+      `已点击添加 ${ensureResponse.clicks} 次，正在重新扫描新行…`,
+    );
+  }
 }
 
 async function runRescanFlow(profileId: string): Promise<void> {
   stopButton.hidden = false;
   showScanProgress(4, '正在滚动页面，已发现 0 个输入框。');
   try {
-    const scanResult = await scanActivePage(createRequestId(), (progress) => {
+    // ① 先扫一遍（滚动、展开）
+    const firstScan = await scanActivePage(createRequestId(), (progress) => {
       showScanProgress(progress.percent, progress.message);
     });
-  const scannedFields = scanResult.fields;
-  if (scannedFields.length === 0) {
-    await clearPendingSession();
+    if (firstScan.fields.length === 0) {
+      await clearPendingSession();
+      renderMappingTable();
+      showScanProgress(100, firstScan.notice ?? '没有扫到输入框。');
+      showError(
+        firstScan.notice ??
+          '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再扫一次。',
+      );
+      return;
+    }
+
+    // ② 按档案条数只点「添加」补行（不写正文）
+    await ensureRowsBeforePlan(profileId);
+
+    // ③ 再扫一遍，拿到新行的 fieldId
+    const scanResult = await scanActivePage(createRequestId(), (progress) => {
+      const remappedPercent = Math.min(
+        88,
+        78 + Math.floor(progress.percent * 0.1),
+      );
+      showScanProgress(remappedPercent, progress.message);
+    });
+    const scannedFields =
+      scanResult.fields.length > 0 ? scanResult.fields : firstScan.fields;
+    if (scannedFields.length === 0) {
+      await clearPendingSession();
+      renderMappingTable();
+      showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
+      showError(
+        scanResult.notice ??
+          '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再扫一次。',
+      );
+      return;
+    }
+
+    // ④ 对照档案生成预览计划（含第 2、第 3 行）
+    const planResponse = await requestFillPlanWithWait(
+      createRequestId(),
+      profileId,
+      scannedFields,
+      (elapsedSeconds) => {
+        const waitPercent = Math.min(99, 90 + Math.floor(elapsedSeconds / 15));
+        showScanProgress(waitPercent, `正在对照档案，已等待 ${elapsedSeconds} 秒。`);
+      },
+    );
+    showScanProgress(
+      100,
+      scanResult.notice
+        ? `对照完成，${planResponse.plan.items.length} 项可以填。${scanResult.notice}`
+        : `对照完成，${planResponse.plan.items.length} 项可以填。`,
+    );
+    const pendingFillSession: FillSession = {
+      plan: planResponse.plan,
+      fields: scannedFields,
+      notice: planResponse.notice,
+      profileId,
+      primaryEngine: planResponse.primaryEngine,
+      siteAdapterName: planResponse.siteAdapterName,
+    };
+    await saveFillSession(pendingFillSession);
+    currentSession = pendingFillSession;
     renderMappingTable();
-    showScanProgress(100, scanResult.notice ?? '没有扫到输入框。');
-    showError(
-      scanResult.notice ??
-        '这一页没有扫到可以填写的输入框。请确认打开的是网申表单，展开折叠区域后再扫一次。',
-    );
-    return;
-  }
-  const planResponse = await requestFillPlanWithWait(
-    createRequestId(),
-    profileId,
-    scannedFields,
-    (elapsedSeconds) => {
-      const waitPercent = Math.min(99, 90 + Math.floor(elapsedSeconds / 15));
-      showScanProgress(waitPercent, `正在对照档案，已等待 ${elapsedSeconds} 秒。`);
-    },
-  );
-  showScanProgress(
-    100,
-    scanResult.notice
-      ? `对照完成，${planResponse.plan.items.length} 项可以填。${scanResult.notice}`
-      : `对照完成，${planResponse.plan.items.length} 项可以填。`,
-  );
-  const pendingFillSession: FillSession = {
-    plan: planResponse.plan,
-    fields: scannedFields,
-    notice: planResponse.notice,
-    profileId,
-  };
-  await saveFillSession(pendingFillSession);
-  currentSession = pendingFillSession;
-  renderMappingTable();
-  if (planResponse.notice) {
-    showError(planResponse.notice);
-  } else {
-    showStatus(
-      `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${planResponse.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
-      'success',
-    );
-  }
-  await refreshUsageLine(planResponse.usage ?? null);
+    if (planResponse.notice) {
+      showError(planResponse.notice);
+    } else {
+      showStatus(
+        `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${planResponse.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
+        'success',
+      );
+    }
+    await refreshUsageLine(planResponse.usage ?? null);
   } finally {
     stopButton.hidden = true;
   }
@@ -1198,6 +1466,22 @@ function bindEvents(): void {
   testApiButton.addEventListener('click', () => {
     void withBusy(async () => {
       await handleTestApi();
+    });
+  });
+
+  layaEnableBuiltinButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runLayaModelAction('enable');
+    });
+  });
+  layaDownloadButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runLayaModelAction('download');
+    });
+  });
+  layaClearCacheButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runLayaModelAction('clear');
     });
   });
 

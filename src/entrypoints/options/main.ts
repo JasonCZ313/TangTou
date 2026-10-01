@@ -46,6 +46,8 @@ import type { Profile, ProfileData, RegionSelection } from '../../shared/types/p
 import type { TokenUsageStats } from '../../shared/types/usage';
 import type { ExtensionMessage } from '../../shared/types/messages';
 import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import { sendRuntimeMessage } from '../../shared/messaging/send';
+import type { ExtensionMessage } from '../../shared/types/messages';
 import { mountFeedbackPanel } from '../../shared/feedback/feedbackMail';
 import { mountApiGuide } from '../../shared/ui/apiGuide';
 import { mountAppVersionLabel } from '../../shared/appVersion';
@@ -84,6 +86,8 @@ interface ExportPayload {
     activeProfileId: string | null;
     layaModelUrl?: string;
     layaEnabled?: boolean;
+    decisionPreferLocal?: boolean;
+    decisionMinConfidence?: number;
   };
 }
 
@@ -198,6 +202,30 @@ const layaModelUrlInput = document.getElementById(
 const layaEnabledCheckbox = document.getElementById(
   'layaEnabledCheckbox',
 ) as HTMLInputElement;
+const decisionPreferLocalCheckbox = document.getElementById(
+  'decisionPreferLocalCheckbox',
+) as HTMLInputElement;
+const decisionMinConfidenceInput = document.getElementById(
+  'decisionMinConfidenceInput',
+) as HTMLInputElement;
+const layaEnableBuiltinButton = document.getElementById(
+  'layaEnableBuiltinButton',
+) as HTMLButtonElement;
+const layaDownloadButton = document.getElementById(
+  'layaDownloadButton',
+) as HTMLButtonElement;
+const layaClearCacheButton = document.getElementById(
+  'layaClearCacheButton',
+) as HTMLButtonElement;
+const layaModelStatusText = document.getElementById(
+  'layaModelStatusText',
+) as HTMLParagraphElement;
+const layaDownloadProgressTrack = document.getElementById(
+  'layaDownloadProgressTrack',
+) as HTMLDivElement | null;
+const layaDownloadProgressBar = document.getElementById(
+  'layaDownloadProgressBar',
+) as HTMLDivElement | null;
 const profileListElement = document.getElementById(
   'profileList',
 ) as HTMLUListElement;
@@ -330,6 +358,106 @@ function formatUpdatedAt(isoText: string): string {
 
 function createRequestId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * 把本机 Laya 状态回执渲染到 Options 文案与进度条。
+ */
+function renderLayaModelStatusFromMessage(
+  response: ExtensionMessage,
+): void {
+  if (response.type !== 'LAYA_MODEL_STATUS_RESULT') {
+    return;
+  }
+  const formatPart = response.format
+    ? ` · ${response.format}${response.version ? `@${response.version}` : ''}`
+    : '';
+  const builtinPart = response.builtin ? ' · 内置' : '';
+  layaModelStatusText.textContent = `本机判断：${response.message}${formatPart}${builtinPart}`;
+  if (layaDownloadProgressTrack && layaDownloadProgressBar) {
+    const downloading = response.lifecycle === 'downloading';
+    layaDownloadProgressTrack.hidden = !downloading && response.lifecycle !== 'ready';
+    if (response.lifecycle === 'idle' || response.lifecycle === 'error') {
+      layaDownloadProgressTrack.hidden = true;
+    }
+    layaDownloadProgressBar.style.width = `${Math.max(0, Math.min(100, response.progressPercent))}%`;
+  }
+}
+
+/**
+ * 向 Background 查询本机模型状态。
+ */
+async function refreshLayaModelStatus(): Promise<void> {
+  try {
+    const response = await sendRuntimeMessage({
+      type: 'LAYA_MODEL_STATUS',
+      requestId: createRequestId(),
+    });
+    if (response.type === 'ERROR') {
+      layaModelStatusText.textContent = `本机判断：${response.message}`;
+      return;
+    }
+    renderLayaModelStatusFromMessage(response);
+  } catch (error: unknown) {
+    layaModelStatusText.textContent = `本机判断：${describeUserFacingError(error)}`;
+  }
+}
+
+/**
+ * 启用内置轻量包 / 下载 / 清除缓存。
+ */
+async function runLayaModelAction(
+  action: 'enable' | 'download' | 'clear',
+): Promise<void> {
+  try {
+    layaEnableBuiltinButton.disabled = true;
+    layaDownloadButton.disabled = true;
+    layaClearCacheButton.disabled = true;
+    if (action === 'download') {
+      layaModelStatusText.textContent = '本机判断：正在下载…';
+      if (layaDownloadProgressTrack) {
+        layaDownloadProgressTrack.hidden = false;
+      }
+    }
+    let response: ExtensionMessage;
+    if (action === 'enable') {
+      response = await sendRuntimeMessage({
+        type: 'LAYA_MODEL_ENABLE_BUILTIN',
+        requestId: createRequestId(),
+      });
+    } else if (action === 'download') {
+      response = await sendRuntimeMessage({
+        type: 'LAYA_MODEL_DOWNLOAD',
+        requestId: createRequestId(),
+        modelUrl: layaModelUrlInput.value.trim(),
+      });
+    } else {
+      response = await sendRuntimeMessage({
+        type: 'LAYA_MODEL_CLEAR',
+        requestId: createRequestId(),
+      });
+    }
+    if (response.type === 'ERROR') {
+      showStatus(response.message, 'error');
+      await refreshLayaModelStatus();
+      return;
+    }
+    renderLayaModelStatusFromMessage(response);
+    showStatus(
+      action === 'enable'
+        ? '已启用内置轻量判断包'
+        : action === 'download'
+          ? '本机包已就绪'
+          : '已清除本机判断缓存',
+      'success',
+    );
+  } catch (error: unknown) {
+    showStatus(describeUserFacingError(error), 'error');
+  } finally {
+    layaEnableBuiltinButton.disabled = false;
+    layaDownloadButton.disabled = false;
+    layaClearCacheButton.disabled = false;
+  }
 }
 
 /**
@@ -527,10 +655,13 @@ async function bootstrapOptionsPage(): Promise<void> {
     modelInput.value = settings.model;
     layaModelUrlInput.value = settings.layaModelUrl;
     layaEnabledCheckbox.checked = settings.layaEnabled;
+    decisionPreferLocalCheckbox.checked = settings.decisionPreferLocal;
+    decisionMinConfidenceInput.value = String(settings.decisionMinConfidence);
     renderTokenUsageSummary(tokenUsage);
 
     renderProfileList();
     renderCloneSourceOptions();
+    await refreshLayaModelStatus();
     showStatus('已加载设置与档案', 'success');
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
@@ -666,8 +797,10 @@ async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
       model: modelInput.value.trim(),
       layaModelUrl: layaModelUrlInput.value.trim(),
       layaEnabled: layaEnabledCheckbox.checked,
+      decisionPreferLocal: decisionPreferLocalCheckbox.checked,
+      decisionMinConfidence: Number(decisionMinConfidenceInput.value),
     });
-    showStatus('API 与 Laya 设置已保存', 'success');
+    showStatus('API 与判断设置已保存', 'success');
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   }
@@ -726,8 +859,10 @@ async function handleLayaSettingsChange(): Promise<void> {
     await saveSettings({
       layaModelUrl: layaModelUrlInput.value.trim(),
       layaEnabled: layaEnabledCheckbox.checked,
+      decisionPreferLocal: decisionPreferLocalCheckbox.checked,
+      decisionMinConfidence: Number(decisionMinConfidenceInput.value),
     });
-    showStatus('本机 Laya 设置已保存', 'success');
+    showStatus('判断设置已保存', 'success');
   } catch (error) {
     showStatus(mapErrorMessage(error), 'error');
   }
@@ -1444,6 +1579,14 @@ async function handleImportFileChange(): Promise<void> {
           typeof importedSettings.layaEnabled === 'boolean'
             ? importedSettings.layaEnabled
             : currentSettings.layaEnabled,
+        decisionPreferLocal:
+          typeof importedSettings.decisionPreferLocal === 'boolean'
+            ? importedSettings.decisionPreferLocal
+            : currentSettings.decisionPreferLocal,
+        decisionMinConfidence:
+          typeof importedSettings.decisionMinConfidence === 'number'
+            ? importedSettings.decisionMinConfidence
+            : currentSettings.decisionMinConfidence,
       });
     }
 
@@ -1484,6 +1627,21 @@ function bindEventListeners(): void {
   });
   layaEnabledCheckbox.addEventListener('change', () => {
     void handleLayaSettingsChange();
+  });
+  decisionPreferLocalCheckbox.addEventListener('change', () => {
+    void handleLayaSettingsChange();
+  });
+  decisionMinConfidenceInput.addEventListener('change', () => {
+    void handleLayaSettingsChange();
+  });
+  layaEnableBuiltinButton.addEventListener('click', () => {
+    void runLayaModelAction('enable');
+  });
+  layaDownloadButton.addEventListener('click', () => {
+    void runLayaModelAction('download');
+  });
+  layaClearCacheButton.addEventListener('click', () => {
+    void runLayaModelAction('clear');
   });
   createProfileForm.addEventListener('submit', (event) => {
     void handleCreateProfile(event);

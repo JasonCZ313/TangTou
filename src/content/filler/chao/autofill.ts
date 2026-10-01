@@ -39,12 +39,12 @@ import {
   AUTOFILL_FILL_CLASS,
   AUTOFILL_MISS_CLASS,
   CONTROL,
-  PANEL_ID,
   classifyControl,
   clearAutofillHighlights,
   ensureHighlightStyles,
   fieldLabelBlob,
   isControlEmpty,
+  isInsideTangtouUi,
   isOptionControl,
   isPageFieldVisible,
   isPlaceholderText,
@@ -138,7 +138,7 @@ function buildSectionAnchors() {
   const all = document.body ? document.body.querySelectorAll('*') : [];
   all.forEach((el) => {
     if (!(el instanceof HTMLElement)) return;
-    if (el.closest(`#${PANEL_ID}`)) return;
+    if (isInsideTangtouUi(el)) return;
     if (isInsideNavChrome(el)) return;
     if (el.tagName === 'A' || el.closest('a')) return;
     // 字段标签不是分区标题
@@ -242,7 +242,7 @@ function scanEmptyFields(ctx) {
   document.querySelectorAll('input, textarea, select, [role="combobox"], [contenteditable="true"], [contenteditable=""]')
     .forEach((el) => {
       if (!(el instanceof HTMLElement)) return;
-      if (el.closest(`#${PANEL_ID}`)) return;
+      if (isInsideTangtouUi(el)) return;
       const tag = el.tagName.toLowerCase();
       if (tag === 'input') {
         const type = (el.getAttribute('type') || 'text').toLowerCase();
@@ -812,7 +812,7 @@ function findAddButton(sectionType, ctx) {
   const anchor = ctx.anchors.find((item) => item.type === sectionType);
   const candidates = [...document.querySelectorAll(
     'button, a, [role="button"], input[type="button"], [class*="add" i], [class*="plus" i]',
-  )].filter((el) => el instanceof HTMLElement && !el.closest(`#${PANEL_ID}`) && isPageFieldVisible(el))
+  )].filter((el) => el instanceof HTMLElement && !isInsideTangtouUi(el) && isPageFieldVisible(el))
     .map((el) => ({ el, text: String(el.textContent || el.value || '').replace(/\s+/g, '') }))
     .filter((item) => item.text && item.text.length <= 16 && /(添加|新增|增加|＋|\+)/.test(item.text));
   if (!candidates.length) return null;
@@ -865,7 +865,7 @@ function countSitePrefilledRows(sectionType, ctx) {
   const anchorSubs = new Set(anchorRules.map((rule) => rule.sub));
   let count = 0;
   document.querySelectorAll('input, textarea, select, [role="combobox"]').forEach((el) => {
-    if (!(el instanceof HTMLElement) || el.closest(`#${PANEL_ID}`)) return;
+    if (!(el instanceof HTMLElement) || isInsideTangtouUi(el)) return;
     if (ctx.done.has(el)) return;
     if (resolveSectionType(el, ctx) !== sectionType) return;
     const blob = fieldLabelBlob(el);

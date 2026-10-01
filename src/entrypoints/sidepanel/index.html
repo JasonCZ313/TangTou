@@ -28,8 +28,10 @@
           </div>
         </div>
         <p class="hint tip-inline">
-          档案填得越全，映射越准。详细 Token 累计请在设置区或完整设置页查看。
+          档案填得越全，映射越准。填写一律预览确认后再写入。详细 Token 累计请在设置区或完整设置页查看。
         </p>
+        <!-- P5 驾驶舱：本轮引擎 + 当前站适配器 -->
+        <p id="cockpitBadge" class="cockpit-badge" hidden aria-live="polite"></p>
       </header>
 
       <!-- 设置区：默认可折叠；从 Popup「打开设置」进入时自动展开 -->
@@ -60,16 +62,43 @@
               <input id="modelInput" type="text" placeholder="gpt-4o-mini" />
             </label>
             <label class="field">
-              <span class="field-label">本机 Laya 模型 URL（可选）</span>
+              <span class="field-label">本机 Laya 模型 URL（可选，默认留空）</span>
               <input
                 id="layaModelUrlInput"
                 type="url"
-                placeholder="模型资源根地址，可改"
+                placeholder="含 tangtou-laya-manifest.json 的根地址；可留空并启用内置包"
               />
             </label>
+            <div class="settings-form-actions" id="layaModelActions">
+              <button type="button" class="btn btn-secondary" id="layaEnableBuiltinButton">
+                启用内置轻量包
+              </button>
+              <button type="button" class="btn btn-secondary" id="layaDownloadButton">
+                下载本机包
+              </button>
+              <button type="button" class="btn btn-secondary" id="layaClearCacheButton">
+                清除缓存
+              </button>
+            </div>
+            <p id="layaModelStatusText" class="hint" aria-live="polite">本机判断：尚未检查</p>
             <label class="checkbox-row" for="layaEnabledCheckbox">
               <input type="checkbox" id="layaEnabledCheckbox" checked />
               <span>启用本机 Laya 判断（未就绪时自动用你的 API）</span>
+            </label>
+            <label class="checkbox-row" for="decisionPreferLocalCheckbox">
+              <input type="checkbox" id="decisionPreferLocalCheckbox" checked />
+              <span>本机就绪时优先用 Laya</span>
+            </label>
+            <label class="field">
+              <span class="field-label">预览最低置信度（0～1）</span>
+              <input
+                id="decisionMinConfidenceInput"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.55"
+              />
             </label>
             <div class="settings-form-actions">
               <button type="submit" class="btn btn-primary" id="saveSettingsButton">
@@ -132,12 +161,13 @@
               <tr>
                 <th scope="col">字段</th>
                 <th scope="col">填写值</th>
+                <th scope="col">来源</th>
                 <th scope="col">置信度</th>
               </tr>
             </thead>
             <tbody id="mappingTableBody">
               <tr class="empty-row">
-                <td colspan="3">
+                <td colspan="4">
                   选好档案后，点下方「扫描本页」。扫完在此核对映射，再点「确认写入」。
                 </td>
               </tr>

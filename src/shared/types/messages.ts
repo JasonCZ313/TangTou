@@ -45,6 +45,10 @@ export type ExtensionMessage =
       usage?: LlmTokenUsage | null;
       /** 计划可用，但模型超时等需要用红框告诉用户的说明 */
       notice?: string;
+      /** 本轮 Decision 主引擎（驾驶舱徽章） */
+      primaryEngine?: 'rule' | 'local' | 'cloud';
+      /** 当前活动页命中的站点适配器名；无匹配则为空 */
+      siteAdapterName?: string;
     }
   | {
       type: 'APPLY_FILL_PLAN';
@@ -53,7 +57,7 @@ export type ExtensionMessage =
       filePayloads?: FileUploadPayload[];
       /** 有档案时，写入过程才能为新冒出来的框再要一份对照 */
       profileId?: string;
-      /** 各段档案条数。页面行数不够时，写入阶段逐条点添加 */
+      /** 各段档案条数。写入前可作行数兜底（扫描阶段已主路径补行） */
       sectionAdds?: SectionAddRequest[];
       /** 页面上逐格对照用的档案正文，由后台附上，不经过预先扫描 */
       profileData?: ProfileData;
@@ -67,7 +71,31 @@ export type ExtensionMessage =
       misses?: FillMiss[];
     }
   | { type: 'UNDO_LAST_FILL'; requestId: string }
-  | { type: 'UNDO_FILL_RESULT'; requestId: string; restored: number }
+  | {
+      type: 'UNDO_FILL_RESULT';
+      requestId: string;
+      /** 已还原的普通填写框数量 */
+      restored: number;
+      /** 本轮撤销时清空的文件上传框数量（浏览器无法恢复原文件） */
+      clearedFiles?: number;
+    }
+  | {
+      /** 扫描出预览前：按档案条数只点「添加」补行，不写正文 */
+      type: 'ENSURE_SECTION_ROWS';
+      requestId: string;
+      /** 侧栏/弹窗带档案 id；后台算好 sectionAdds 再转给页面 */
+      profileId?: string;
+      /** 后台转发给内容脚本时带上的补行请求 */
+      sectionAdds?: SectionAddRequest[];
+    }
+  | {
+      type: 'ENSURE_SECTION_ROWS_RESULT';
+      requestId: string;
+      /** 实际点了几次「添加」 */
+      clicks: number;
+      /** 补行过程中的说明（找不到分区、行数未增等） */
+      notices: string[];
+    }
   | { type: 'GET_STATE'; requestId: string }
   | {
       type: 'GET_STATE_RESULT';
@@ -126,6 +154,79 @@ export type ExtensionMessage =
       requestId: string;
       /** 0 到 100 的整数。结果未返回前最高报到 92 */
       percent: number;
+    }
+  | {
+      /** 查询本机 Laya 模型包下载/就绪状态 */
+      type: 'LAYA_MODEL_STATUS';
+      requestId: string;
+    }
+  | {
+      type: 'LAYA_MODEL_STATUS_RESULT';
+      requestId: string;
+      lifecycle: 'idle' | 'downloading' | 'ready' | 'error';
+      progressPercent: number;
+      message: string;
+      format?: string;
+      version?: string;
+      sourceUrl: string;
+      builtin: boolean;
+      updatedAt: string;
+    }
+  | {
+      /** 从设置里的模型 URL 下载并缓存本机包 */
+      type: 'LAYA_MODEL_DOWNLOAD';
+      requestId: string;
+      /** 可覆盖当前设置中的 URL；空则用已保存的 layaModelUrl */
+      modelUrl?: string;
+    }
+  | {
+      /** 一键启用内置轻量判断包（无需外网 URL） */
+      type: 'LAYA_MODEL_ENABLE_BUILTIN';
+      requestId: string;
+    }
+  | {
+      /** 清除本机模型缓存 */
+      type: 'LAYA_MODEL_CLEAR';
+      requestId: string;
+    }
+  | {
+      /** 页内浮层：更新进度文案与百分比（P4a） */
+      type: 'PAGE_OVERLAY_UPDATE';
+      requestId: string;
+      percent: number;
+      message: string;
+      /** 可选：要描边高亮的字段 id 列表 */
+      highlightFieldIds?: string[];
+      /** 是否显示「停止」按钮 */
+      showCancel?: boolean;
+    }
+  | {
+      /** 页内浮层：关闭 */
+      type: 'PAGE_OVERLAY_HIDE';
+      requestId: string;
+    }
+  | {
+      /** 对当前活动标签可见区截图并 OCR，把识字结果并入后续预览辅助（P4b） */
+      type: 'CAPTURE_PAGE_OCR';
+      requestId: string;
+    }
+  | {
+      type: 'CAPTURE_PAGE_OCR_RESULT';
+      requestId: string;
+      /** OCR 得到的页面可见区文字；失败时为空串 */
+      ocrText: string;
+      notice?: string;
+    }
+  | {
+      /** Background → Content：把截图 dataURL 交给页内 OCR */
+      type: 'RUN_PAGE_OCR';
+      requestId: string;
+      imageDataUrl: string;
+    }
+  | {
+      type: 'RUN_PAGE_OCR_RESULT';
+      requestId: string;
+      ocrText: string;
     }
   | {
       type: 'ERROR';

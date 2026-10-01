@@ -1,5 +1,6 @@
 import type { FieldDescriptor } from '../../shared/types/fill';
-import { shouldFillStop } from '../fillAbort';
+import { getActiveSiteAdapter } from '../adapters/registry';
+import { adapterAllowsAddLabel } from '../adapters/types';
 import { shouldFillStop } from '../fillAbort';
 
 /** 扫描时跳过的 input type，避免误填密码或触发按钮类控件 */
@@ -801,6 +802,7 @@ const EDIT_OWN_TEXT = /^(编辑|修改|edit)$/i;
 
 /**
  * 节点自己的文字是添加。允许「+ 添加」「添加经历」，拒绝整段说明文字。
+ * 有站点适配器时额外认「新增」等白名单词，并排除保存/提交。
  */
 function isAddControlText(text: string): boolean {
   const compact = text.replace(/\s+/g, '');
@@ -809,6 +811,10 @@ function isAddControlText(text: string): boolean {
   }
   if (/删除|保存|提交|确定|取消|上传/.test(compact)) {
     return false;
+  }
+  const siteAdapter = getActiveSiteAdapter();
+  if (siteAdapter) {
+    return adapterAllowsAddLabel(siteAdapter, compact);
   }
   return /^[+＋]?(添加|新增|增加)/.test(compact);
 }
@@ -1583,7 +1589,11 @@ export function locateRepeatSection(patternSource: string): RepeatSectionSnapsho
     return null;
   }
   let headingElement: HTMLElement | null = null;
-  for (const node of document.querySelectorAll('h1, h2, h3, h4, h5, h6, legend, div, span, p')) {
+  const siteAdapter = getActiveSiteAdapter();
+  const headingSelector = siteAdapter?.sectionSelector
+    ? `${siteAdapter.sectionSelector}, h1, h2, h3, h4, h5, h6, legend, div, span, p`
+    : 'h1, h2, h3, h4, h5, h6, legend, div, span, p';
+  for (const node of document.querySelectorAll(headingSelector)) {
     if (!(node instanceof HTMLElement) || !isElementVisible(node) || isNavigationChrome(node)) {
       continue;
     }

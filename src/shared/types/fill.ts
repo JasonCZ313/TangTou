@@ -16,6 +16,16 @@ export interface FieldDescriptor {
   selectorHint: string;
 }
 
+/**
+ * 填写提案正式来源（预览「来源」列 / P7 探活共用）。
+ * - user：用户在侧栏改过或手填
+ * - rule：本地启发式规则
+ * - laya：本机判断（含轻量包 / 未来 ORT）
+ * - llm：用户云端 API
+ * - probe：智能探活 Playbook（P7，预留）
+ */
+export type FillIntentSource = 'user' | 'rule' | 'laya' | 'llm' | 'probe';
+
 /** 模型或用户确认后的单字段填写项 */
 export interface FillMappingItem {
   fieldId: string;
@@ -25,7 +35,15 @@ export interface FillMappingItem {
   reason?: string;
   /** 若为本机附件，填写时按此 id 取文件写入 file 控件 */
   attachmentId?: string;
+  /**
+   * 正式来源字段（P5+）。
+   * 旧会话可能缺失，UI 可回退解析 reason 前缀或显示「未知」。
+   */
+  source?: FillIntentSource;
 }
+
+/** 一轮决策实际动用的主引擎（侧栏徽章用） */
+export type FillPrimaryEngine = 'rule' | 'local' | 'cloud';
 
 /** 这一轮明确不写的字段，以及给用户看的原因 */
 export interface SkippedFieldNote {
@@ -40,7 +58,7 @@ export interface FillMiss {
 }
 
 /**
- * 档案里某一段有几条。写入时页面上的行数少于此数，才点这一段的「添加」。
+ * 档案里某一段有几条。扫描出预览前（及写入兜底）页面行数少于此数时，才点这一段的「添加」。
  */
 export interface SectionAddRequest {
   /** 用来对上页面标题的正则源，例如「项目」或「工作|实习」 */
@@ -55,4 +73,49 @@ export interface FillPlan {
   skippedFieldIds: string[];
   /** 和跳过的字段一一对应。旧计划可能没有，界面会用默认原因 */
   skippedNotes?: SkippedFieldNote[];
+}
+
+/** 来源 → 侧栏展示文案 */
+export const FILL_INTENT_SOURCE_LABEL: Record<FillIntentSource, string> = {
+  user: '用户',
+  rule: '规则',
+  laya: '本机',
+  llm: '云端',
+  probe: '探活',
+};
+
+/** 主引擎 → 侧栏徽章文案 */
+export const FILL_PRIMARY_ENGINE_LABEL: Record<FillPrimaryEngine, string> = {
+  rule: '规则',
+  local: '本机',
+  cloud: '云端',
+};
+
+/**
+ * 把可能缺失的 source 归一成可展示标签（兼容旧会话）。
+ */
+export function resolveFillSourceLabel(
+  source: FillIntentSource | undefined,
+  reason?: string,
+): string {
+  if (source && FILL_INTENT_SOURCE_LABEL[source]) {
+    return FILL_INTENT_SOURCE_LABEL[source];
+  }
+  const reasonText = reason?.trim() ?? '';
+  if (reasonText.startsWith('[规则]')) {
+    return FILL_INTENT_SOURCE_LABEL.rule;
+  }
+  if (reasonText.startsWith('[本机]')) {
+    return FILL_INTENT_SOURCE_LABEL.laya;
+  }
+  if (reasonText.startsWith('[云端]')) {
+    return FILL_INTENT_SOURCE_LABEL.llm;
+  }
+  if (reasonText.startsWith('[探活]')) {
+    return FILL_INTENT_SOURCE_LABEL.probe;
+  }
+  if (reasonText.includes('手动')) {
+    return FILL_INTENT_SOURCE_LABEL.user;
+  }
+  return '未知';
 }

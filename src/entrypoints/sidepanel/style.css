@@ -132,6 +132,24 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.source-cell {
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tt-primary, #0f766e);
+}
+
+.cockpit-badge {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--tt-primary-soft, #ecfdf5);
+  border: 1px solid var(--tt-border, #d1d5db);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--tt-text-secondary, #374151);
+}
+
 .skipped-summary {
   margin: 10px 0 0;
   font-size: 12px;
