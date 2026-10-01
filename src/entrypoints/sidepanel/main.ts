@@ -98,6 +98,9 @@ const layaEnabledCheckbox = document.getElementById(
 const decisionPreferLocalCheckbox = document.getElementById(
   'decisionPreferLocalCheckbox',
 ) as HTMLInputElement;
+const enableProbeClicksCheckbox = document.getElementById(
+  'enableProbeClicksCheckbox',
+) as HTMLInputElement;
 const decisionMinConfidenceInput = document.getElementById(
   'decisionMinConfidenceInput',
 ) as HTMLInputElement;
@@ -106,6 +109,9 @@ const layaEnableBuiltinButton = document.getElementById(
 ) as HTMLButtonElement;
 const layaDownloadButton = document.getElementById(
   'layaDownloadButton',
+) as HTMLButtonElement;
+const layaTestServerButton = document.getElementById(
+  'layaTestServerButton',
 ) as HTMLButtonElement;
 const layaClearCacheButton = document.getElementById(
   'layaClearCacheButton',
@@ -536,16 +542,15 @@ async function mergeLatestPlaybookIntoPreview(): Promise<void> {
     items: [],
     skippedFieldIds: [],
   };
-  const { plan, mergedCount, skippedStepCount } = mergePlaybookIntoFillPlan(
-    basePlan,
-    latestPlaybook,
-    minConfidence,
-  );
+  const { plan, mergedCount, skippedStepCount, keptStrongerCount } =
+    mergePlaybookIntoFillPlan(basePlan, latestPlaybook, minConfidence);
   if (mergedCount === 0) {
     showError(
-      skippedStepCount > 0
-        ? '有可写步但缺少 fieldId/建议值或置信不足，未能合并。可先扫描本页再探活。'
-        : '当前方案没有可合并进预览的填写步。',
+      keptStrongerCount > 0
+        ? `探活建议未写入：已保留 ${keptStrongerCount} 项更高或同等置信的用户/云端/本机值。`
+        : skippedStepCount > 0
+          ? '有可写步但缺少 fieldId/建议值或置信不足，未能合并。可先扫描本页再探活。'
+          : '当前方案没有可合并进预览的填写步。',
     );
     return;
   }
@@ -585,8 +590,12 @@ async function mergeLatestPlaybookIntoPreview(): Promise<void> {
   currentSession = nextSession;
   renderMappingTable();
   syncBusyUi();
+  const keptHint =
+    keptStrongerCount > 0
+      ? `；另保留 ${keptStrongerCount} 项更高/同等置信原值未覆盖`
+      : '';
   showStatus(
-    `已合并 ${mergedCount} 项探活建议进预览（来源=探活）。请核对后再点「确认写入」或「确认执行探活方案」。`,
+    `已合并 ${mergedCount} 项探活建议进预览（来源=探活）${keptHint}。请核对后再点「确认写入」或「确认执行探活方案」。`,
     'success',
   );
 }
@@ -606,7 +615,7 @@ async function executeLatestPlaybookConfirmed(): Promise<void> {
     return;
   }
   const confirmed = window.confirm(
-    `将逐步执行 ${steps.length} 步探活写入（含回读）。\n不会点击提交/投递。\n低置信步骤已跳过。\n\n确定执行？`,
+    `将尝试最多 ${steps.length} 步探活写入（含回读）。\n打不开或未匹配到选项的步骤会跳过并继续，不会点击提交/投递。\n低置信与无建议值的步骤已排除。\n\n确定执行？`,
   );
   if (!confirmed) {
     showStatus('已取消执行探活方案。', 'info');
@@ -633,31 +642,43 @@ async function executeLatestPlaybookConfirmed(): Promise<void> {
   showScanProgress(
     100,
     response.stopped
-      ? `已停止：完成 ${response.completed}/${steps.length}`
-      : `探活执行完成：${response.completed} 步`,
+      ? `已停止：成功写入 ${response.completed}/${steps.length}`
+      : `探活执行完成：成功写入 ${response.completed}/${steps.length} 步`,
   );
   if (response.misses && response.misses.length > 0) {
     renderMissTable(response.misses);
   }
   showStatus(
     response.stopped
-      ? `探活执行中途停止（完成 ${response.completed} 步）。请查看未填原因。`
-      : `探活方案已执行完 ${response.completed} 步。`,
+      ? `探活执行中途停止（成功写入 ${response.completed} 步）。请查看未填原因。`
+      : (response.misses?.length ?? 0) > 0
+        ? `探活方案已跑完：成功写入 ${response.completed} 步，另有 ${response.misses!.length} 步跳过/未匹配。`
+        : `探活方案已执行完，成功写入 ${response.completed} 步。`,
     response.stopped ? 'error' : 'success',
   );
 }
 
 /**
- * 智能探活：收集证据（含 P7c 受控探测）→ 生成 Playbook → 展示，并可合并/确认执行。
+ * 智能探活：收集证据（可选 P7c 受控探测）→ 生成 Playbook → 展示，并可合并/确认执行。
  */
 async function runProbeAnalyzeFlow(profileId: string): Promise<void> {
-  showStatus('正在智能探活（含受控探测，不提交）…', 'info');
-  showScanProgress(8, '收集页内证据与探测点击…');
+  const allowProbeClicks = enableProbeClicksCheckbox.checked;
+  showStatus(
+    allowProbeClicks
+      ? '正在智能探活（含受控探测，不提交）…'
+      : '正在智能探活（只读分析，未开启探测点击）…',
+    'info',
+  );
+  showScanProgress(
+    8,
+    allowProbeClicks ? '收集页内证据与探测点击…' : '收集页内证据（只读）…',
+  );
+  // 勾选变更会落库；此处再读一次设置作兜底，消息显式传勾选值
   const response = await sendRuntimeMessage({
     type: 'BUILD_SITE_PLAYBOOK',
     requestId: createRequestId(),
     profileId,
-    enableProbeClicks: true,
+    enableProbeClicks: allowProbeClicks,
     enableMultimodal: true,
   });
   if (response.type === 'ERROR') {
@@ -693,6 +714,7 @@ function fillSettingsForm(settings: {
   layaEnabled: boolean;
   decisionPreferLocal: boolean;
   decisionMinConfidence: number;
+  enableProbeClicks?: boolean;
 }): void {
   apiBaseUrlInput.value = settings.apiBaseUrl;
   apiKeyInput.value = settings.apiKey;
@@ -701,6 +723,9 @@ function fillSettingsForm(settings: {
   layaEnabledCheckbox.checked = settings.layaEnabled;
   decisionPreferLocalCheckbox.checked = settings.decisionPreferLocal;
   decisionMinConfidenceInput.value = String(settings.decisionMinConfidence);
+  if (typeof settings.enableProbeClicks === 'boolean') {
+    enableProbeClicksCheckbox.checked = settings.enableProbeClicks;
+  }
   void refreshLayaModelStatus();
 }
 
@@ -744,6 +769,37 @@ async function refreshLayaModelStatus(): Promise<void> {
 }
 
 /**
+ * P7：测试输入框中的 Laya Server 是否可达（写入 Background 健康缓存）。
+ */
+async function testLayaServerConnection(): Promise<void> {
+  try {
+    layaTestServerButton.disabled = true;
+    layaModelStatusText.textContent = 'Laya Server：正在探测…';
+    const response = await sendRuntimeMessage({
+      type: 'TEST_LAYA_SERVER',
+      requestId: createRequestId(),
+      serverUrl: layaModelUrlInput.value.trim(),
+    });
+    if (response.type === 'ERROR') {
+      showStatus(response.message, 'error');
+      return;
+    }
+    if (response.type !== 'TEST_LAYA_SERVER_RESULT') {
+      showStatus('测试 Server 返回异常', 'error');
+      return;
+    }
+    layaModelStatusText.textContent = response.ok
+      ? `Laya Server：${response.message}`
+      : `Laya Server 未连通：${response.message}`;
+    showStatus(response.message, response.ok ? 'success' : 'error');
+  } catch (error: unknown) {
+    showStatus(describeUserFacingError(error), 'error');
+  } finally {
+    layaTestServerButton.disabled = false;
+  }
+}
+
+/**
  * 侧栏：启用内置包 / 下载 / 清除。
  */
 async function runLayaModelAction(
@@ -752,6 +808,7 @@ async function runLayaModelAction(
   try {
     layaEnableBuiltinButton.disabled = true;
     layaDownloadButton.disabled = true;
+    layaTestServerButton.disabled = true;
     layaClearCacheButton.disabled = true;
     if (action === 'download') {
       layaModelStatusText.textContent = '本机判断：正在下载…';
@@ -803,6 +860,7 @@ async function runLayaModelAction(
   } finally {
     layaEnableBuiltinButton.disabled = false;
     layaDownloadButton.disabled = false;
+    layaTestServerButton.disabled = false;
     layaClearCacheButton.disabled = false;
   }
 }
@@ -1743,6 +1801,11 @@ function bindEvents(): void {
       await runLayaModelAction('download');
     });
   });
+  layaTestServerButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await testLayaServerConnection();
+    });
+  });
   layaClearCacheButton.addEventListener('click', () => {
     void withBusy(async () => {
       await runLayaModelAction('clear');
@@ -1802,6 +1865,20 @@ function bindEvents(): void {
     });
   });
 
+  // P4：探测点击开关即时落库，下次探活生效
+  enableProbeClicksCheckbox.addEventListener('change', () => {
+    void saveSettings({
+      enableProbeClicks: enableProbeClicksCheckbox.checked,
+    }).then(() => {
+      showStatus(
+        enableProbeClicksCheckbox.checked
+          ? '已开启受控探测点击（永不点提交）。'
+          : '已关闭探测点击：下次探活为只读分析。',
+        'info',
+      );
+    });
+  });
+
   // 「确认写入」：按映射表（含用户改值）写入页面
   confirmWriteButton.addEventListener('click', () => {
     void withBusy(async () => {
@@ -1856,6 +1933,21 @@ function bindEvents(): void {
         await refreshUsageLine();
       }
     })();
+  });
+
+  // N5：选项页/其它入口改探测开关时，侧栏勾选实时同步
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') {
+      return;
+    }
+    const settingsChange = changes.settings;
+    if (!settingsChange?.newValue || typeof settingsChange.newValue !== 'object') {
+      return;
+    }
+    const nextSettings = settingsChange.newValue as { enableProbeClicks?: boolean };
+    if (typeof nextSettings.enableProbeClicks === 'boolean') {
+      enableProbeClicksCheckbox.checked = nextSettings.enableProbeClicks;
+    }
   });
 }
 

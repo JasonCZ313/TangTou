@@ -35,6 +35,16 @@ export interface LayaPackageManifest {
   /** 给人看的说明 */
   label?: string;
   files: LayaManifestFileEntry[];
+  /**
+   * P2c：ORT 包的 I/O 协议名。
+   * 当前实现：`tangtou-score-v0`（定长哈希特征 → 每选项分数）。
+   * 缺省时 Offscreen 仍尝试 score-v0；对不上则回退轻量判断。
+   */
+  ioProtocol?: string;
+  /** 特征维；缺省 64 */
+  featureDim?: number;
+  /** 单题最多选项；缺省 16 */
+  maxOptions?: number;
 }
 
 /** 本机缓存生命周期状态 */

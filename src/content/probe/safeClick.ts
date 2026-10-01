@@ -3,7 +3,10 @@
  * 有次数与超时预算；永不点提交/投递/保存类危险按钮；不点「添加行」。
  */
 import { getActiveSiteAdapter } from '../adapters/registry';
-import { adapterIsDangerSaveLabel } from '../adapters/types';
+import {
+  adapterIsDangerSaveLabel,
+  matchesStrongSubmitIntent,
+} from '../adapters/types';
 import type { ProbeClickRecord } from '../../shared/playbook/types';
 
 /** 探测点击预算：防止死循环与长时间打扰页面 */
@@ -67,9 +70,8 @@ export function isDangerProbeLabel(rawText: string): boolean {
   if (adapterIsDangerSaveLabel(adapter, compact)) {
     return true;
   }
-  return /投递|提交申请|立即申请|最终提交|确认投递|保存并提交|立即投递/.test(
-    compact,
-  );
+  // 与执行路径共用强意图（adapter 内已含；此处兜底无适配器时的短语）
+  return matchesStrongSubmitIntent(compact);
 }
 
 /**

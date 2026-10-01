@@ -87,6 +87,7 @@ interface ExportPayload {
     layaModelUrl?: string;
     layaEnabled?: boolean;
     decisionPreferLocal?: boolean;
+    enableProbeClicks?: boolean;
     decisionMinConfidence?: number;
   };
 }
@@ -205,6 +206,9 @@ const layaEnabledCheckbox = document.getElementById(
 const decisionPreferLocalCheckbox = document.getElementById(
   'decisionPreferLocalCheckbox',
 ) as HTMLInputElement;
+const enableProbeClicksCheckbox = document.getElementById(
+  'enableProbeClicksCheckbox',
+) as HTMLInputElement;
 const decisionMinConfidenceInput = document.getElementById(
   'decisionMinConfidenceInput',
 ) as HTMLInputElement;
@@ -213,6 +217,9 @@ const layaEnableBuiltinButton = document.getElementById(
 ) as HTMLButtonElement;
 const layaDownloadButton = document.getElementById(
   'layaDownloadButton',
+) as HTMLButtonElement;
+const layaTestServerButton = document.getElementById(
+  'layaTestServerButton',
 ) as HTMLButtonElement;
 const layaClearCacheButton = document.getElementById(
   'layaClearCacheButton',
@@ -404,6 +411,37 @@ async function refreshLayaModelStatus(): Promise<void> {
 }
 
 /**
+ * P2c：测试输入框/已保存的 Laya Server 是否可达。
+ */
+async function testLayaServerConnection(): Promise<void> {
+  try {
+    layaTestServerButton.disabled = true;
+    layaModelStatusText.textContent = 'Laya Server：正在探测…';
+    const response = await sendRuntimeMessage({
+      type: 'TEST_LAYA_SERVER',
+      requestId: createRequestId(),
+      serverUrl: layaModelUrlInput.value.trim(),
+    });
+    if (response.type === 'ERROR') {
+      showStatus(response.message, 'error');
+      return;
+    }
+    if (response.type !== 'TEST_LAYA_SERVER_RESULT') {
+      showStatus('测试 Server 返回异常', 'error');
+      return;
+    }
+    layaModelStatusText.textContent = response.ok
+      ? `Laya Server：${response.message}`
+      : `Laya Server 未连通：${response.message}`;
+    showStatus(response.message, response.ok ? 'success' : 'error');
+  } catch (error: unknown) {
+    showStatus(describeUserFacingError(error), 'error');
+  } finally {
+    layaTestServerButton.disabled = false;
+  }
+}
+
+/**
  * 启用内置轻量包 / 下载 / 清除缓存。
  */
 async function runLayaModelAction(
@@ -412,6 +450,7 @@ async function runLayaModelAction(
   try {
     layaEnableBuiltinButton.disabled = true;
     layaDownloadButton.disabled = true;
+    layaTestServerButton.disabled = true;
     layaClearCacheButton.disabled = true;
     if (action === 'download') {
       layaModelStatusText.textContent = '本机判断：正在下载…';
@@ -456,6 +495,7 @@ async function runLayaModelAction(
   } finally {
     layaEnableBuiltinButton.disabled = false;
     layaDownloadButton.disabled = false;
+    layaTestServerButton.disabled = false;
     layaClearCacheButton.disabled = false;
   }
 }
@@ -656,6 +696,7 @@ async function bootstrapOptionsPage(): Promise<void> {
     layaModelUrlInput.value = settings.layaModelUrl;
     layaEnabledCheckbox.checked = settings.layaEnabled;
     decisionPreferLocalCheckbox.checked = settings.decisionPreferLocal;
+    enableProbeClicksCheckbox.checked = settings.enableProbeClicks;
     decisionMinConfidenceInput.value = String(settings.decisionMinConfidence);
     renderTokenUsageSummary(tokenUsage);
 
@@ -798,6 +839,7 @@ async function handleSaveApiSettings(event: SubmitEvent): Promise<void> {
       layaModelUrl: layaModelUrlInput.value.trim(),
       layaEnabled: layaEnabledCheckbox.checked,
       decisionPreferLocal: decisionPreferLocalCheckbox.checked,
+      enableProbeClicks: enableProbeClicksCheckbox.checked,
       decisionMinConfidence: Number(decisionMinConfidenceInput.value),
     });
     showStatus('API 与判断设置已保存', 'success');
@@ -860,6 +902,7 @@ async function handleLayaSettingsChange(): Promise<void> {
       layaModelUrl: layaModelUrlInput.value.trim(),
       layaEnabled: layaEnabledCheckbox.checked,
       decisionPreferLocal: decisionPreferLocalCheckbox.checked,
+      enableProbeClicks: enableProbeClicksCheckbox.checked,
       decisionMinConfidence: Number(decisionMinConfidenceInput.value),
     });
     showStatus('判断设置已保存', 'success');
@@ -1583,6 +1626,10 @@ async function handleImportFileChange(): Promise<void> {
           typeof importedSettings.decisionPreferLocal === 'boolean'
             ? importedSettings.decisionPreferLocal
             : currentSettings.decisionPreferLocal,
+        enableProbeClicks:
+          typeof importedSettings.enableProbeClicks === 'boolean'
+            ? importedSettings.enableProbeClicks
+            : currentSettings.enableProbeClicks,
         decisionMinConfidence:
           typeof importedSettings.decisionMinConfidence === 'number'
             ? importedSettings.decisionMinConfidence
@@ -1631,6 +1678,9 @@ function bindEventListeners(): void {
   decisionPreferLocalCheckbox.addEventListener('change', () => {
     void handleLayaSettingsChange();
   });
+  enableProbeClicksCheckbox.addEventListener('change', () => {
+    void handleLayaSettingsChange();
+  });
   decisionMinConfidenceInput.addEventListener('change', () => {
     void handleLayaSettingsChange();
   });
@@ -1639,6 +1689,9 @@ function bindEventListeners(): void {
   });
   layaDownloadButton.addEventListener('click', () => {
     void runLayaModelAction('download');
+  });
+  layaTestServerButton.addEventListener('click', () => {
+    void testLayaServerConnection();
   });
   layaClearCacheButton.addEventListener('click', () => {
     void runLayaModelAction('clear');
@@ -1680,3 +1733,18 @@ function bindEventListeners(): void {
 
 bindEventListeners();
 void bootstrapOptionsPage();
+
+// N5：侧栏改探测开关时，选项页勾选实时同步
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') {
+    return;
+  }
+  const settingsChange = changes.settings;
+  if (!settingsChange?.newValue || typeof settingsChange.newValue !== 'object') {
+    return;
+  }
+  const nextSettings = settingsChange.newValue as { enableProbeClicks?: boolean };
+  if (typeof nextSettings.enableProbeClicks === 'boolean') {
+    enableProbeClicksCheckbox.checked = nextSettings.enableProbeClicks;
+  }
+});

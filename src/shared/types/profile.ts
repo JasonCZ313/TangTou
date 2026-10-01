@@ -24,6 +24,11 @@ export interface AppSettings {
    * 低于此值的云端/本机提案进跳过列表，不进可写项。
    */
   decisionMinConfidence: number;
+  /**
+   * P7c：智能探活时是否允许预算内受控探测点击（只开下拉/展开，永不提交）。
+   * 默认 true；敏感页可关掉改为只读探活。
+   */
+  enableProbeClicks: boolean;
 }
 
 /**

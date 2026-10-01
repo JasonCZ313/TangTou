@@ -26,6 +26,19 @@
           管理 API、填写模式与本机简历档案（最多 5 份）。一次填全，长期复用。
           <strong>档案填得越完整，扫描映射越准、漏填越少。</strong>
         </p>
+        <aside class="privacy-callout" aria-labelledby="privacyCalloutHeading">
+          <h2 id="privacyCalloutHeading" class="privacy-callout-title">隐私与数据（请阅读）</h2>
+          <ul class="privacy-callout-list">
+            <li>档案与 API Key 只存在本机；开发者<strong>没有</strong>收集服务器。</li>
+            <li>云端映射/探活时，字段摘要（及可选可见区截图）只发往<strong>你配置的 API</strong>。</li>
+            <li>可见区截图可在本机 OCR；智能探活可做预算内点开下拉，但<strong>永不自动提交</strong>。</li>
+            <li>本机 Laya 包缓存在本机 IndexedDB；商店包不含大模型权重。</li>
+          </ul>
+          <p class="hint">
+            完整政策见扩展包外文档
+            <code>docs/privacy-policy.md</code>（上架时请托管为公开 URL）。
+          </p>
+        </aside>
       </header>
 
       <!-- 全局状态提示：操作成功/失败文案写在这里 -->
@@ -96,20 +109,21 @@
       <section class="panel" id="layaSection" aria-labelledby="layaHeading">
         <h2 id="layaHeading">本机 Laya 判断</h2>
         <p class="hint">
-          填写一律「预览后写入」。选项/是否类判断可优先走本机（内置轻量包或自备 ONNX 清单）；未启用或未就绪时用你的 API Key。自由文本映射始终走你的 API。
+          填写一律「预览后写入」。选项/是否题可走：内置轻量包、自备 ONNX 包，或
+          <strong>P2c 自建 Laya Server</strong>（同一 URL 字段）。未就绪时回退你的 API。自由文本始终走 API。
         </p>
         <label class="field">
-          <span class="field-label">Laya 模型 URL（可选，默认留空）</span>
+          <span class="field-label">Laya 模型 / Server URL（可选）</span>
           <input
             id="layaModelUrlInput"
             type="url"
-            placeholder="模型根地址，需含 tangtou-laya-manifest.json；勿强依赖外网 HF"
+            placeholder="静态包根（含清单）或 Server 根如 http://127.0.0.1:8765"
           />
         </label>
         <p class="hint">
-          推荐先点「启用内置轻量包」即可对本机选项题做判断。若自备
-          <code>tangtou-ort-v0</code> ONNX 包，填写根 URL 后点「下载本机包」。扩展内示例清单：
-          <code>/laya-sample/</code>。
+          日常：点「启用内置轻量包」即可。静态 ONNX：填清单根地址后「下载本机包」。
+          Server：填服务根地址，点「测试 Laya Server」，<strong>不要</strong>对 Server URL 点下载。
+          示例服务：<code>node scripts/p2c/laya-server.mjs</code>
         </p>
         <div class="settings-form-actions" id="layaModelActions">
           <button type="button" class="btn btn-primary" id="layaEnableBuiltinButton">
@@ -117,6 +131,9 @@
           </button>
           <button type="button" class="btn btn-secondary" id="layaDownloadButton">
             下载本机包
+          </button>
+          <button type="button" class="btn btn-secondary" id="layaTestServerButton">
+            测试 Laya Server
           </button>
           <button type="button" class="btn btn-secondary" id="layaClearCacheButton">
             清除缓存
@@ -133,6 +150,10 @@
         <label class="checkbox-row" for="decisionPreferLocalCheckbox">
           <input type="checkbox" id="decisionPreferLocalCheckbox" checked />
           <span>本机就绪时优先用 Laya（否则直接走你的 API）</span>
+        </label>
+        <label class="checkbox-row" for="enableProbeClicksCheckbox">
+          <input type="checkbox" id="enableProbeClicksCheckbox" checked />
+          <span>智能探活允许受控探测点击（不点提交；敏感页可关）</span>
         </label>
         <label class="field">
           <span class="field-label">写入预览的最低置信度（0～1）</span>

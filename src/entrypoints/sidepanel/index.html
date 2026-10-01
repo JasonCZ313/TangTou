@@ -62,11 +62,11 @@
               <input id="modelInput" type="text" placeholder="gpt-4o-mini" />
             </label>
             <label class="field">
-              <span class="field-label">本机 Laya 模型 URL（可选，默认留空）</span>
+              <span class="field-label">本机 Laya / Server URL（可选）</span>
               <input
                 id="layaModelUrlInput"
                 type="url"
-                placeholder="含 tangtou-laya-manifest.json 的根地址；可留空并启用内置包"
+                placeholder="静态包根，或 Server 如 http://127.0.0.1:8765；可留空用内置包"
               />
             </label>
             <div class="settings-form-actions" id="layaModelActions">
@@ -75,6 +75,9 @@
               </button>
               <button type="button" class="btn btn-secondary" id="layaDownloadButton">
                 下载本机包
+              </button>
+              <button type="button" class="btn btn-secondary" id="layaTestServerButton">
+                测试 Laya Server
               </button>
               <button type="button" class="btn btn-secondary" id="layaClearCacheButton">
                 清除缓存
@@ -206,9 +209,15 @@
         <p class="hint tip-inline">
           收集证据时可做<strong>预算内探测点击</strong>（只开下拉/展开，永不提交）。有 P3 适配器的站仍建议先「扫描本页」。云端可用时会尝试附带截图（不支持则回退纯文本）。
         </p>
+        <label class="checkbox-row probe-click-toggle" for="enableProbeClicksCheckbox">
+          <input type="checkbox" id="enableProbeClicksCheckbox" checked />
+          允许受控探测点击（不点提交；敏感页可关掉）
+        </label>
         <p id="playbookSummary" class="playbook-summary" hidden></p>
         <ol id="playbookStepList" class="playbook-step-list"></ol>
-        <p id="playbookEmptyHint" class="hint">尚未探活。选好档案后点下方「智能探活」。</p>
+        <p id="playbookEmptyHint" class="hint">
+          尚未探活。选好档案后点下方「智能探活」。验收请用 http(s) 本地页（如 http://127.0.0.1:8766），勿用 file:// 直接打开 HTML。
+        </p>
         <div class="playbook-actions" role="group" aria-label="探活后续操作">
           <button type="button" id="mergePlaybookButton" class="btn btn-secondary" disabled>
             合并进预览

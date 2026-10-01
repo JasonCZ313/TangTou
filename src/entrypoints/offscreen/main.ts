@@ -1,13 +1,28 @@
 /**
- * Offscreen 入口：托管 onnxruntime-web，响应本机 Laya 推理消息。
- * 当前若尚未缓存可用的 model.onnx 或 I/O 协议未对齐，回执 ok=false，由 Background 回退轻量判断。
+ * Offscreen 入口：托管 onnxruntime-web，响应本机 Laya ORT 推理（P2c 接通 score-v0）。
+ * 无权重 / I/O 对不上 / run 失败 → ok=false，Background 回退轻量判断或 Server。
  */
 import * as ort from 'onnxruntime-web';
 import {
   LAYA_OFFSCREEN_DECIDE,
   LAYA_OFFSCREEN_DECIDE_RESULT,
 } from '../../shared/decision/layaOffscreenBridge';
-import { readCachedLayaBlob, readCachedLayaPackageMeta } from '../../shared/decision/layaModelStore';
+import {
+  readCachedLayaBlob,
+  readCachedLayaPackageMeta,
+} from '../../shared/decision/layaModelStore';
+import {
+  buildOrtDecisionResult,
+  buildOrtScoreInputForField,
+  collectOrtProfileHints,
+  extractOptionScores,
+  LAYA_ORT_FEATURE_DIM,
+  LAYA_ORT_IO_PROTOCOL_SCORE_V0,
+  LAYA_ORT_MAX_OPTIONS,
+  pickBestScoredOption,
+} from '../../shared/decision/layaOrtIo';
+import type { DecisionBatchRequest } from '../../shared/decision/types';
+import type { DecisionMappingHit } from '../../shared/decision/types';
 
 /** ORT 会话缓存：同一包只创建一次 */
 let cachedSession: ort.InferenceSession | null = null;
@@ -25,7 +40,12 @@ function configureOrtWasmPaths(): void {
 /**
  * 尝试从缓存加载 model.onnx；失败返回 null。
  */
-async function obtainOrtSession(): Promise<ort.InferenceSession | null> {
+async function obtainOrtSession(): Promise<{
+  session: ort.InferenceSession;
+  featureDim: number;
+  maxOptions: number;
+  ioProtocol: string;
+} | null> {
   const meta = await readCachedLayaPackageMeta();
   if (!meta || meta.manifest.format !== 'tangtou-ort-v0') {
     return null;
@@ -39,28 +59,122 @@ async function obtainOrtSession(): Promise<ort.InferenceSession | null> {
   }
 
   const sessionKey = `${meta.cachedAt}:${modelEntry.path}`;
-  if (cachedSession && cachedSessionKey === sessionKey) {
-    return cachedSession;
+  if (!cachedSession || cachedSessionKey !== sessionKey) {
+    const modelBuffer = await readCachedLayaBlob(modelEntry.path);
+    if (!modelBuffer) {
+      return null;
+    }
+    configureOrtWasmPaths();
+    cachedSession = await ort.InferenceSession.create(modelBuffer, {
+      executionProviders: ['wasm'],
+    });
+    cachedSessionKey = sessionKey;
   }
 
-  const modelBuffer = await readCachedLayaBlob(modelEntry.path);
-  if (!modelBuffer) {
-    return null;
+  const featureDim =
+    typeof meta.manifest.featureDim === 'number' &&
+    meta.manifest.featureDim > 0
+      ? Math.floor(meta.manifest.featureDim)
+      : LAYA_ORT_FEATURE_DIM;
+  const maxOptions =
+    typeof meta.manifest.maxOptions === 'number' &&
+    meta.manifest.maxOptions > 0
+      ? Math.floor(meta.manifest.maxOptions)
+      : LAYA_ORT_MAX_OPTIONS;
+  const ioProtocol =
+    meta.manifest.ioProtocol?.trim() || LAYA_ORT_IO_PROTOCOL_SCORE_V0;
+
+  return {
+    session: cachedSession,
+    featureDim,
+    maxOptions,
+    ioProtocol,
+  };
+}
+
+/**
+ * 按 tangtou-score-v0 对一批字段跑分。
+ */
+async function runScoreProtocol(
+  session: ort.InferenceSession,
+  batch: DecisionBatchRequest,
+  featureDim: number,
+  maxOptions: number,
+): Promise<DecisionMappingHit[]> {
+  const inputName = session.inputNames[0];
+  const outputName = session.outputNames[0];
+  if (!inputName || !outputName) {
+    return [];
   }
 
-  configureOrtWasmPaths();
-  const session = await ort.InferenceSession.create(modelBuffer, {
-    executionProviders: ['wasm'],
-  });
-  cachedSession = session;
-  cachedSessionKey = sessionKey;
-  return session;
+  const profileHints = collectOrtProfileHints(batch.profileData);
+  const hits: DecisionMappingHit[] = [];
+
+  for (const field of batch.fields) {
+    const built = buildOrtScoreInputForField(
+      field,
+      profileHints,
+      maxOptions,
+      featureDim,
+    );
+    if (!built) {
+      continue;
+    }
+
+    const inputTensor = new ort.Tensor('float32', built.tensorData, [
+      1,
+      maxOptions,
+      featureDim,
+    ]);
+    const feeds: Record<string, ort.Tensor> = {
+      [inputName]: inputTensor,
+    };
+
+    let outputs: ort.InferenceSession.OnnxValueMapType;
+    try {
+      outputs = await session.run(feeds);
+    } catch {
+      // 尝试展平为 [1, maxOptions*featureDim]
+      const flatTensor = new ort.Tensor('float32', built.tensorData, [
+        1,
+        maxOptions * featureDim,
+      ]);
+      try {
+        outputs = await session.run({ [inputName]: flatTensor });
+      } catch {
+        continue;
+      }
+    }
+
+    const outputValue = outputs[outputName];
+    if (!outputValue || !(outputValue.data instanceof Float32Array)) {
+      continue;
+    }
+    const scores = extractOptionScores(outputValue.data, built.options.length);
+    if (!scores) {
+      continue;
+    }
+    const picked = pickBestScoredOption(
+      built.options,
+      scores,
+      batch.minConfidence,
+    );
+    if (!picked) {
+      continue;
+    }
+    hits.push({
+      fieldId: field.fieldId,
+      value: picked.value,
+      confidence: picked.confidence,
+      reason: 'score-v0',
+    });
+  }
+
+  return hits;
 }
 
 /**
  * 监听 Background 发来的推理请求。
- * 目前 ONNX I/O 协议尚未与开源 Laya 权重对齐：会话能建则仍返回 ok=false，
- * 避免用不正确的张量产物污染预览；上层会回退轻量判断。
  */
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message !== 'object') {
@@ -72,11 +186,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   const requestId = typeof record.requestId === 'string' ? record.requestId : '';
+  const batch = record.batch as DecisionBatchRequest | undefined;
 
   void (async () => {
     try {
-      const session = await obtainOrtSession();
-      if (!session) {
+      if (!batch || !Array.isArray(batch.fields)) {
+        await chrome.runtime.sendMessage({
+          type: LAYA_OFFSCREEN_DECIDE_RESULT,
+          requestId,
+          ok: false,
+          reason: 'BAD_BATCH',
+        });
+        sendResponse({ ok: false });
+        return;
+      }
+
+      const obtained = await obtainOrtSession();
+      if (!obtained) {
         await chrome.runtime.sendMessage({
           type: LAYA_OFFSCREEN_DECIDE_RESULT,
           requestId,
@@ -87,16 +213,52 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
 
-      // 会话已创建，但输入输出约定待 P2c/权重导出对齐——故意不跑假推理
+      const { session, featureDim, maxOptions, ioProtocol } = obtained;
+      if (
+        ioProtocol !== LAYA_ORT_IO_PROTOCOL_SCORE_V0 &&
+        ioProtocol !== 'tangtou-score-v0'
+      ) {
+        await chrome.runtime.sendMessage({
+          type: LAYA_OFFSCREEN_DECIDE_RESULT,
+          requestId,
+          ok: false,
+          reason: 'UNSUPPORTED_IO_PROTOCOL',
+          ioProtocol,
+        });
+        sendResponse({ ok: false });
+        return;
+      }
+
+      const hits = await runScoreProtocol(
+        session,
+        batch,
+        featureDim,
+        maxOptions,
+      );
+      if (hits.length === 0) {
+        await chrome.runtime.sendMessage({
+          type: LAYA_OFFSCREEN_DECIDE_RESULT,
+          requestId,
+          ok: false,
+          reason: 'ORT_NO_HITS',
+          inputNames: session.inputNames,
+          outputNames: session.outputNames,
+        });
+        sendResponse({ ok: false });
+        return;
+      }
+
+      const result = buildOrtDecisionResult(
+        hits,
+        batch.fields.map((field) => field.fieldId),
+      );
       await chrome.runtime.sendMessage({
         type: LAYA_OFFSCREEN_DECIDE_RESULT,
         requestId,
-        ok: false,
-        reason: 'ORT_IO_NOT_WIRED',
-        inputNames: session.inputNames,
-        outputNames: session.outputNames,
+        ok: true,
+        result,
       });
-      sendResponse({ ok: false, reason: 'ORT_IO_NOT_WIRED' });
+      sendResponse({ ok: true });
     } catch (error: unknown) {
       await chrome.runtime.sendMessage({
         type: LAYA_OFFSCREEN_DECIDE_RESULT,

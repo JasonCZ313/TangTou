@@ -3,7 +3,7 @@
  * P7a 只读；P7c 可选预算内探测点击以暴露下拉选项（永不提交）。
  */
 import { resolveSiteAdapter } from '../adapters/registry';
-import { adapterIsDangerSaveLabel } from '../adapters/types';
+import { adapterIsDangerSaveLabel, matchesStrongSubmitIntent } from '../adapters/types';
 import {
   buildProbePathNotice,
   matchMegaCorpSample,
@@ -294,7 +294,7 @@ function collectDangerButtonLabels(): string[] {
     if (!text) {
       continue;
     }
-    if (adapterIsDangerSaveLabel(adapter, text) || /投递|提交申请|立即申请/.test(text)) {
+    if (adapterIsDangerSaveLabel(adapter, text) || matchesStrongSubmitIntent(text)) {
       if (!seen.has(text)) {
         seen.add(text);
         labels.push(text);
@@ -328,6 +328,13 @@ async function buildEvidencePack(options?: {
   const adapter = resolveSiteAdapter(location.hostname);
   const notices: string[] = [];
   const enableProbeClicks = options?.enableProbeClicks === true;
+
+  // P8：file:// 打开时扩展常不注入或能力残缺，明确提示以免误判探活坏了
+  if (location.protocol === 'file:') {
+    notices.push(
+      '当前为 file:// 页面：扩展通常无法完整注入。请用本地 http 打开（如 http://127.0.0.1:8766），或在扩展详情中勾选「允许访问文件网址」。',
+    );
+  }
 
   let probeClicks: ProbeClickRecord[] | undefined;
   if (enableProbeClicks) {

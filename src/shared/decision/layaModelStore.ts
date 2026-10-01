@@ -198,11 +198,31 @@ function parseRemoteManifest(payload: unknown): LayaPackageManifest {
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
+  const ioProtocol =
+    typeof record.ioProtocol === 'string' && record.ioProtocol.trim()
+      ? record.ioProtocol.trim()
+      : undefined;
+  const featureDim =
+    typeof record.featureDim === 'number' &&
+    Number.isFinite(record.featureDim) &&
+    record.featureDim > 0
+      ? Math.floor(record.featureDim)
+      : undefined;
+  const maxOptions =
+    typeof record.maxOptions === 'number' &&
+    Number.isFinite(record.maxOptions) &&
+    record.maxOptions > 0
+      ? Math.floor(record.maxOptions)
+      : undefined;
+
   return {
     format,
     version,
     label,
     files,
+    ioProtocol,
+    featureDim,
+    maxOptions,
   };
 }
 

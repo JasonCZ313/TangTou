@@ -13,7 +13,8 @@ export default defineConfig({
     version: appVersionForManifest(),
     description:
       '躺投：本机档案 + 用户自备 API Key，通用站点智能填写简历表单（不自动提交）。',
-    // offscreen：本机 ORT；unlimitedStorage：模型缓存；activeTab：截图 OCR（P4b）
+    // offscreen：本机 ORT（wasm EP）；unlimitedStorage：模型缓存；activeTab：截图 OCR（P4b/P7）
+    // ORT 资产经 scripts/sync-ort-wasm.mjs 精简（不含 jsep）
     permissions: [
       'storage',
       'sidePanel',

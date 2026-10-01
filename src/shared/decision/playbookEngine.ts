@@ -62,6 +62,107 @@ function suggestProfileValueForLabel(
 }
 
 /**
+ * 从档案日期字符串拆出四位年份（如 2020-09 / 2020.9 / 2020年）。
+ */
+function extractYearFromDateText(rawDate: string | undefined): string | undefined {
+  const text = rawDate?.trim() ?? '';
+  if (!text) {
+    return undefined;
+  }
+  const match = text.match(/(19|20)\d{2}/);
+  return match?.[0];
+}
+
+/**
+ * 从档案日期字符串拆出月份文案（统一成「M月」，便于与下拉「1月」…「12月」匹配）。
+ */
+function extractMonthFromDateText(rawDate: string | undefined): string | undefined {
+  const text = rawDate?.trim() ?? '';
+  if (!text) {
+    return undefined;
+  }
+  // 2020-09 / 2020/9 / 2020.09 / 2020年09月
+  const afterYear = text.match(
+    /(?:19|20)\d{2}\s*[./\-年]?\s*(0?[1-9]|1[0-2])(?:\s*[月日]|\/|$|\D)/,
+  );
+  if (afterYear?.[1]) {
+    return `${Number.parseInt(afterYear[1], 10)}月`;
+  }
+  const chineseMonth = text.match(/(0?[1-9]|1[0-2])\s*月/);
+  if (chineseMonth?.[1]) {
+    return `${Number.parseInt(chineseMonth[1], 10)}月`;
+  }
+  return undefined;
+}
+
+/**
+ * 按年/月控件标签从档案挑一段日期（入学/毕业/入职/离职等），供启发式补 suggestedValue。
+ */
+function pickProfileDateForTemporalLabel(
+  label: string,
+  profileData?: ProfileData,
+): string | undefined {
+  if (!profileData) {
+    return undefined;
+  }
+  const blob = label.replace(/\s+/g, '');
+  const education = profileData.education?.[0];
+  const experience = profileData.experience?.[0];
+  const project = profileData.projects?.[0];
+
+  if (/毕业|结束|截至|至今前/.test(blob)) {
+    // 结束类：优先看标签所属段，再回退
+    if (/教育|学历|入学|就读|毕业/.test(blob)) {
+      return education?.endDate?.trim() || undefined;
+    }
+    if (/工作|实习|入职|离职|任职/.test(blob)) {
+      return experience?.endDate?.trim() || undefined;
+    }
+    if (/项目/.test(blob)) {
+      return project?.endDate?.trim() || undefined;
+    }
+    return (
+      education?.endDate?.trim() ||
+      experience?.endDate?.trim() ||
+      project?.endDate?.trim() ||
+      undefined
+    );
+  }
+  if (/入职|到岗|任职|工作开始|实习开始/.test(blob) || (/工作|实习/.test(blob) && /开始|年月|日期/.test(blob))) {
+    return (
+      experience?.startDate?.trim() ||
+      project?.startDate?.trim() ||
+      undefined
+    );
+  }
+  if (/离职|工作结束|实习结束/.test(blob)) {
+    return experience?.endDate?.trim() || undefined;
+  }
+  if (/项目开始/.test(blob) || (/项目/.test(blob) && /开始|年月|日期/.test(blob))) {
+    return project?.startDate?.trim() || undefined;
+  }
+  if (/项目结束/.test(blob)) {
+    return project?.endDate?.trim() || undefined;
+  }
+  // 教育明确词：不含裸「开始」，避免「开始年月」误绑教育
+  if (/入学|就读|教育|学历/.test(blob)) {
+    if (/结束|毕业|截至/.test(blob)) {
+      return education?.endDate?.trim() || undefined;
+    }
+    return education?.startDate?.trim() || undefined;
+  }
+  // 仅「开始/年月」无段落语义：不猜，避免写错段
+  if (/^(开始|年月|日期|时间)$/.test(blob) || /^(开始)?(年|月|年月|日期)$/.test(blob)) {
+    return undefined;
+  }
+  if (/开始/.test(blob) && !/教育|学历|入学|就读|工作|实习|项目|入职/.test(blob)) {
+    return undefined;
+  }
+  // 无明确语义时：不默认教育，避免错填；有明确年/月控件标签时上面已覆盖
+  return undefined;
+}
+
+/**
  * 无云端时的启发式 Playbook：观察分区、添加按钮、年份控件、危险提交。
  */
 export function buildHeuristicPlaybook(
@@ -122,26 +223,42 @@ export function buildHeuristicPlaybook(
   const yearControls = evidence.controls.filter((control) => control.kind === 'year');
   const monthControls = evidence.controls.filter((control) => control.kind === 'month');
   for (const yearControl of yearControls.slice(0, 8)) {
+    const dateText = pickProfileDateForTemporalLabel(
+      yearControl.label,
+      profileData,
+    );
+    const yearValue = extractYearFromDateText(dateText);
     steps.push({
       stepId: createStepId('year', steps.length),
       kind: 'open_picker',
       title: `年份控件：${yearControl.label}`,
-      detail: '疑似年份点选/下拉。建议先打开面板读选项再选，勿把长文本硬塞进选择器。',
+      detail: yearValue
+        ? `建议选择「${yearValue}」。确认执行后会尝试打开并点选；勿把长文本硬塞进选择器。`
+        : '疑似年份点选/下拉。档案未拆出年份时仅展示、不自动执行（避免假成功掐断后续）。',
       risk: 'medium',
       targetFieldId: yearControl.fieldId,
-      confidence: 0.7,
+      suggestedValue: yearValue,
+      confidence: yearValue ? 0.74 : 0.7,
       isWrite: true,
     });
   }
   for (const monthControl of monthControls.slice(0, 8)) {
+    const dateText = pickProfileDateForTemporalLabel(
+      monthControl.label,
+      profileData,
+    );
+    const monthValue = extractMonthFromDateText(dateText);
     steps.push({
       stepId: createStepId('month', steps.length),
       kind: 'select_option',
       title: `月份控件：${monthControl.label}`,
-      detail: '疑似月份选择。确认后按档案日期拆月写入（P7b）。',
+      detail: monthValue
+        ? `建议写入「${monthValue}」。确认执行后按选项匹配选择。`
+        : '疑似月份选择。档案未拆出月份时仅展示、不自动执行（避免无值步中断后续填写）。',
       risk: 'medium',
       targetFieldId: monthControl.fieldId,
-      confidence: 0.68,
+      suggestedValue: monthValue,
+      confidence: monthValue ? 0.74 : 0.68,
       isWrite: true,
     });
   }

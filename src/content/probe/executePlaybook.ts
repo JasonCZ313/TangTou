@@ -1,12 +1,16 @@
 /**
- * P7b：按用户确认过的 Playbook 步骤逐步执行，每步回读；失败即停。
+ * P7b：按用户确认过的 Playbook 步骤逐步执行，每步回读。
+ * P2/P3：区分 soft-skip（缺值/未匹配选项，记 miss 后继续）与 hard-fail（已尝试写入但回读失败，停止）。
  * 永不点击提交/投递类按钮。
  */
 import type { FillMiss } from '../../shared/types/fill';
 import type { PlaybookStep } from '../../shared/playbook/types';
 import { shouldFillStop } from '../fillAbort';
 import { getActiveSiteAdapter } from '../adapters/registry';
-import { adapterIsDangerSaveLabel } from '../adapters/types';
+import {
+  adapterIsDangerSaveLabel,
+  matchesStrongSubmitIntent,
+} from '../adapters/types';
 import { prepareFieldForWrite } from '../scanner/scanFields';
 import {
   AUTOFILL_FILL_CLASS,
@@ -19,11 +23,19 @@ import {
 } from '../filler/chao/dom';
 import { updatePageOverlay, hidePageOverlay } from '../ui/pageOverlay';
 
-/** 单步执行结果 */
+/**
+ * 单步执行结果。
+ * - wrote：是否真正写入/选中成功（计入 completed）
+ * - softSkip：前置条件不足或选项未匹配，记 miss 但不中断后续
+ */
 export interface PlaybookStepResult {
   stepId: string;
   ok: boolean;
   message: string;
+  /** 本步是否完成了真实写入/点选 */
+  wrote?: boolean;
+  /** 软跳过：不阻断后续步骤 */
+  softSkip?: boolean;
 }
 
 /**
@@ -36,7 +48,33 @@ function wait(ms: number): Promise<void> {
 }
 
 /**
- * 判断文案是否像危险提交。
+ * 判断选项文案是否匹配建议值（含月份「9月」↔「09」↔「9」）。
+ */
+function optionTextMatchesSuggested(
+  optionText: string,
+  suggested: string,
+): boolean {
+  const text = optionText.replace(/\s+/g, ' ').trim();
+  const needle = suggested.replace(/\s+/g, ' ').trim();
+  if (!text || !needle) {
+    return false;
+  }
+  if (text === needle || text.includes(needle) || needle.includes(text)) {
+    return true;
+  }
+  const suggestedMonth = needle.match(/^(0?[1-9]|1[0-2])月?$/);
+  const optionMonth = text.match(/^(0?[1-9]|1[0-2])月?$/);
+  if (suggestedMonth && optionMonth) {
+    return (
+      Number.parseInt(suggestedMonth[1], 10) ===
+      Number.parseInt(optionMonth[1], 10)
+    );
+  }
+  return false;
+}
+
+/**
+ * 判断文案是否像危险提交（与探测路径共用强意图）。
  */
 function isDangerLabel(rawText: string): boolean {
   const adapter = getActiveSiteAdapter();
@@ -44,7 +82,7 @@ function isDangerLabel(rawText: string): boolean {
   if (adapterIsDangerSaveLabel(adapter, compact)) {
     return true;
   }
-  return /投递|提交申请|立即申请|最终提交|确认投递/.test(compact);
+  return matchesStrongSubmitIntent(compact);
 }
 
 /**
@@ -116,10 +154,13 @@ async function executeOnePlaybookStep(
   if (step.kind === 'fill_field' || step.kind === 'select_option') {
     const value = step.suggestedValue?.trim() ?? '';
     if (!step.targetFieldId || !value) {
+      // 过滤层应已拦下；此处兜底 soft-skip，避免掐断后续填写
       return {
         stepId: step.stepId,
         ok: false,
-        message: '缺少 fieldId 或建议值，已跳过',
+        softSkip: true,
+        wrote: false,
+        message: '缺少 fieldId 或建议值，已跳过本步',
       };
     }
     const element = await prepareFieldForWrite(step.targetFieldId);
@@ -127,6 +168,8 @@ async function executeOnePlaybookStep(
       return {
         stepId: step.stepId,
         ok: false,
+        softSkip: true,
+        wrote: false,
         message: '页面上找不到目标控件',
       };
     }
@@ -141,23 +184,34 @@ async function executeOnePlaybookStep(
     if (writeResult.ok) {
       element.classList.add(AUTOFILL_FILL_CLASS);
       element.classList.remove(AUTOFILL_MISS_CLASS);
-      return { stepId: step.stepId, ok: true, message: '写入并回读通过' };
+      return {
+        stepId: step.stepId,
+        ok: true,
+        wrote: true,
+        message: '写入并回读通过',
+      };
     }
     element.classList.add(AUTOFILL_MISS_CLASS);
+    // 已尝试写入但回读失败：hard-fail，停止后续（安全）
     return {
       stepId: step.stepId,
       ok: false,
+      wrote: false,
+      softSkip: false,
       message: writeResult.reason || '写入失败',
     };
   }
 
   if (step.kind === 'click_add') {
-    const hintMatch = step.detail.match(/「([^」]+)」/) ?? step.title.match(/「([^」]+)」/);
+    const hintMatch =
+      step.detail.match(/「([^」]+)」/) ?? step.title.match(/「([^」]+)」/);
     const hintText = hintMatch?.[1] ?? '添加';
     if (isDangerLabel(hintText)) {
       return {
         stepId: step.stepId,
         ok: false,
+        softSkip: true,
+        wrote: false,
         message: '目标文案命中提交黑名单，已拒绝点击',
       };
     }
@@ -166,6 +220,8 @@ async function executeOnePlaybookStep(
       return {
         stepId: step.stepId,
         ok: false,
+        softSkip: true,
+        wrote: false,
         message: `未找到安全的添加按钮（${hintText}）`,
       };
     }
@@ -173,65 +229,97 @@ async function executeOnePlaybookStep(
       return {
         stepId: step.stepId,
         ok: false,
+        softSkip: true,
+        wrote: false,
         message: '候选按钮为提交类，已拒绝',
       };
     }
     button.click();
     await wait(500);
-    return { stepId: step.stepId, ok: true, message: `已点击「${(button.textContent ?? '').trim()}」` };
+    return {
+      stepId: step.stepId,
+      ok: true,
+      wrote: true,
+      message: `已点击「${(button.textContent ?? '').trim()}」`,
+    };
   }
 
   if (step.kind === 'open_picker') {
+    const suggested = step.suggestedValue?.trim() ?? '';
+    // 无建议值：不得「只打开算成功」；soft-skip 继续后续步
+    if (!suggested) {
+      return {
+        stepId: step.stepId,
+        ok: false,
+        softSkip: true,
+        wrote: false,
+        message: '缺少建议选项，未自动打开选择器',
+      };
+    }
+    if (isDangerLabel(suggested)) {
+      return {
+        stepId: step.stepId,
+        ok: false,
+        softSkip: true,
+        wrote: false,
+        message: '建议选项命中危险文案，已拒绝',
+      };
+    }
     const host = findPickerHost(step);
     if (!host) {
       return {
         stepId: step.stepId,
         ok: false,
+        softSkip: true,
+        wrote: false,
         message: '未找到可打开的选择器',
       };
     }
     host.click();
     await wait(350);
-    // 若有建议值，尝试点选项（仍禁止危险文案）
-    const suggested = step.suggestedValue?.trim();
-    if (suggested && !isDangerLabel(suggested)) {
-      const options = [
-        ...document.querySelectorAll(
-          '[role="option"], .ant-select-item, .el-select-dropdown__item, .dropdown [data-value], .dropdown div',
-        ),
-      ];
-      for (const option of options) {
-        if (!(option instanceof HTMLElement) || !isPageFieldVisible(option)) {
-          continue;
-        }
-        const text = (option.textContent ?? '').replace(/\s+/g, ' ').trim();
-        if (text === suggested || text.includes(suggested)) {
-          option.click();
-          await wait(200);
-          return {
-            stepId: step.stepId,
-            ok: true,
-            message: `已打开并选择「${text}」`,
-          };
-        }
+    const options = [
+      ...document.querySelectorAll(
+        '[role="option"], .ant-select-item, .el-select-dropdown__item, .dropdown [data-value], .dropdown div',
+      ),
+    ];
+    for (const option of options) {
+      if (!(option instanceof HTMLElement) || !isPageFieldVisible(option)) {
+        continue;
+      }
+      const text = (option.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (optionTextMatchesSuggested(text, suggested)) {
+        option.click();
+        await wait(200);
+        return {
+          stepId: step.stepId,
+          ok: true,
+          wrote: true,
+          message: `已打开并选择「${text}」`,
+        };
       }
     }
+    // 打开了但未选中：不算成功，soft-skip 不阻断后续填写
     return {
       stepId: step.stepId,
-      ok: true,
-      message: '已打开选择器（未匹配到建议选项，请人工点选）',
+      ok: false,
+      softSkip: true,
+      wrote: false,
+      message: '已打开选择器但未匹配到建议选项，请人工点选',
     };
   }
 
   return {
     stepId: step.stepId,
     ok: true,
+    wrote: false,
+    softSkip: true,
     message: '本步无需执行',
   };
 }
 
 /**
- * 逐步执行已确认的探活写入步；任一步失败则停止后续。
+ * 逐步执行已确认的探活写入步。
+ * soft-skip 记 miss 后继续；hard-fail（写入回读失败）或用户停止则中断。
  */
 export async function executeApprovedPlaybookSteps(
   steps: PlaybookStep[],
@@ -263,22 +351,34 @@ export async function executeApprovedPlaybookSteps(
     });
     const result = await executeOnePlaybookStep(step);
     results.push(result);
-    if (!result.ok) {
-      stopped = true;
+
+    if (result.ok && result.wrote) {
+      completed += 1;
+      continue;
+    }
+
+    if (result.softSkip || (result.ok && !result.wrote)) {
       misses.push({
         label: step.title,
         reason: result.message,
       });
-      break;
+      continue;
     }
-    completed += 1;
+
+    // hard-fail：已尝试写入但失败等
+    stopped = true;
+    misses.push({
+      label: step.title,
+      reason: result.message,
+    });
+    break;
   }
 
   updatePageOverlay({
     percent: 100,
     message: stopped
       ? `探活执行已停止（完成 ${completed}/${steps.length}）`
-      : `探活执行完成（${completed} 步）`,
+      : `探活执行完成（成功写入 ${completed} 步）`,
     showCancel: false,
   });
   window.setTimeout(() => {

@@ -195,6 +195,20 @@ export type ExtensionMessage =
       requestId: string;
     }
   | {
+      /** P2c：探测 layaModelUrl 是否为可达的 Laya Server */
+      type: 'TEST_LAYA_SERVER';
+      requestId: string;
+      /** 可覆盖输入框；空则用已保存设置 */
+      serverUrl?: string;
+    }
+  | {
+      type: 'TEST_LAYA_SERVER_RESULT';
+      requestId: string;
+      ok: boolean;
+      message: string;
+      version?: string;
+    }
+  | {
       /** 页内浮层：更新进度文案与百分比（P4a） */
       type: 'PAGE_OVERLAY_UPDATE';
       requestId: string;

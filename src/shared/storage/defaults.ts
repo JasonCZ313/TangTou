@@ -66,4 +66,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   layaEnabled: true,
   decisionPreferLocal: true,
   decisionMinConfidence: 0.55,
+  enableProbeClicks: true,
 };

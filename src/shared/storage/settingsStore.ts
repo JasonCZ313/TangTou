@@ -59,6 +59,10 @@ function normalizeStoredSettings(
         ? rest.decisionPreferLocal
         : DEFAULT_SETTINGS.decisionPreferLocal,
     decisionMinConfidence: normalizeMinConfidence(rest.decisionMinConfidence),
+    enableProbeClicks:
+      typeof rest.enableProbeClicks === 'boolean'
+        ? rest.enableProbeClicks
+        : DEFAULT_SETTINGS.enableProbeClicks,
   };
 }
 

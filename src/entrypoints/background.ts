@@ -23,6 +23,7 @@ import {
   enableBuiltinLayaChoicePackage,
   getLayaModelStatus,
 } from '../shared/decision/layaModelStore';
+import { probeLayaServerHealth } from '../shared/decision/layaServerClient';
 import {
   enrichFieldsWithPageOcr,
   proposeFromPageOcr,
@@ -403,6 +404,40 @@ async function handleLayaModelClear(
 }
 
 /**
+ * P2c：探测配置的 URL 是否为躺投 Laya Server。
+ */
+async function handleTestLayaServer(
+  message: Extract<ExtensionMessage, { type: 'TEST_LAYA_SERVER' }>,
+): Promise<ExtensionMessage> {
+  const settings = await getSettings();
+  const serverUrl = (message.serverUrl ?? settings.layaModelUrl).trim();
+  if (!serverUrl) {
+    return {
+      type: 'TEST_LAYA_SERVER_RESULT',
+      requestId: message.requestId,
+      ok: false,
+      message: '请先填写 Laya 模型 URL（Server 根地址，如 http://127.0.0.1:8765）',
+    };
+  }
+  const probe = await probeLayaServerHealth(serverUrl, { force: true });
+  if (!probe.ok) {
+    return {
+      type: 'TEST_LAYA_SERVER_RESULT',
+      requestId: message.requestId,
+      ok: false,
+      message: probe.message,
+    };
+  }
+  return {
+    type: 'TEST_LAYA_SERVER_RESULT',
+    requestId: message.requestId,
+    ok: true,
+    message: `已连通 Laya Server${probe.version ? `（v${probe.version}）` : ''}。保存设置并启用本机 Laya 后，选项题将优先走该服务。`,
+    version: probe.version,
+  };
+}
+
+/**
  * 单独触发截图 OCR（侧栏按钮 / 调试用）。
  */
 async function handleCapturePageOcr(
@@ -562,8 +597,12 @@ async function handleBuildSitePlaybook(
     };
   }
 
-  // P7c：默认开启受控探测；显式 false 可关掉
-  const enableProbeClicks = message.enableProbeClicks !== false;
+  // P7c / P4：消息显式值优先，否则用设置，缺省 true（兼容旧调用方）
+  const settings = await getSettings();
+  const enableProbeClicks =
+    typeof message.enableProbeClicks === 'boolean'
+      ? message.enableProbeClicks
+      : settings.enableProbeClicks;
   const enableMultimodal = message.enableMultimodal !== false;
 
   let evidence: EvidencePack | undefined = message.evidence;
@@ -618,7 +657,6 @@ async function handleBuildSitePlaybook(
     notices.push(ocrCapture.notice);
   }
 
-  const settings = await getSettings();
   const screenshotDataUrl =
     enableMultimodal &&
     settings.apiBaseUrl.trim() &&
@@ -1039,6 +1077,8 @@ async function dispatchMessage(
       return handleLayaModelEnableBuiltin(message.requestId);
     case 'LAYA_MODEL_CLEAR':
       return handleLayaModelClear(message.requestId);
+    case 'TEST_LAYA_SERVER':
+      return handleTestLayaServer(message);
     case 'CAPTURE_PAGE_OCR':
       return handleCapturePageOcr(message.requestId);
     case 'BUILD_SITE_PLAYBOOK':

@@ -19,6 +19,33 @@ body {
   box-shadow: var(--tt-shadow);
 }
 
+.privacy-callout {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #fdba74;
+  background: #fff7ed;
+}
+
+.privacy-callout-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #9a3412;
+}
+
+.privacy-callout-list {
+  margin: 0 0 8px;
+  padding-left: 1.2rem;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #7c2d12;
+}
+
+.privacy-callout-list li {
+  margin-bottom: 4px;
+}
+
 /* —— 编辑区：左目录 + 右表单 —— */
 .editor-layout {
   display: grid;

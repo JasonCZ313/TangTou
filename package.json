@@ -9,9 +9,12 @@
     "dev:edge": "wxt -b edge",
     "build": "wxt build",
     "build:edge": "wxt build -b edge",
+    "sync:ort": "node scripts/sync-ort-wasm.mjs",
+    "smoke:build": "node scripts/smoke-build.mjs",
+    "laya:server": "node scripts/p2c/laya-server.mjs",
     "verify:chao": "node scripts/verify-chao-cases.mjs",
     "zip": "wxt zip",
-    "postinstall": "wxt prepare"
+    "postinstall": "wxt prepare && node scripts/sync-ort-wasm.mjs"
   },
   "devDependencies": {
     "element-china-area-data": "^6.1.0",

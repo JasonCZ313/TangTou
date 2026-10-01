@@ -17,19 +17,34 @@ export interface SourcedMappingItem extends FillMappingItem {
 }
 
 /**
+ * 填写来源优先级分值（数字越大越高）。
+ * 与探活合并、多引擎合并共用，避免两套规则漂移。
+ * 等级：user(40) > probe=laya=llm(30) > rule(10)；未知/缺失按 rule 处理。
+ */
+export function getFillSourcePriority(
+  source: FillIntentSource | undefined,
+): number {
+  switch (source) {
+    case 'user':
+      return 40;
+    case 'probe':
+    case 'laya':
+    case 'llm':
+      return 30;
+    case 'rule':
+      return 10;
+    default:
+      return 10;
+  }
+}
+
+/**
  * 按 fieldId 合并多路提案。后写入的同级不覆盖更高级来源。
  * 优先级：user > probe = laya = llm > rule
  */
 export function mergeMappingItems(
   proposalLists: SourcedMappingItem[][],
 ): SourcedMappingItem[] {
-  const priority: Record<FillIntentSource, number> = {
-    user: 40,
-    probe: 30,
-    laya: 30,
-    llm: 30,
-    rule: 10,
-  };
   const byFieldId = new Map<string, SourcedMappingItem>();
   for (const proposalList of proposalLists) {
     for (const item of proposalList) {
@@ -37,7 +52,11 @@ export function mergeMappingItems(
         continue;
       }
       const existing = byFieldId.get(item.fieldId);
-      if (!existing || priority[item.source] >= priority[existing.source]) {
+      if (
+        !existing ||
+        getFillSourcePriority(item.source) >=
+          getFillSourcePriority(existing.source)
+      ) {
         byFieldId.set(item.fieldId, item);
       }
     }

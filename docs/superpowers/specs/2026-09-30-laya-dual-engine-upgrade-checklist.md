@@ -1,7 +1,7 @@
 ﻿# 躺投 × Laya 双引擎完整技术方案（现行版）
 
 **日期：** 2026-09-30  
-**状态：** P0～P1、P2a、P2b、P3、P4a、P4b、P5、P7a、P7b、**P7c** 已编码；**P2c / P6 待做**  
+**状态：** P0～P7c、P6、**P2c** 已编码；主线完成  
 **产品约束（锁定）：**
 
 1. 双引擎：本机 Laya（判断）+ 用户 API（映射/润色/视觉兜底）  
@@ -27,12 +27,12 @@
 | **P1** | Decision 壳 + 云端 batch | **已完成** | P0 |
 | **P2a** | 分题路由（选项/是否 vs 自由文本） | **已完成** | P1 |
 | **P2b** | 浏览器本机 Laya（下载/内置轻量 + Offscreen ORT 骨架） | **已完成** | P2a |
-| **P2c** | 自建 Laya Server（高级可选） | 待做（可插） | P2a |
+| **P2c** | 自建 Laya Server（高级可选） | **已完成** | P2a |
 | **P3** | 静态站点适配器（北森/Moka/智易/牛客/Boss） | **已完成** | P0 |
 | **P4a** | 页内进度浮层 | **已完成** | P1 |
 | **P4b** | 截图 + OCR 辅助进预览 | **已完成** | P4a |
 | **P5** | 驾驶舱 UI + README 纠偏（来源列/徽章/去 direct 文档） | **已完成** | P2b/P4 已齐 |
-| **P6** | 打磨上架 | 待做 | P5 |
+| **P6** | 打磨上架 | **已完成** | P5 |
 | **P7** | **大厂/特殊 ATS 智能探活与安全填写** | **P7a/P7b/P7c 已完成** | P3+P4b+P5 |
 
 **推荐节奏：**  
@@ -71,10 +71,13 @@ P2c 仅高级用户需要时再做。
 - 包内不含权重；`tangtou-choice-v0` 立即可用；`tangtou-ort-v0` 会话骨架已接（I/O 待权重导出对齐）  
 - 示例清单：`public/laya-sample/tangtou-laya-manifest.json`
 
-### P2c — Laya Server（高级）
+### P2c — Laya Server（高级）✅ 已完成
 
-- 同一 `layaModelUrl` 若为 HTTP 服务则走客户端  
-- 不写进新手必做  
+- 同一 `layaModelUrl`：若 `GET /health` 返回 `service=tangtou-laya` → HTTP 客户端判断（`/v1/decide`）  
+- 失败静默回退：ORT 包 → 轻量 choice → 云端  
+- ORT：`tangtou-score-v0` 定长特征打分已在 Offscreen 接通（需自备对齐的 `model.onnx`）  
+- 示例服务：`npm run laya:server`（`scripts/p2c/laya-server.mjs`）；选项页「测试 Laya Server」  
+- 不写进新手必做；Server URL 勿点「下载本机包」  
 
 ### P4a / P4b — 浮层与截图 ✅
 
@@ -90,9 +93,13 @@ P2c 仅高级用户需要时再做。
 - 侧栏映射表「来源」列 + 驾驶舱徽章（引擎 / 当前站 / 来源分布）  
 - README、验收清单去掉「直接填写」  
 
-#### P6 — 打磨上架
+#### P6 — 打磨上架 ✅ 已完成
 
-- 隐私说明补「截图 OCR / 本机模型缓存」（README 已部分写入）；降级矩阵；ORT wasm 体积策略；Chrome/Edge 冒烟 
+- 隐私政策：`docs/privacy-policy.md`（截图 OCR / 本机缓存 / 探测 / 用户 API）；选项页显著披露  
+- 商店文案与权限逐条说明：`docs/store/listing.md`  
+- 降级矩阵：`docs/degradation-matrix.md`  
+- ORT 体积：`npm run sync:ort` 仅 wasm EP（去 jsep）；`npm run smoke:build` 双浏览器产物冒烟  
+- README / 验收清单同步  
 
 ---
 
@@ -218,10 +225,10 @@ P2c 仅高级用户需要时再做。
 2. ~~**下一步：P7a**~~ **已完成** — EvidencePack + Playbook 只展示；本地 fixture `scripts/p7a/probe-fixture.html`。  
 3. ~~**下一步：P7b**~~ **已完成** — 合并预览 + 逐步执行 + 回读闸（`EXECUTE_PLAYBOOK` 需 userConfirmed）。  
 4. ~~**下一步：P7c**~~ **已完成** — 受控探测点击 + 多模态（可回退）+ 大厂样例目录。  
-5. **下一步：P6** — 上架打磨。  
-6. **可插：P2c** — Laya Server / ORT 真推理（有权重再做）。
+5. ~~**下一步：P6**~~ **已完成** — 隐私/商店文案、降级矩阵、ORT 精简、smoke:build。  
+6. ~~**可插：P2c**~~ **已完成** — Laya Server 客户端 + 示例服务；ORT score-v0 I/O。
 
-**若只选一个下一编码步：`P6`。**
+**主线与可选 P2c 均已收口。**
 
 ---
 
@@ -237,3 +244,5 @@ P2c 仅高级用户需要时再做。
 | 2026-10-01 | **P7a 落地**：EvidencePack 收集、启发式/云端 Playbook、侧栏「智能探活」只展示；`scripts/p7a/probe-fixture.html` |
 | 2026-10-01 | **P7b 落地**：`mergePlaybookIntoFillPlan`（source=probe）；侧栏合并/确认执行；`EXECUTE_PLAYBOOK`+逐步回读；永不点提交 |
 | 2026-10-01 | **P7c 落地**：`safeClick` 预算探测；Evidence 并入 probeClicks；多模态截图可回退；`megaCorpCatalog`+`scripts/p7c/probe-fixture.html` |
+| 2026-10-01 | **P6 落地**：隐私政策/商店 listing；降级矩阵；`sync:ort` 去 jsep；`smoke:build`；选项页隐私披露；README/验收同步 |
+| 2026-10-01 | **P2c 落地**：`layaServerClient` + `/health`/`/v1/decide`；示例 `laya:server`；ORT `tangtou-score-v0` Offscreen 打分；选项页测 Server |
