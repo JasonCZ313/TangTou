@@ -28,6 +28,7 @@ import {
   enrichFieldsWithPageOcr,
   proposeFromPageOcr,
 } from '../shared/decision/visionAssist';
+import { tryOffscreenOcr } from '../shared/resume/offscreenOcrBridge';
 import { hitsToSourcedItems } from '../shared/decision/toFillPlan';
 import { buildSitePlaybook } from '../shared/decision/playbookEngine';
 import type { EvidencePack } from '../shared/playbook/types';
@@ -241,62 +242,43 @@ async function captureActiveTabImage(
   } catch (error: unknown) {
     return {
       imageDataUrl: '',
-      notice: `截图跳过：${describeUserFacingError(error)}`,
+      notice: `截图识字跳过：${describeUserFacingError(error)}`,
     };
   }
 }
 
 /**
- * 对当前活动标签截图，并交给内容脚本做 OCR（P4b）。
- * 失败时返回空字符串与 notice，不抛错，以免挡住主填写链路。
+ * 对当前活动标签截图，并在 Offscreen 内做 OCR（P4b）。
+ * 识字走扩展同源离屏页，禁止再交给内容脚本 createWorker。
+ * 失败时返回空字符串与软 notice，不抛错，以免挡住主填写链路。
  */
 async function captureActiveTabOcrText(
-  requestId: string,
+  _requestId: string,
 ): Promise<{ ocrText: string; notice?: string; imageDataUrl?: string }> {
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const activeTab = tabs[0];
     if (activeTab?.id === undefined || activeTab.windowId === undefined) {
-      return { ocrText: '', notice: '没有活动标签，跳过截图识字' };
+      return { ocrText: '', notice: '截图识字跳过：没有活动标签' };
     }
-    const imageCapture = await captureActiveTabImage(requestId);
+    const imageCapture = await captureActiveTabImage(_requestId);
     if (!imageCapture.imageDataUrl) {
-      return { ocrText: '', notice: imageCapture.notice };
-    }
-    const ocrResponse = await chrome.tabs.sendMessage(activeTab.id, {
-      type: 'RUN_PAGE_OCR',
-      requestId,
-      imageDataUrl: imageCapture.imageDataUrl,
-    } satisfies ExtensionMessage);
-    if (
-      ocrResponse &&
-      typeof ocrResponse === 'object' &&
-      (ocrResponse as ExtensionMessage).type === 'RUN_PAGE_OCR_RESULT'
-    ) {
-      const typed = ocrResponse as Extract<
-        ExtensionMessage,
-        { type: 'RUN_PAGE_OCR_RESULT' }
-      >;
-      return {
-        ocrText: typed.ocrText ?? '',
-        imageDataUrl: imageCapture.imageDataUrl,
-      };
-    }
-    if (
-      ocrResponse &&
-      typeof ocrResponse === 'object' &&
-      (ocrResponse as ExtensionMessage).type === 'ERROR'
-    ) {
-      const typed = ocrResponse as Extract<ExtensionMessage, { type: 'ERROR' }>;
       return {
         ocrText: '',
-        notice: typed.message,
+        notice: imageCapture.notice ?? '截图识字跳过：未能截取可见区',
+      };
+    }
+
+    const ocrOutcome = await tryOffscreenOcr(imageCapture.imageDataUrl);
+    if (ocrOutcome.ok) {
+      return {
+        ocrText: ocrOutcome.text,
         imageDataUrl: imageCapture.imageDataUrl,
       };
     }
     return {
       ocrText: '',
-      notice: '页内识字未返回结果',
+      notice: ocrOutcome.notice ?? '截图识字跳过：识字失败',
       imageDataUrl: imageCapture.imageDataUrl,
     };
   } catch (error: unknown) {

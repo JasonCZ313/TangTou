@@ -387,6 +387,16 @@ input[required]:user-invalid {
   line-height: 1.55;
 }
 
+.status-message.is-warning {
+  padding: 14px 16px;
+  border-width: 2px;
+  border-color: #fbbf24;
+  background: #fffbeb;
+  color: #92400e;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
 .status-message.is-error {
   padding: 14px 16px;
   border-width: 2px;

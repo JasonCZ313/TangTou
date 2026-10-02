@@ -6,7 +6,6 @@ import {
   hidePageOverlay,
   updatePageOverlay,
 } from '../content/ui/pageOverlay';
-import { recognizePageImageDataUrl } from '../content/vision/pageOcr';
 import { collectPageEvidence } from '../content/probe/collectEvidence';
 import { executeApprovedPlaybookSteps } from '../content/probe/executePlaybook';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
@@ -21,7 +20,8 @@ function reportToExtension(message: ExtensionMessage): void {
 }
 
 /**
- * 内容脚本入口：在任意 http/https 页监听扫描、补行、安全写入、浮层与页内 OCR。
+ * 内容脚本入口：在任意 http/https 页监听扫描、补行、安全写入、浮层与探活。
+ * 截图 OCR（P4b）已迁至 Offscreen，此处不再 createWorker。
  * 扫描立刻回执，进度和字段列表用单独的消息送回侧栏和弹窗。
  */
 export default defineContentScript({
@@ -69,25 +69,7 @@ export default defineContentScript({
           return true;
         }
 
-        if (message.type === 'RUN_PAGE_OCR') {
-          void recognizePageImageDataUrl(message.imageDataUrl)
-            .then((ocrText) => {
-              sendResponse({
-                type: 'RUN_PAGE_OCR_RESULT',
-                requestId: message.requestId,
-                ocrText,
-              } satisfies ExtensionMessage);
-            })
-            .catch((error: unknown) => {
-              sendResponse({
-                type: 'ERROR',
-                requestId: message.requestId,
-                code: 'PAGE_OCR_FAILED',
-                message: describeUserFacingError(error),
-              } satisfies ExtensionMessage);
-            });
-          return true;
-        }
+        // P4b 截图 OCR 已迁至 Offscreen（OFFSCREEN_OCR），内容脚本不再 createWorker
 
         if (message.type === 'COLLECT_PAGE_EVIDENCE') {
           const enableProbeClicks = message.enableProbeClicks === true;

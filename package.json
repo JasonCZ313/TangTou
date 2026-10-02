@@ -10,11 +10,12 @@
     "build": "wxt build",
     "build:edge": "wxt build -b edge",
     "sync:ort": "node scripts/sync-ort-wasm.mjs",
+    "sync:tesseract-lang": "node scripts/sync-tesseract-lang.mjs",
     "smoke:build": "node scripts/smoke-build.mjs",
     "laya:server": "node scripts/p2c/laya-server.mjs",
     "verify:chao": "node scripts/verify-chao-cases.mjs",
     "zip": "wxt zip",
-    "postinstall": "wxt prepare && node scripts/sync-ort-wasm.mjs"
+    "postinstall": "wxt prepare && node scripts/sync-ort-wasm.mjs && node scripts/sync-tesseract-lang.mjs"
   },
   "devDependencies": {
     "element-china-area-data": "^6.1.0",

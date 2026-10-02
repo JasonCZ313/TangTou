@@ -13,12 +13,35 @@ export function describeUserFacingError(error: unknown): string {
 }
 
 /**
+ * 判断对照/探活结果里的 notice 是否为「软提示」（如截图 OCR 跳过），
+ * 软提示应显示为警告而非整页失败红字。
+ */
+export function isSoftPlanNotice(notice: string): boolean {
+  const trimmed = notice.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return (
+    /^截图识字跳过[：:]/.test(trimmed) ||
+    /^截图跳过[：:]/.test(trimmed) ||
+    /离屏识字环境/.test(trimmed)
+  );
+}
+
+/**
  * 按常见失败原因给出中文说明。匹配不到时仍用中文收尾，不把整段英文直接甩给用户。
  */
 function translateRawError(rawMessage: string): string {
   const detail = rawMessage.trim();
   if (!detail) {
     return '这次没有完成。请刷新网申页后再试一次。';
+  }
+  if (
+    /Failed to construct ['"]Worker['"]|cannot be accessed from origin/i.test(
+      detail,
+    )
+  ) {
+    return '本机识字组件未能在当前环境启动。请重新加载扩展后再试；对照结果若已生成仍可核对写入。';
   }
   if (/receiving end does not exist|could not establish connection/i.test(detail)) {
     return '这个页面还没有躺投的扫描脚本。请先刷新这个网申页，再点扫描。扩展刚重新加载时，旧页面必须刷新一次。';

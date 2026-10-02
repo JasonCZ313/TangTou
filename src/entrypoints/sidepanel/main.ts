@@ -23,7 +23,7 @@ import {
   requestFillPlanWithWait,
   scanActivePage,
 } from '../../shared/messaging/pageScan';
-import { describeUserFacingError } from '../../shared/messaging/userFacingError';
+import { describeUserFacingError, isSoftPlanNotice } from '../../shared/messaging/userFacingError';
 import {
   PENDING_POPUP_SCAN_REQUEST_KEY,
   type PendingPopupScanRequest,
@@ -63,7 +63,7 @@ import {
 } from '../../shared/playbook/mergeToPlan';
 
 /** 状态区视觉类型 */
-type StatusKind = 'info' | 'success' | 'error';
+type StatusKind = 'info' | 'success' | 'warning' | 'error';
 
 /** Popup「打开设置」写入，侧栏启动时展开设置区 */
 const FOCUS_SETTINGS_SESSION_KEY = 'sidePanelFocusSettings';
@@ -217,12 +217,37 @@ const EMPTY_MAPPING_AFTER_SCAN =
 
 function showStatus(message: string, kind: StatusKind = 'info'): void {
   statusMessageElement.textContent = message;
-  statusMessageElement.classList.remove('is-info', 'is-success', 'is-error');
+  statusMessageElement.classList.remove(
+    'is-info',
+    'is-success',
+    'is-warning',
+    'is-error',
+  );
   statusMessageElement.classList.add(`is-${kind}`);
 }
 
 function showError(message: string): void {
   showStatus(message, 'error');
+}
+
+/**
+ * 对照成功后的状态条：软 notice（如截图识字跳过）用警告色，硬 notice 才红字。
+ */
+function showPlanCompletionStatus(
+  fieldCount: number,
+  fillableCount: number,
+  notice?: string,
+): void {
+  const successBase = `扫完了：发现 ${fieldCount} 个输入框，其中 ${fillableCount} 项可以填。请核对下面的预览，确认后再写入。`;
+  if (!notice?.trim()) {
+    showStatus(successBase, 'success');
+    return;
+  }
+  if (isSoftPlanNotice(notice)) {
+    showStatus(`${successBase}（${notice.trim()}）`, 'warning');
+    return;
+  }
+  showError(notice);
 }
 
 /**
@@ -1666,14 +1691,11 @@ async function runRescanFlow(profileId: string): Promise<void> {
     await saveFillSession(pendingFillSession);
     currentSession = pendingFillSession;
     renderMappingTable();
-    if (planResponse.notice) {
-      showError(planResponse.notice);
-    } else {
-      showStatus(
-        `扫完了：发现 ${scannedFields.length} 个输入框，其中 ${planResponse.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
-        'success',
-      );
-    }
+    showPlanCompletionStatus(
+      scannedFields.length,
+      planResponse.plan.items.length,
+      planResponse.notice,
+    );
     await refreshUsageLine(planResponse.usage ?? null);
   } finally {
     stopButton.hidden = true;
@@ -1922,14 +1944,11 @@ function bindEvents(): void {
       currentSession = await loadPendingSession();
       renderMappingTable();
       if (currentSession && currentSession.plan.items.length > 0) {
-        if (currentSession.notice) {
-          showError(currentSession.notice);
-        } else {
-          showStatus(
-            `扫完了：发现 ${currentSession.fields.length} 个输入框，其中 ${currentSession.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
-            'success',
-          );
-        }
+        showPlanCompletionStatus(
+          currentSession.fields.length,
+          currentSession.plan.items.length,
+          currentSession.notice,
+        );
         await refreshUsageLine();
       }
     })();
@@ -1967,14 +1986,11 @@ async function bootstrapSidePanel(): Promise<void> {
     if (cachedProfiles.length === 0) {
       showStatus('请先在上方「设置与新建/编辑档案」创建档案并填写 API', 'info');
     } else if (currentSession && currentSession.plan.items.length > 0) {
-      if (currentSession.notice) {
-        showError(currentSession.notice);
-      } else {
-        showStatus(
-          `扫完了：发现 ${currentSession.fields.length} 个输入框，其中 ${currentSession.plan.items.length} 项可以填。请核对下面的预览，确认后再写入。`,
-          'success',
-        );
-      }
+      showPlanCompletionStatus(
+        currentSession.fields.length,
+        currentSession.plan.items.length,
+        currentSession.notice,
+      );
     } else {
       showStatus(
         '日常扫描请用右上角 Popup；设置请展开上方区域',

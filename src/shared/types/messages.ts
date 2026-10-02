@@ -286,17 +286,6 @@ export type ExtensionMessage =
       results?: Array<{ stepId: string; ok: boolean; message: string }>;
     }
   | {
-      /** Background → Content：把截图 dataURL 交给页内 OCR */
-      type: 'RUN_PAGE_OCR';
-      requestId: string;
-      imageDataUrl: string;
-    }
-  | {
-      type: 'RUN_PAGE_OCR_RESULT';
-      requestId: string;
-      ocrText: string;
-    }
-  | {
       type: 'ERROR';
       requestId: string;
       code: string;

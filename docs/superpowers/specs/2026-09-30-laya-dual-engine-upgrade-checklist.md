@@ -82,7 +82,7 @@ P2c 仅高级用户需要时再做。
 ### P4a / P4b — 浮层与截图 ✅
 
 - P4a：页内进度/取消/描边（扫描与写入）  
-- P4b：`captureVisibleTab` → 页内 tesseract → 弱标签 enrichment + 轻量提案进预览（失败不挡主路径） 
+- P4b：`captureVisibleTab` → **Offscreen** tesseract（`OFFSCREEN_OCR`）→ 弱标签 enrichment + 轻量提案进预览（失败不挡主路径；**禁止**内容脚本 createWorker）
 
 ### P5 / P6 — UI 与上架
 
@@ -121,7 +121,7 @@ P2c 仅高级用户需要时再做。
 | 已有能力 | P7 用法 |
 |----------|---------|
 | `content/ui/pageOverlay.ts` | 探活/逐步执行进度与停止 |
-| `content/vision/pageOcr.ts` + `visionAssist` | 并入 EvidencePack；不必另起 OCR 栈 |
+| `shared/resume/offscreenOcrBridge.ts` + `visionAssist` | 并入 EvidencePack；OCR 仅 Offscreen（`OFFSCREEN_OCR`） |
 | `adapterIsDangerSaveLabel` / `saveLabels` | 探测与执行的**提交黑名单** |
 | `fillFields` 回读 | P7b 逐步执行的回读闸 |
 | `FillSession.plan` 唯一写入源 | Playbook 必须先合并进 plan，再走确认写入 |

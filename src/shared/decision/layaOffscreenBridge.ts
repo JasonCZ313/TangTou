@@ -19,6 +19,8 @@ let offscreenCreatingPromise: Promise<void> | null = null;
 
 /**
  * 确保 Offscreen 文档已创建（Chrome MV3；仅 Chromium）。
+ * 同一离屏页同时服务：Laya ORT 推理 + P4b 截图 OCR（Tesseract Worker）。
+ * 页内内容脚本禁止自建 Tesseract Worker（可搜索：页内不得 createWorker / OFFSCREEN_OCR）。
  */
 export async function ensureLayaOffscreenDocument(): Promise<boolean> {
   if (!chrome.offscreen) {
@@ -38,7 +40,7 @@ export async function ensureLayaOffscreenDocument(): Promise<boolean> {
         url: LAYA_OFFSCREEN_DOCUMENT_PATH,
         reasons: [chrome.offscreen.Reason.WORKERS],
         justification:
-          '在离屏页加载 onnxruntime-web，对本机 Laya ONNX 做选项/是否题推理',
+          '在离屏页加载 onnxruntime-web 与 Tesseract：本机 Laya 推理，以及对网申页截图做 OCR（避免在内容脚本创建 Worker）',
       })
       .then(() => undefined)
       .finally(() => {
