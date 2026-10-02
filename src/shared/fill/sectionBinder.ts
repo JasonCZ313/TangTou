@@ -43,12 +43,14 @@ interface BoundRow {
   isCurrent: boolean;
   name: string;
   school: string;
+  college: string;
   company: string;
   title: string;
   role: string;
   duty: string;
   description: string;
   degree: string;
+  educationType: string;
   major: string;
   rank: string;
   city: string;
@@ -128,12 +130,14 @@ function emptyRow(): BoundRow {
     isCurrent: false,
     name: '',
     school: '',
+    college: '',
     company: '',
     title: '',
     role: '',
     duty: '',
     description: '',
     degree: '',
+    educationType: '',
     major: '',
     rank: '',
     city: '',
@@ -147,8 +151,10 @@ function rowFromEducation(item: EducationItem): BoundRow {
   row.endDate = item.endDate ?? '';
   row.isCurrent = Boolean(item.isCurrent);
   row.school = item.school ?? '';
+  row.college = item.college ?? '';
   row.major = item.major ?? '';
   row.degree = labelOfCatalog(DEGREE_LEVEL_OPTIONS, item.degreeLevel || item.degree || '');
+  row.educationType = (item.educationType ?? '').trim();
   row.rank = item.rank ?? '';
   row.city = cityNameOnly(item.city ?? '');
   row.description = item.description ?? '';
@@ -430,17 +436,20 @@ export function bindLabeledField(
     }
     return { kind: 'value', value: phoneNumber, reason: '按行绑定：手机号码' };
   }
-  // 出生日期：不含「出生地」，有值但对不上选项则 skip，避免硬填红字
+  // 出生日期：日期组件通常没有 options，有档案就直接交写入层（不再因无选项 skip）
   if (/(出生日期|出生年月|生日)/.test(label) && !/出生地/.test(label)) {
     const birthdayText = (profile.basic.birthday ?? '').trim();
     if (!birthdayText) {
       return null;
     }
-    const allowed = valueAllowedByOptions(birthdayText, field.options);
-    if (!allowed) {
-      return { kind: 'skip', reason: '出生日期要在下拉里点选对应项' };
+    const optionList = field.options ?? [];
+    if (optionList.length > 0) {
+      const allowed = valueAllowedByOptions(birthdayText, optionList);
+      if (allowed) {
+        return { kind: 'value', value: allowed, reason: '按行绑定：出生日期' };
+      }
     }
-    return { kind: 'value', value: allowed, reason: '按行绑定：出生日期' };
+    return { kind: 'value', value: birthdayText, reason: '按行绑定：出生日期（交日期组件）' };
   }
   // 性别
   if (/性别/.test(label) && !/别名/.test(label)) {
@@ -489,6 +498,23 @@ export function bindLabeledField(
     profile.certificates.filter((item) => (item.name ?? '').trim()).length > 1
   ) {
     return { kind: 'skip', reason: '多本证书按行填写，不合并进一格' };
+  }
+  // 多段实习/工作/项目/教育/获奖没有行号时同样禁止兜底到第 1 条（否则每块都写成一样）
+  if (rowIndex(label) === null && !/附件|上传/.test(label)) {
+    const kind = sectionKind(label);
+    const multiPools: Record<string, number> = {
+      experience: profile.experience.filter((item) => (item.company || item.title || '').trim()).length,
+      project: profile.projects.filter((item) => (item.name || '').trim()).length,
+      education: profile.education.filter((item) => (item.school || '').trim()).length,
+      award: profile.awards.filter((item) => (item.name || '').trim()).length,
+      campus: profile.campusActivities.filter((item) => (item.organization || '').trim()).length,
+    };
+    if (kind && (multiPools[kind] ?? 0) > 1) {
+      return {
+        kind: 'skip',
+        reason: `「${kind}」有 ${multiPools[kind]} 条档案但本格没有行号，宁缺勿串，不填第1条`,
+      };
+    }
   }
   if (isEssayLabel(label)) {
     const evaluationText = restoreListLineBreaks(profile.essays?.selfEvaluation?.trim() ?? '');
@@ -574,12 +600,20 @@ export function bindLabeledField(
     rawValue = end?.year ?? '';
   } else if (/结束月/.test(label)) {
     rawValue = end?.month ?? '';
+  } else if (/(开始时间|起始时间|开始日期|入学时间|入职时间)/.test(label)) {
+    rawValue = row.startDate;
+  } else if (/(结束时间|结束日期|截止时间|离职时间|毕业时间|获得时间)/.test(label)) {
+    rawValue = row.endDate || row.startDate;
   } else if ((/城市|所在地/.test(label)) && !/区|县|街道/.test(label)) {
     rawValue = row.city;
+  } else if (/学院/.test(label) && !/学校|院校/.test(label)) {
+    rawValue = row.college;
   } else if (/学校|院校/.test(label) && !/所在地/.test(label)) {
     rawValue = row.school;
   } else if (/专业/.test(label) && !/排名/.test(label)) {
     rawValue = row.major;
+  } else if (/学历类型|办学类型|学习形式/.test(label)) {
+    rawValue = row.educationType;
   } else if (/学历|学位/.test(label)) {
     rawValue = row.degree;
   } else if (/公司|单位/.test(label)) {
@@ -594,14 +628,30 @@ export function bindLabeledField(
     rawValue = row.prize;
   } else if (/名称|姓名/.test(label) && !/证件/.test(label)) {
     rawValue = row.name;
-  } else if (/描述|内容|职责/.test(label)) {
+  } else if (/描述|内容|职责|实习内容|实践描述|获奖描述|证书描述/.test(label)) {
     rawValue = row.description;
   }
   if (!rawValue.trim()) {
     if (sectionKind(label)) {
+      // 标签若是「请输入」等垃圾角色，不当「档案空」——交回上层用计划值兜底
+      const roleOnly = label.replace(/^.*?第\d+行/, '');
+      if (/^(请输入|请选择|请填写|字段|内容)$/.test(roleOnly)) {
+        return null;
+      }
       return { kind: 'skip', reason: '这一格档案里是空的，不借用别的内容' };
     }
     return null;
+  }
+  // 整段日期：日历组件通常无精确选项，选项对不上也把值交给写入层多策略处理
+  if (
+    /(开始时间|起始时间|开始日期|结束时间|结束日期|截止时间|入学时间|入职时间|离职时间|毕业时间|获得时间)/.test(label)
+    && /^\d{4}/.test(rawValue)
+  ) {
+    const dateAllowed = valueAllowedByOptions(rawValue, field.options);
+    if (dateAllowed) {
+      return { kind: 'value', value: dateAllowed, reason: '按行绑定：同一块的同一行（日期）' };
+    }
+    return { kind: 'value', value: rawValue, reason: '按行绑定：同一块的同一行（日期交组件）' };
   }
   const allowed = valueAllowedByOptions(rawValue, field.options);
   if (!allowed) {
@@ -638,4 +688,92 @@ export function bindSectionFields(
     });
   }
   return { items, skippedFieldIds, remainingFields };
+}
+
+/**
+ * 计划自检：同分区多行锚点字段值相同，但档案对应条主键不同 → 视为串行，剔除多余项。
+ * 返回清洗后的 items 与被剔除原因（写入 miss / 预览提示用）。
+ */
+export function auditFillPlanRowCollisions(
+  profile: ProfileData,
+  fields: FieldDescriptor[],
+  items: FillPlan['items'],
+): { items: FillPlan['items']; rejected: Array<{ fieldId: string; reason: string }> } {
+  const fieldById = new Map(fields.map((field) => [field.fieldId, field]));
+  const rejected: Array<{ fieldId: string; reason: string }> = [];
+  /** 分区 → 行号 → 主键字段 id 与值 */
+  const anchorBySectionRow = new Map<string, Map<number, { fieldId: string; value: string }>>();
+
+  const isAnchorLabel = (label: string) =>
+    /单位名称|公司名称|企业名称|项目名称|学校名称|证书名称|奖项名称|组织名称|名称/.test(label)
+    && !/职位|岗位|角色|描述|内容/.test(label);
+
+  for (const item of items) {
+    const field = fieldById.get(item.fieldId);
+    if (!field) continue;
+    const label = field.label || '';
+    const kind = sectionKind(label);
+    const index = rowIndex(label);
+    if (!kind || index === null || !isAnchorLabel(label)) continue;
+    const key = kind;
+    const rowMap = anchorBySectionRow.get(key) ?? new Map();
+    rowMap.set(index, { fieldId: item.fieldId, value: item.value.trim() });
+    anchorBySectionRow.set(key, rowMap);
+  }
+
+  const rejectIds = new Set<string>();
+  for (const [kind, rowMap] of anchorBySectionRow) {
+    const entries = [...rowMap.entries()].sort((left, right) => left[0] - right[0]);
+    if (entries.length < 2) continue;
+    const values = entries.map(([, data]) => data.value).filter(Boolean);
+    const uniqueValues = new Set(values);
+    if (uniqueValues.size !== 1) continue;
+
+    // 页面上多行同文：对照档案主键是否本就相同
+    const profileKeys: string[] = [];
+    if (kind === 'experience') {
+      profile.experience.forEach((item) => {
+        const keyText = (item.company || item.title || '').trim();
+        if (keyText) profileKeys.push(keyText);
+      });
+    } else if (kind === 'certificate') {
+      profile.certificates.forEach((item) => {
+        const keyText = (item.name || '').trim();
+        if (keyText) profileKeys.push(keyText);
+      });
+    } else if (kind === 'project') {
+      profile.projects.forEach((item) => {
+        const keyText = (item.name || '').trim();
+        if (keyText) profileKeys.push(keyText);
+      });
+    } else if (kind === 'education') {
+      profile.education.forEach((item) => {
+        const keyText = (item.school || '').trim();
+        if (keyText) profileKeys.push(keyText);
+      });
+    }
+    if (new Set(profileKeys).size < 2) continue;
+
+    // 保留第 1 行，剔除后续同文行的全部同分区字段（按行号）
+    for (const [rowNumber] of entries) {
+      if (rowNumber === 0) continue;
+      for (const item of items) {
+        const field = fieldById.get(item.fieldId);
+        if (!field) continue;
+        if (sectionKind(field.label || '') !== kind) continue;
+        if (rowIndex(field.label || '') !== rowNumber) continue;
+        if (rejectIds.has(item.fieldId)) continue;
+        rejectIds.add(item.fieldId);
+        rejected.push({
+          fieldId: item.fieldId,
+          reason: `「${kind}」第${rowNumber + 1}行与第1行计划值相同但档案不同，已剔除防串写`,
+        });
+      }
+    }
+  }
+
+  return {
+    items: items.filter((item) => !rejectIds.has(item.fieldId)),
+    rejected,
+  };
 }

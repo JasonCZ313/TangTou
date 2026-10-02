@@ -435,11 +435,27 @@ export function optionMatchAliases(value) {
   if (/硕士|研究生/.test(raw)) ['硕士', '硕士研究生', '研究生'].forEach((item) => aliases.add(item));
   if (/博士/.test(raw)) ['博士', '博士研究生'].forEach((item) => aliases.add(item));
   if (/群众/.test(raw)) ['群众', '普通群众'].forEach((item) => aliases.add(item));
+  if (/全日制/.test(raw) && !/非全日制/.test(raw)) ['全日制', '普通全日制'].forEach((item) => aliases.add(item));
+  if (/非全日制|在职|函授|业余/.test(raw)) {
+    ['非全日制', '在职', '函授', '业余'].forEach((item) => aliases.add(item));
+  }
+  // 城市：北京 ↔ 北京市，避免级联回读误杀
+  if (/市$/.test(raw) && raw.length <= 8) {
+    aliases.add(raw.replace(/市$/, ''));
+  } else if (/^(北京|上海|天津|重庆|香港|澳门)$/.test(raw)) {
+    aliases.add(`${raw}市`);
+  } else if (/[省州]$/.test(raw) === false && raw.length >= 2 && raw.length <= 6 && !/[区县]$/.test(raw)) {
+    aliases.add(`${raw}市`);
+    aliases.add(raw.replace(/市$/, ''));
+  }
   // 含分隔符的地区串（如「北京市 / 市辖区 / 朝阳区」）：
   // 页面往往只给其中一层（只列「北京」），把每层都作为候选才有机会命中；
   // 「市辖区」「省直辖」这类中间层对页面无意义，去掉后再加一次。
   if (/[/、,，]/.test(raw)) {
-    raw.split(/\s*[/、,，]\s*/).filter(Boolean).forEach((part) => aliases.add(part));
+    raw.split(/\s*[/、,，]\s*/).filter(Boolean).forEach((part) => {
+      aliases.add(part);
+      if (/市$/.test(part)) aliases.add(part.replace(/市$/, ''));
+    });
     aliases.add(raw.replace(/市辖区|省直辖县级行政区划|省直辖/g, ''));
     aliases.add(raw.replace(/市辖区|省直辖县级行政区划|省直辖/g, '').replace(/\s*[/、,，]\s*/g, ''));
   }
@@ -556,24 +572,32 @@ export function inferSubByKeyword(blob, sectionType) {
   return null;
 }
 
-/** 行条目的展示名（日志用）：优先机构/名称，其次第一条非空值 */
+/** 行条目的展示名（日志用）：优先机构/职位/名称，其次分区序号 */
 export function rowDisplayName(entry, sectionType) {
-  const name = rowValue(entry, 'org') || rowValue(entry, 'title') || rowValue(entry, 'name');
+  const name = rowValue(entry, 'org')
+    || rowValue(entry, 'role')
+    || rowValue(entry, 'title')
+    || rowValue(entry, 'name');
   return name || `${sectionType}#${(entry?.index ?? 0) + 1}`;
 }
 
 /**
- * 行条目稳定签名：同一条档案在一次填写里只允许落到一个块。
- * 用「分区 + 主键内容」而不是索引，防止重复添加时同一段被填两遍。
+ * 行条目稳定签名：同一次填写里「一条档案最多绑一个 UI 行」。
+ * 必须带稳定 index，并纳入 role（实习/工作主字段是 role 不是 title），
+ * 否则同公司多段会撞车，或 title 回落到 org 后把两条当成一条反复复用。
  */
 export function rowSignature(sectionType, entry) {
-  return [
-    sectionType,
+  const entryIndex = typeof entry?.index === 'number' ? entry.index : -1;
+  const contentFingerprint = [
     rowValue(entry, 'org'),
+    rowValue(entry, 'role'),
     rowValue(entry, 'title'),
     rowValue(entry, 'name'),
     rowValue(entry, 'start'),
-  ].join('|');
+    // 描述前缀用于区分「同公司同职不同内容」；过长截断即可
+    String(rowValue(entry, 'desc') || '').slice(0, 32),
+  ].join('·');
+  return `${sectionType}#${entryIndex}|${contentFingerprint}`;
 }
 
 /** 把档案里的行式条目整理成「分区 → 条目数组」，并修掉开始晚于结束的脏数据 */

@@ -209,6 +209,25 @@ export type ExtensionMessage =
       version?: string;
     }
   | {
+      /** Chao 逐格写后：请本机 Laya/规则确认「标签+期望值+回读」是否一致 */
+      type: 'LAYA_CONFIRM_CELL';
+      requestId: string;
+      label: string;
+      intended: string;
+      actual: string;
+    }
+  | {
+      type: 'LAYA_CONFIRM_CELL_RESULT';
+      requestId: string;
+      /** true=确认通过或跳过；false=高置信否定 */
+      ok: boolean;
+      /** 0~1，仅当明确否定且置信度高时 content 才打回 */
+      confidence: number;
+      message: string;
+      /** 未就绪/未开启时为 true，content 应信任回读 */
+      skipped?: boolean;
+    }
+  | {
       /** 页内浮层：更新进度文案与百分比（P4a） */
       type: 'PAGE_OVERLAY_UPDATE';
       requestId: string;

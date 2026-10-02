@@ -1,12 +1,18 @@
 /**
- * 页面写入入口：确认填写后，严格按预览计划（FillPlan）逐格写入。
- * 预览里改过的值就是最终写入值；不再忽略 plan 去跑 Chao 边扫边写。
- * 附件仍按 plan 中的 attachmentId 或档案附件库落到 file 控件。
+ * 页面写入入口：确认填写后按 FillPlan 写入，但执行时「逐格再绑 → 写 → 回读/Laya」。
+ * 有行号的分区字段以档案重绑值为准（用户改过的 plan 值仅作无行号字段的来源），
+ * 禁止一口气按脏计划把第1条实习糊进每一块。
  */
-import type { FillMiss, FillPlan, SectionAddRequest } from '../../shared/types/fill';
+import type { FieldDescriptor, FillMiss, FillPlan, SectionAddRequest } from '../../shared/types/fill';
 import type { ProfileData } from '../../shared/types/profile';
 import type { FileUploadPayload } from '../../shared/types/messages';
-import { prepareFieldForWrite } from '../scanner/scanFields';
+import { bindLabeledField } from '../../shared/fill/sectionBinder';
+import {
+  guessRoleByControlHint,
+  isJunkRoleText,
+  pickUsableRoleText,
+} from '../../shared/fill/fieldRole';
+import { prepareFieldForWrite, relabelAllSectionCards } from '../scanner/scanFields';
 import { ensureSectionRows } from './ensureSectionRows';
 import {
   AUTOFILL_FILL_CLASS,
@@ -14,12 +20,190 @@ import {
   classifyControl,
   ensureHighlightStyles,
   fieldLabelBlob,
+  readControlText,
   writeField,
 } from './chao/dom';
 
 /** 撤销快照：写入前控件原值，方便 undoLastFill 还原 */
 let lastUndoSnapshots: Array<{ element: Element; previousValue: string; isFile: boolean }> =
   [];
+
+/** 格间短等待，给站点联动渲染时间 */
+function settle(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * 规范化比较：写后回读核对用。
+ */
+function normalizeCompareText(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, '');
+}
+
+/**
+ * 回读是否与期望一致（允许互相包含，兼容日期短写）。
+ */
+function readbackMatches(intended: string, actual: string): boolean {
+  const want = normalizeCompareText(intended);
+  const got = normalizeCompareText(actual);
+  if (!want) return false;
+  return got === want
+    || (got.length >= 2 && want.includes(got))
+    || (want.length >= 2 && got.includes(want));
+}
+
+/**
+ * 写后可选 Laya 确认：仅高置信否定才打回；未就绪失败开放。
+ */
+async function confirmCellWithLaya(
+  label: string,
+  intended: string,
+  actual: string,
+): Promise<boolean> {
+  if (!readbackMatches(intended, actual)) {
+    return false;
+  }
+  try {
+    const requestId = `apply-laya-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const response = await chrome.runtime.sendMessage({
+      type: 'LAYA_CONFIRM_CELL',
+      requestId,
+      label: label.slice(0, 80),
+      intended: intended.slice(0, 200),
+      actual: actual.slice(0, 200),
+    });
+    if (
+      response?.type === 'LAYA_CONFIRM_CELL_RESULT'
+      && response.ok === false
+      && typeof response.confidence === 'number'
+      && response.confidence >= 0.85
+    ) {
+      return false;
+    }
+  } catch {
+    /* 消息失败不挡已回读通过的写入 */
+  }
+  return true;
+}
+
+/**
+ * 从 DOM 标签构造最小 FieldDescriptor，供 bindLabeledField 再绑。
+ */
+function descriptorFromElement(fieldId: string, element: HTMLElement, labelText: string): FieldDescriptor {
+  const optionsAttr = element.getAttribute('data-raf-options');
+  let options: string[] | undefined;
+  if (optionsAttr) {
+    try {
+      const parsed = JSON.parse(optionsAttr) as unknown;
+      if (Array.isArray(parsed)) {
+        options = parsed.map((item) => String(item));
+      }
+    } catch {
+      options = undefined;
+    }
+  }
+  return {
+    fieldId,
+    tag: element.tagName.toLowerCase(),
+    type: element instanceof HTMLInputElement ? element.type || 'text' : element.tagName.toLowerCase(),
+    label: labelText,
+    options,
+    selectorHint: 'input',
+  };
+}
+
+/**
+ * 写入前现场刷新角色名：禁止带着「第N行请输入」去再绑（会误判档案空并吞掉计划值）。
+ */
+function refreshLabelBeforeRebind(element: HTMLElement): string {
+  const storedLabel = element.getAttribute('data-raf-label') || '';
+  const rowPrefixMatch = storedLabel.match(/^(.*?第\d+行)/);
+  const rowPrefix = rowPrefixMatch?.[1] ?? '';
+  const previousRole = storedLabel.replace(/^.*?第\d+行/, '');
+  const blob = fieldLabelBlob(element);
+  const blobParts = String(blob || '')
+    .split(/\s+/)
+    .map((part) => part.replace(/\s+/g, ''))
+    .filter((part) => part.length >= 2 && part.length <= 16 && !isJunkRoleText(part));
+  const ariaLabel = element.getAttribute('aria-label') || '';
+  let roleLabel = pickUsableRoleText(previousRole, ariaLabel, ...blobParts, blob);
+  if (!roleLabel) {
+    const isTextArea =
+      element instanceof HTMLTextAreaElement
+      || (element.getAttribute('role') === 'textbox'
+        && element.getAttribute('aria-multiline') === 'true');
+    const dateCue = `${ariaLabel}${blob}${element.getAttribute('placeholder') || ''}`;
+    const isDateLike =
+      /时间|日期|年月|生日|日历/.test(dateCue)
+      || Boolean(element.closest('[class*="picker" i], [class*="date" i], [class*="calendar" i]'));
+    const isDateEnd =
+      /结束|截止|离职|毕业|获得/.test(dateCue) && !/开始|起始|入学|入职/.test(dateCue);
+    roleLabel = guessRoleByControlHint({ isTextArea, isDateLike, isDateEnd }) || '字段';
+  }
+  const nextLabel = rowPrefix ? `${rowPrefix}${roleLabel}` : roleLabel;
+  if (nextLabel && nextLabel !== storedLabel) {
+    element.setAttribute('data-raf-label', nextLabel);
+  }
+  return nextLabel || storedLabel || blob || '';
+}
+
+/**
+ * 决定本格最终写入值：有行号则强制按档案重绑；再绑因垃圾标签失败时回落 plan，禁止吞掉已有计划值。
+ */
+function resolveWriteValue(
+  fieldId: string,
+  planValue: string,
+  element: HTMLElement,
+  profileData: ProfileData | undefined,
+): { value: string; reason: string; skip?: string } {
+  const labelText = refreshLabelBeforeRebind(element);
+  const roleOnly = labelText.replace(/^.*?第\d+行/, '');
+  if (!profileData || !labelText) {
+    return { value: planValue, reason: '计划值' };
+  }
+  const bound = bindLabeledField(
+    descriptorFromElement(fieldId, element, labelText),
+    profileData,
+  );
+  if (bound?.kind === 'skip') {
+    // 标签仍垃圾/角色未知时：计划里已有值就接着写，不能因「请输入」把学校单位清掉
+    if (planValue.trim() && (isJunkRoleText(roleOnly) || /请输入|请选择|请填写|字段/.test(roleOnly))) {
+      return { value: planValue, reason: '再绑标签不可靠，回落计划值' };
+    }
+    return { value: '', reason: bound.reason, skip: bound.reason };
+  }
+  if (bound?.kind === 'value' && bound.value.trim()) {
+    // 有行号重绑成功：以档案为准（防止计划把第1条糊到第2行）
+    if (/第\d+行/.test(labelText)) {
+      return { value: bound.value, reason: bound.reason };
+    }
+  }
+  return { value: planValue, reason: '计划值' };
+}
+
+/**
+ * 按标签行号排序：先第1行再第2行，同行内保持 plan 原序。
+ */
+function sortItemsByRowLabel(
+  items: FillPlan['items'],
+  resolveLabel: (fieldId: string) => string,
+): FillPlan['items'] {
+  return [...items].sort((left, right) => {
+    const leftLabel = resolveLabel(left.fieldId);
+    const rightLabel = resolveLabel(right.fieldId);
+    const leftRow = Number(leftLabel.match(/第(\d+)行/)?.[1] ?? 0);
+    const rightRow = Number(rightLabel.match(/第(\d+)行/)?.[1] ?? 0);
+    if (leftRow !== rightRow) {
+      return leftRow - rightRow;
+    }
+    return 0;
+  });
+}
 
 /**
  * 给用户看的字段名：优先 DOM 上的 data-raf-label，其次短 fieldId，绝不拿 mapping reason 当标签。
@@ -278,16 +462,14 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
 }
 
 /**
- * 确认写入：严格按用户确认后的 FillPlan 逐格写入并回读。
- * 写入前可按 sectionAdds 兜底补行（不偷偷填值）；正文只来自 plan。
- * 写入过程更新页内浮层进度，并响应停止请求。
+ * 确认写入：补行 → 全量重标行号 → 按行序逐格再绑 → 写 → 回读/Laya → 再写下一项。
  */
 export async function applyFillPlan(
   plan: FillPlan,
   filePayloads: FileUploadPayload[] = [],
   _profileId?: string,
   sectionAdds: SectionAddRequest[] = [],
-  _profileData?: ProfileData,
+  profileData?: ProfileData,
 ): Promise<{
   filled: number;
   skipped: number;
@@ -297,7 +479,6 @@ export async function applyFillPlan(
   const { updatePageOverlay, hidePageOverlay } = await import('../ui/pageOverlay');
   const { shouldFillStop } = await import('../fillAbort');
 
-  // 兜底：预览期间若用户删了行，再补一次；新框无 plan 项则不会被填
   if (sectionAdds.length > 0) {
     updatePageOverlay({
       percent: 4,
@@ -305,6 +486,11 @@ export async function applyFillPlan(
       showCancel: true,
     });
     await ensureSectionRows(sectionAdds);
+    // 写入前再全量重标，防止补行后行号丢失
+    for (const request of sectionAdds) {
+      relabelAllSectionCards(request.sectionPattern);
+    }
+    await settle(200);
   }
 
   const writableItems = plan.items.filter(
@@ -324,11 +510,14 @@ export async function applyFillPlan(
     };
   }
 
+  const labelOf = (fieldId: string) => resolveMissLabel(fieldId);
+  const orderedItems = sortItemsByRowLabel(
+    writableItems.filter((item) => !item.attachmentId),
+    labelOf,
+  );
+
   const preparedElements: Element[] = [];
-  for (const item of writableItems) {
-    if (item.attachmentId) {
-      continue;
-    }
+  for (const item of orderedItems) {
     const element = await prepareFieldForWrite(item.fieldId);
     if (element) {
       preparedElements.push(element);
@@ -338,22 +527,16 @@ export async function applyFillPlan(
 
   let filled = 0;
   const misses: FillMiss[] = [];
-  const totalWriteSteps = Math.max(
-    writableItems.filter((item) => !item.attachmentId).length,
-    1,
-  );
+  const totalWriteSteps = Math.max(orderedItems.length, 1);
   let writeStepIndex = 0;
 
-  for (const item of writableItems) {
+  for (const item of orderedItems) {
     if (shouldFillStop()) {
       misses.push({
         label: '用户停止',
         reason: '已按停止请求中断写入',
       });
       break;
-    }
-    if (item.attachmentId) {
-      continue;
     }
     writeStepIndex += 1;
     const element = await prepareFieldForWrite(item.fieldId);
@@ -371,25 +554,62 @@ export async function applyFillPlan(
       });
       continue;
     }
+
+    const resolved = resolveWriteValue(
+      item.fieldId,
+      item.value,
+      element,
+      profileData,
+    );
+    // 再绑可能现场重标了 data-raf-label，进度与漏填表用最新标签
+    const liveLabel =
+      element.getAttribute('data-raf-label') || labelText;
+    if (resolved.skip || !resolved.value.trim()) {
+      misses.push({
+        label: liveLabel,
+        reason: resolved.skip || '再绑后无值，已跳过',
+      });
+      element.classList.add(AUTOFILL_MISS_CLASS);
+      await settle(40);
+      continue;
+    }
+
     const writeResult = await writeField(
       {
         el: element,
-        blob: labelText,
+        blob: liveLabel,
         control: classifyControl(element),
       },
-      item.value,
+      resolved.value,
     );
-    if (writeResult.ok) {
-      filled += 1;
-      element.classList.add(AUTOFILL_FILL_CLASS);
-      element.classList.remove(AUTOFILL_MISS_CLASS);
-    } else {
+    if (!writeResult.ok) {
       misses.push({
-        label: labelText,
+        label: liveLabel,
         reason: writeResult.reason || '写入失败',
       });
       element.classList.add(AUTOFILL_MISS_CLASS);
+      await settle(60);
+      continue;
     }
+
+    const actual = readControlText(element);
+    const confirmed = await confirmCellWithLaya(liveLabel, resolved.value, actual);
+    if (!confirmed) {
+      misses.push({
+        label: liveLabel,
+        reason: '回读/Laya 核对未通过',
+      });
+      element.classList.remove(AUTOFILL_FILL_CLASS);
+      element.classList.add(AUTOFILL_MISS_CLASS);
+      await settle(60);
+      continue;
+    }
+
+    filled += 1;
+    element.classList.add(AUTOFILL_FILL_CLASS);
+    element.classList.remove(AUTOFILL_MISS_CLASS);
+    // 逐格节奏：给页面联动与用户可见进度
+    await settle(80);
   }
 
   if (!shouldFillStop()) {
@@ -407,7 +627,6 @@ export async function applyFillPlan(
       : `写入完成：成功 ${filled + fileResult.filled} 项`,
     showCancel: false,
   });
-  // 稍留可见结果后收起，避免挡页面
   window.setTimeout(() => {
     hidePageOverlay();
   }, 1600);

@@ -8,12 +8,14 @@ import {
   SKIP_REASON_TIMEOUT,
   SKIP_REASON_UNSURE,
 } from '../fill/skipReasons';
+import { auditFillPlanRowCollisions } from '../fill/sectionBinder';
 import {
   mergeMappingItems,
   sourcedItemsToFillPlan,
   type SourcedMappingItem,
 } from '../session/mergeIntents';
 import type { FieldDescriptor, FillPlan } from '../types/fill';
+import type { ProfileData } from '../types/profile';
 import { createCloudEngine } from './cloudEngine';
 import { localEngine, LOCAL_ENGINE_NOT_READY } from './localEngine';
 import { runRuleShortCircuit } from './ruleShortCircuit';
@@ -27,6 +29,37 @@ import type {
 
 /** 无 API 时挂在规则项 reason 后的提示 */
 const HEURISTICS_ONLY_TIP = '未配置 API，仅填写高置信基础字段';
+
+/**
+ * 计划出炉后做串行同文清洗：多行同值但档案不同则剔除，防止预览就已写死「两块一样」。
+ */
+function sealPlanAgainstRowCollision(
+  plan: FillPlan,
+  profileData: ProfileData,
+  fields: FieldDescriptor[],
+): FillPlan {
+  const audited = auditFillPlanRowCollisions(profileData, fields, plan.items);
+  if (audited.rejected.length === 0) {
+    return plan;
+  }
+  return {
+    ...plan,
+    items: audited.items,
+    skippedFieldIds: [
+      ...new Set([
+        ...plan.skippedFieldIds,
+        ...audited.rejected.map((item) => item.fieldId),
+      ]),
+    ],
+    skippedNotes: [
+      ...(plan.skippedNotes ?? []),
+      ...audited.rejected.map((item) => ({
+        fieldId: item.fieldId,
+        reason: item.reason,
+      })),
+    ],
+  };
+}
 
 /**
  * 给规则计划里的 items 打上来源，并可选追加「仅启发式」提示。
@@ -88,9 +121,26 @@ function collectFilledIds(proposalLists: SourcedMappingItem[][]): Set<string> {
 }
 
 /**
- * 主入口：按设置分题路由，产出预览用 FillPlan。
+ * 主入口：按设置分题路由，产出预览用 FillPlan；出炉前做串行同文清洗。
  */
 export async function buildFillPlanViaDecision(
+  input: BuildFillPlanViaDecisionInput,
+): Promise<BuildFillPlanViaDecisionOutput> {
+  const output = await buildFillPlanViaDecisionCore(input);
+  return {
+    ...output,
+    plan: sealPlanAgainstRowCollision(
+      output.plan,
+      input.profileData,
+      input.fields,
+    ),
+  };
+}
+
+/**
+ * 路由核心（未做串行清洗）。
+ */
+async function buildFillPlanViaDecisionCore(
   input: BuildFillPlanViaDecisionInput,
 ): Promise<BuildFillPlanViaDecisionOutput> {
   const minConfidence = input.decisionMinConfidence;

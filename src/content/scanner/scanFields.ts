@@ -1,7 +1,14 @@
 import type { FieldDescriptor } from '../../shared/types/fill';
+import { textHasRowNameAnchor } from '../../shared/fill/rowAnchors';
+import {
+  guessRoleByControlHint,
+  isJunkRoleText,
+  pickUsableRoleText,
+} from '../../shared/fill/fieldRole';
 import { getActiveSiteAdapter } from '../adapters/registry';
 import { adapterAllowsAddLabel } from '../adapters/types';
 import { shouldFillStop } from '../fillAbort';
+import { fieldLabelBlob } from '../filler/chao/dom';
 
 /** 扫描时跳过的 input type，避免误填密码或触发按钮类控件 */
 const SKIPPED_INPUT_TYPES = new Set([
@@ -1383,9 +1390,9 @@ function assignStructuredLabels(fields: FieldDescriptor[]): void {
       const verticalGap = previousItem ? item.top - previousItem.top : 0;
       const fieldHint = `${item.field.label}${item.element.getAttribute('placeholder') ?? ''}`;
       const repeatsName =
-        /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(fieldHint) &&
+        textHasRowNameAnchor(fieldHint) &&
         currentRow.some((rowItem) =>
-          /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(
+          textHasRowNameAnchor(
             `${rowItem.field.label}${rowItem.element.getAttribute('placeholder') ?? ''}`,
           ),
         );
@@ -1439,7 +1446,7 @@ function assignStructuredLabels(fields: FieldDescriptor[]): void {
         if (yearItems.includes(item) || monthItems.includes(item)) {
           continue;
         }
-        let roleLabel = item.field.label;
+        let roleLabel = resolveFieldRoleLabel(item.element, item.field.label);
         if (item.element instanceof HTMLSelectElement) {
           const optionText = Array.from(item.element.options)
             .map((optionElement) => optionElement.textContent ?? '')
@@ -1469,6 +1476,10 @@ function assignStructuredLabels(fields: FieldDescriptor[]): void {
           roleLabel = '证件类型';
         } else if (storedOptions && /\+86|＋86|中国大陆/.test(storedOptions)) {
           roleLabel = '电话区号';
+        }
+        // 最终再挡一次垃圾角色，避免「第N行请输入」落盘
+        if (isJunkRoleText(roleLabel)) {
+          roleLabel = resolveFieldRoleLabel(item.element, '');
         }
         rememberFieldLabel(item.field, item.element, `${rowPrefix}${roleLabel}`.trim());
       }
@@ -1669,7 +1680,7 @@ export function locateRepeatSection(patternSource: string): RepeatSectionSnapsho
     }
     const placeholderText = node instanceof HTMLInputElement ? node.placeholder : '';
     const labelText = node.getAttribute('data-raf-label') ?? '';
-    return /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(`${placeholderText}${labelText}`);
+    return textHasRowNameAnchor(`${placeholderText}${labelText}`);
   });
   let rows = nameFieldsInSection.length;
   if (rows === 0 && deleteButtons.length > 0) {
@@ -1795,7 +1806,52 @@ export function labelNextEmptyCard(patternSource: string, neededRows: number): F
   if (!sectionTitle || !snapshot || neededRows <= 0) {
     return [];
   }
-  const controls = Array.from(document.querySelectorAll('input, textarea, select, .ant-select, .el-select'))
+  const controls = collectSectionControls(patternSource);
+  const nameFields = controls.filter((element) => {
+    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
+    const labelText = element.getAttribute('data-raf-label') ?? '';
+    return textHasRowNameAnchor(`${placeholderText}${labelText}`);
+  });
+  const emptyIndex = nameFields.findIndex((element) => {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+    const currentText = element.value.trim();
+    return currentText.length === 0 || currentText === (element.placeholder || '').trim();
+  });
+  if (emptyIndex < 0 || emptyIndex >= neededRows) {
+    return [];
+  }
+  return labelOneCardByNameIndex(sectionTitle, controls, nameFields, emptyIndex);
+}
+
+/**
+ * 把分区内每一张「主键」卡按文档序全部重打「第N行」。
+ * 补行结束后、写入前调用，避免「单位名称」漏认导致两行都当第1条。
+ */
+export function relabelAllSectionCards(patternSource: string): FieldDescriptor[] {
+  const sectionTitle = sectionHeadingText(patternSource);
+  if (!sectionTitle) {
+    return [];
+  }
+  const controls = collectSectionControls(patternSource);
+  const nameFields = controls.filter((element) => {
+    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
+    const labelText = element.getAttribute('data-raf-label') ?? '';
+    return textHasRowNameAnchor(`${placeholderText}${labelText}`);
+  });
+  const labeled: FieldDescriptor[] = [];
+  nameFields.forEach((_nameField, index) => {
+    labeled.push(...labelOneCardByNameIndex(sectionTitle, controls, nameFields, index));
+  });
+  return labeled;
+}
+
+/**
+ * 收集分区内可见控件（与补行/打标同一口径）。
+ */
+function collectSectionControls(patternSource: string): HTMLElement[] {
+  return Array.from(document.querySelectorAll('input, textarea, select, .ant-select, .el-select'))
     .filter((node): node is HTMLElement => {
       if (!(node instanceof HTMLElement) || !isElementVisible(node) || !nodeInRepeatSection(patternSource, node)) {
         return false;
@@ -1813,29 +1869,72 @@ export function labelNextEmptyCard(patternSource: string, neededRows: number): F
         leftNode.getBoundingClientRect().top - rightNode.getBoundingClientRect().top ||
         leftNode.getBoundingClientRect().left - rightNode.getBoundingClientRect().left,
     );
-  const nameFields = controls.filter((element) => {
-    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
-    const labelText = element.getAttribute('data-raf-label') ?? '';
-    return /项目名称|公司名称|奖项名称|技能描述|学校名称/.test(`${placeholderText}${labelText}`);
+}
+
+/**
+ * 解析控件真实角色名：绝不用「请输入/请选择」当学校、单位等语义。
+ * 优先可见标题 → 非垃圾旧标签 → fieldLabelBlob → 控件形态兜底。
+ */
+function resolveFieldRoleLabel(element: HTMLElement, previousRole = ''): string {
+  const placeholderText =
+    element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+      ? element.placeholder
+      : '';
+  const ariaLabel = element.getAttribute('aria-label') || '';
+  const blob = fieldLabelBlob(element);
+  const blobParts = String(blob || '')
+    .split(/\s+/)
+    .map((part) => part.replace(/\s+/g, ''))
+    .filter((part) => part.length >= 2 && part.length <= 16 && !isJunkRoleText(part));
+
+  const picked = pickUsableRoleText(
+    previousRole,
+    ariaLabel,
+    ...blobParts,
+    blob,
+  );
+  if (picked) {
+    return picked;
+  }
+
+  const isTextArea = element instanceof HTMLTextAreaElement
+    || (element.getAttribute('role') === 'textbox'
+      && element.getAttribute('aria-multiline') === 'true');
+  const timeKind = controlTimeKind(element);
+  const dateCue = `${placeholderText}${ariaLabel}${blob}`;
+  const isDateLike = timeKind === 'year' || timeKind === 'month' || timeKind === 'day'
+    || /时间|日期|年月|生日|日历/.test(dateCue)
+    || Boolean(element.closest('[class*="picker" i], [class*="date" i], [class*="calendar" i]'));
+  const isDateEnd = /结束|截止|离职|毕业|获得/.test(dateCue) && !/开始|起始|入学|入职/.test(dateCue);
+
+  const guessed = guessRoleByControlHint({
+    isTextArea: Boolean(isTextArea),
+    isDateLike,
+    isDateEnd,
   });
-  const emptyIndex = nameFields.findIndex((element) => {
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      return false;
-    }
-    const currentText = element.value.trim();
-    return currentText.length === 0 || currentText === (element.placeholder || '').trim();
-  });
-  if (emptyIndex < 0 || emptyIndex >= neededRows) {
+  return guessed || '字段';
+}
+
+/**
+ * 按主键字段下标，给该卡垂直带内所有控件打上「标题第N行…」。
+ */
+function labelOneCardByNameIndex(
+  sectionTitle: string,
+  controls: HTMLElement[],
+  nameFields: HTMLElement[],
+  nameIndex: number,
+): FieldDescriptor[] {
+  if (nameIndex < 0 || nameIndex >= nameFields.length) {
     return [];
   }
-  const bandTop = nameFields[emptyIndex].getBoundingClientRect().top - 180;
-  const nextName = nameFields[emptyIndex + 1];
+  const bandTop = nameFields[nameIndex].getBoundingClientRect().top - 180;
+  const nextName = nameFields[nameIndex + 1];
   const bandBottom = nextName ? nextName.getBoundingClientRect().top - 4 : bandTop + 520;
   const band = controls.filter((element) => {
     const top = element.getBoundingClientRect().top;
     return top >= bandTop && top < bandBottom;
   });
-  const rowPrefix = `${sectionTitle}第${emptyIndex + 1}行`;
+  const rowPrefix = `${sectionTitle}第${nameIndex + 1}行`;
   const labeled: FieldDescriptor[] = [];
   const yearFields = band.filter((element) => controlTimeKind(element) === 'year');
   const monthFields = band.filter((element) => controlTimeKind(element) === 'month');
@@ -1855,9 +1954,8 @@ export function labelNextEmptyCard(patternSource: string, neededRows: number): F
     if (yearFields.includes(element) || monthFields.includes(element)) {
       continue;
     }
-    const placeholderText = element instanceof HTMLInputElement ? element.placeholder : '';
     const previousLabel = (element.getAttribute('data-raf-label') ?? '').replace(/^.*第\d+行/, '');
-    const roleLabel = placeholderText || previousLabel || '内容';
+    const roleLabel = resolveFieldRoleLabel(element, previousLabel);
     const descriptor = ensureFieldDescriptor(element);
     rememberFieldLabel(descriptor, element, `${rowPrefix}${roleLabel}`);
     labeled.push(descriptor);

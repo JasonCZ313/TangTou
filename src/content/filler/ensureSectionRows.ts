@@ -1,6 +1,7 @@
 /**
  * 按档案条数只点「添加」补行，不写入任何档案正文。
  * 供扫描出预览前调用；有站点适配器时认「新增」等文案。
+ * 补行结束后对该分区全部卡片重打「第N行」，保证计划能按行绑定。
  */
 import type { SectionAddRequest } from '../../shared/types/fill';
 import { shouldFillStop } from '../fillAbort';
@@ -9,6 +10,7 @@ import {
   labelNextEmptyCard,
   locateRepeatSection,
   pressAddButton,
+  relabelAllSectionCards,
 } from '../scanner/scanFields';
 
 /** 每一段最多额外点几次添加，避免死循环 */
@@ -75,6 +77,13 @@ export async function ensureSectionRows(
         break;
       }
       labelNextEmptyCard(request.sectionPattern, request.neededRows);
+    }
+    // 该分区补行结束：全量重标行号（含单位名称/证书名称等锚点）
+    const relabeled = relabelAllSectionCards(request.sectionPattern);
+    if (relabeled.length > 0) {
+      onProgress?.(
+        `已为「${request.sectionPattern}」重标 ${relabeled.length} 个字段行号`,
+      );
     }
   }
 

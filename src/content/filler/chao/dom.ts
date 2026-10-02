@@ -318,22 +318,85 @@ function fillPlainField(el, value) {
   return true;
 }
 
-/** 自定义日期组件：点开 → 去掉 readonly → 写入 → Enter/blur 提交 → 还原 readonly */
+/** 自定义日期组件：多策略写入（面板点选 → 多格式去 readonly → 可输入回落文本） */
 async function fillWidgetDate(el, value) {
   const date = normalizeDate(value);
+  const yearMatch = date.match(/(19|20)\d{2}/);
+  const yearText = yearMatch?.[0] || '';
+  const monthMatch = date.match(/^\d{4}-(\d{2})/);
+  const monthNumber = monthMatch ? String(Number(monthMatch[1])) : '';
+  const formats = Array.from(new Set([
+    date,
+    date.slice(0, 7),
+    date.replace(/-/g, '/'),
+    date.slice(0, 7).replace(/-/g, '/'),
+    date.replace(/-/g, ''),
+    yearText && monthNumber ? `${yearText}年${monthNumber}月` : '',
+    yearText || '',
+  ].filter(Boolean)));
+
   el.scrollIntoView({ block: 'center' });
   el.click();
-  await sleep(150);
+  await sleep(180);
+
+  // 策略1：面板里点年份/月份（Ant/Element 日历常见）
+  if (yearText) {
+    const panelNodes = [...document.querySelectorAll(
+      '[class*="picker" i], [class*="calendar" i], [class*="datepicker" i], [class*="date-panel" i], [role="dialog"]',
+    )].filter((node) => node instanceof HTMLElement && isPageFieldVisible(node) && !isInsideTangtouUi(node));
+    for (const panel of panelNodes) {
+      const clickables = [...panel.querySelectorAll('button, td, a, span, div')]
+        .filter((node) => node instanceof HTMLElement && isPageFieldVisible(node));
+      const yearNode = clickables.find((node) => {
+        const text = String(node.textContent || '').replace(/\s+/g, '').trim();
+        return text === yearText || text === `${yearText}年`;
+      });
+      if (yearNode) {
+        yearNode.click();
+        await sleep(80);
+      }
+      if (monthNumber) {
+        const monthNode = clickables.find((node) => {
+          const text = String(node.textContent || '').replace(/\s+/g, '').trim();
+          const digits = text.replace(/\D/g, '');
+          return text === `${monthNumber}月` || text === monthNumber || digits === monthNumber;
+        });
+        if (monthNode) {
+          monthNode.click();
+          await sleep(80);
+        }
+      }
+      if (/(19|20)\d{2}/.test(String(el.value || el.textContent || ''))) {
+        return true;
+      }
+    }
+  }
+
+  // 策略2：去掉 readonly，按多种日期格式写入并提交
   const wasReadOnly = el.readOnly;
   if (wasReadOnly) el.removeAttribute('readonly');
   el.focus();
-  setNativeValue(el, date);
-  ['keydown', 'keypress', 'keyup'].forEach((type) => el.dispatchEvent(
-    new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }),
-  ));
-  el.blur();
-  await sleep(100);
+  for (const formatText of formats) {
+    setNativeValue(el, formatText);
+    ['keydown', 'keypress', 'keyup'].forEach((type) => el.dispatchEvent(
+      new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }),
+    ));
+    el.blur();
+    await sleep(80);
+    if (yearText && String(el.value || '').includes(yearText)) {
+      if (wasReadOnly) el.setAttribute('readonly', '');
+      return true;
+    }
+  }
   if (wasReadOnly) el.setAttribute('readonly', '');
+
+  // 策略3：可输入控件回落纯文本（仍要求能留下年份）
+  if (!el.readOnly && el.tagName.toLowerCase() === 'input') {
+    const plainOk = fillPlainField(el, date.slice(0, 7) || date);
+    if (plainOk && yearText && String(el.value || '').includes(yearText)) {
+      return true;
+    }
+  }
   return /(19|20)\d{2}/.test(String(el.value || ''));
 }
 
@@ -379,49 +442,61 @@ function findOwnPopup(el) {
   return null;
 }
 
-/** 点选控件：点开 → 读选项 → 别名比对 → 点击 → 回读确认 */
+/** 点选控件：点开 → 读选项 → 别名比对 → 点击 → 回读确认；多段级联则逐级点 */
 async function fillWidgetByOption(el, value) {
-  const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
-  if (!aliases.length) return false;
-  el.scrollIntoView({ block: 'center' });
-  // 点击前先记录「已经可见的选项」，点击后新增的那些才属于本次打开的弹层
-  const beforeOptions = new Set(collectPopupOptions());
-  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-  el.click();
-  await sleep(350);
-  const ownPopup = findOwnPopup(el);
-  let allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
-  // 弹层渲染有快有慢：一次没读到就再等一小段重读一次。
-  // 这一步把「同格要点四五次」压成最多两次，且等待时间只增不减，不会伤准确性。
-  if (!allOptions.length) {
-    chaoDebug.info('首次未读到选项，250ms 后重读一次', { 目标: value });
-    await sleep(250);
-    allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
-  }
-  const freshOptions = allOptions.filter((option) => !beforeOptions.has(option));
-  const options = ownPopup || !freshOptions.length ? allOptions : freshOptions;
-  const optionTexts = options.map((option) => option.textContent.replace(/\s+/g, ' ').trim());
-  chaoDebug.info(`打开下拉，读到 ${optionTexts.length} 个选项`, {
-    目标: value,
-    别名: aliases,
-    选项: optionTexts.slice(0, 12),
-  });
-  const textOf = (option) => option.textContent.replace(/\s+/g, ' ').trim().toLowerCase();
-  const hit = options.find((option) => aliases.includes(textOf(option)))
-    || options.find((option) => {
-      const text = textOf(option);
-      return text.length >= 1 && aliases.some((alias) => text === alias || text.includes(alias) || alias.includes(text));
+  const segments = /[/、,，]/.test(value)
+    ? value.split(/\s*[/、,，]\s*/).map((part) => part.trim()).filter(Boolean)
+    : [value];
+  // 多段时先整串试一次，再逐级点（籍贯「省/市/区」）
+  const attempts = segments.length > 1 ? [value, ...segments] : segments;
+  for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex += 1) {
+    const attemptValue = attempts[attemptIndex];
+    const aliases = optionMatchAliases(attemptValue).map((item) => item.toLowerCase());
+    if (!aliases.length) continue;
+    el.scrollIntoView({ block: 'center' });
+    const beforeOptions = new Set(collectPopupOptions());
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.click();
+    await sleep(350);
+    const ownPopup = findOwnPopup(el);
+    let allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
+    if (!allOptions.length) {
+      chaoDebug.info('首次未读到选项，250ms 后重读一次', { 目标: attemptValue });
+      await sleep(250);
+      allOptions = ownPopup ? collectPopupOptions(ownPopup) : collectPopupOptions();
+    }
+    const freshOptions = allOptions.filter((option) => !beforeOptions.has(option));
+    const options = ownPopup || !freshOptions.length ? allOptions : freshOptions;
+    const optionTexts = options.map((option) => option.textContent.replace(/\s+/g, ' ').trim());
+    chaoDebug.info(`打开下拉，读到 ${optionTexts.length} 个选项`, {
+      目标: attemptValue,
+      别名: aliases,
+      选项: optionTexts.slice(0, 12),
     });
-  if (hit) {
-    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    hit.click();
-    await sleep(150);
-    return true;
+    const textOf = (option) => option.textContent.replace(/\s+/g, ' ').trim().toLowerCase();
+    const hit = options.find((option) => aliases.includes(textOf(option)))
+      || options.find((option) => {
+        const text = textOf(option);
+        return text.length >= 1 && aliases.some((alias) => text === alias || text.includes(alias) || alias.includes(text));
+      });
+    if (hit) {
+      hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      hit.click();
+      await sleep(180);
+      // 多段级联：点中中间层后继续下一段；整串命中则直接成功
+      if (attemptIndex === 0 || attemptIndex === attempts.length - 1 || segments.length === 1) {
+        return true;
+      }
+      continue;
+    }
+    // 整串未命中时继续试分段；分段也未命中则关掉弹层
+    if (attemptIndex === attempts.length - 1) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      document.body.click();
+      await sleep(80);
+      return false;
+    }
   }
-  // 没命中：Esc 关闭弹层，避免弹层挡住后续字段
-  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-  document.body.click();
-  await sleep(80);
   return false;
 }
 
@@ -430,14 +505,29 @@ export function readFieldValue(field) {
   return readControlText(field?.el);
 }
 
-/** 回读是否达标：整串包含、别名包含、或年份一致（日期控件常只回显年月） */
+/** 回读是否达标：整串包含、别名包含、城市去「市」、级联任一段、或年份一致 */
 function valueLooksWritten(field, intended) {
   const actual = readFieldValue(field).toLowerCase();
   if (!actual) return false;
   const want = String(intended || '').trim().toLowerCase();
   if (!want) return false;
   if (actual.includes(want) || want.includes(actual)) return true;
-  if (optionMatchAliases(intended).some((alias) => actual.includes(alias.toLowerCase()))) return true;
+  const aliases = optionMatchAliases(intended).map((alias) => alias.toLowerCase());
+  if (aliases.some((alias) => actual.includes(alias) || alias.includes(actual))) return true;
+  // 城市：北京 ↔ 北京市
+  const stripCity = (text) => text.replace(/市$/g, '');
+  if (stripCity(actual) && stripCity(want) && (
+    stripCity(actual).includes(stripCity(want)) || stripCity(want).includes(stripCity(actual))
+  )) {
+    return true;
+  }
+  // 级联多段：任一段命中即算过（避免「北京市/朝阳区」写后只回显「朝阳区」）
+  if (/[/、,，]/.test(want)) {
+    const parts = want.split(/\s*[/、,，]\s*/).map((part) => part.trim()).filter(Boolean);
+    if (parts.some((part) => actual.includes(part) || actual.includes(stripCity(part)))) {
+      return true;
+    }
+  }
   const yearMatch = want.match(/(?:19|20)\d{2}/);
   if (yearMatch && actual.includes(yearMatch[0])) return true;
   return false;
@@ -452,22 +542,29 @@ export async function writeField(field, intendedValue) {
   const value = String(intendedValue || '').trim();
   if (!value) return { ok: false, reason: '档案为空' };
   if (value === '至今') return { ok: false, reason: '「至今」需勾选复选框，跳过文本写入' };
-  // 长数字（证件号/手机号）绝不进点选控件
-  if (/^\d{6,}$/.test(value) && isOptionControl(field)) {
+  const labelBlob = String(field.blob || '');
+  const isIdNumberField = /证件号码|证件号|身份证号/.test(labelBlob) && !/类型/.test(labelBlob);
+  const isLongDigit = /^\d{6,}$/.test(value) || /^[0-9Xx]{15,18}$/.test(value);
+  // 长数字禁入点选（区号/类型下拉）；证件号码框即便被误判成下拉也强制纯文本
+  if (isLongDigit && isOptionControl(field) && !isIdNumberField) {
     chaoDebug.skip(`「${field.blob}」`, '长数字禁止写进点选控件');
     return { ok: false, reason: '数字不能写进点选控件' };
   }
-  const isDateLike = /^\d{4}-\d{2}/.test(normalizeDate(value));
+  const isDateLike = /^\d{4}-\d{2}/.test(normalizeDate(value))
+    || (/时间|日期|年月|生日/.test(labelBlob) && /(19|20)\d{2}/.test(value));
 
   const started = Date.now();
   let wrote = false;
   let strategy = '文本输入';
-  if (field.control === CONTROL.nativeSelect) {
+  if (isIdNumberField) {
+    strategy = '证件号码纯文本';
+    wrote = fillPlainField(field.el, value);
+  } else if (field.control === CONTROL.nativeSelect) {
     strategy = '原生 select 选项比对';
     wrote = fillSelectOption(field.el, value);
   } else if (field.control === CONTROL.optionWidget) {
-    if (isDateLike && field.el.tagName.toLowerCase() === 'input') {
-      strategy = '组件日期（点开写入）';
+    if (isDateLike && (field.el.tagName.toLowerCase() === 'input' || field.el.getAttribute('role') === 'combobox')) {
+      strategy = '组件日期（多策略）';
       wrote = await fillWidgetDate(field.el, value);
     } else {
       strategy = '组件选项（点开比对）';
@@ -481,6 +578,16 @@ export async function writeField(field, intendedValue) {
         strategy = '组件选项未命中 → 回落文本输入';
         wrote = fillPlainField(field.el, value);
       }
+    }
+  } else if (field.control === CONTROL.dateInput || isDateLike) {
+    strategy = isDateLike && field.control !== CONTROL.dateInput
+      ? '日期形态文本/组件'
+      : '原生日期';
+    if (field.control === CONTROL.dateInput) {
+      wrote = fillPlainField(field.el, value);
+    } else {
+      wrote = await fillWidgetDate(field.el, value);
+      if (!wrote) wrote = fillPlainField(field.el, value);
     }
   } else {
     wrote = fillPlainField(field.el, value);

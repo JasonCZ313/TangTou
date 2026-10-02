@@ -1,15 +1,14 @@
 // @ts-nocheck
 /**
- * 填写引擎（编排层）——「先补齐行数，再一个空一个空写」。
+ * 填写引擎（编排层）——「加一条 → 扫 → 绑死档案 → 逐格写 → 回读/Laya 核 → 再扫」。
  *
- * 六条硬红线（对应历史上出现过的每一个乱填/漏填问题）：
+ * 硬不变量（防串行/同文复写）：
  *  1) 分区即边界：项目条目绝不写进校内区，实习条目绝不写进项目区；判不出分区就留空；
- *  2) 点选控件只走「点开 → 读选项 → 比对别名 → 点击」，长数字/长文本禁止硬塞；
- *  3) 一个空一个空写：每写一格立刻回读校验，写不进去要报出来，绝不假装成功；
- *  4) 失败不消耗档案：写失败的那一条留在游标处，下一轮优先重试（最多 3 次）；
- *  5) 多行分区先补齐行数：档案有 N 条就先加到 N 行，然后按顺序一条一行填；
- *  6) 行内分组用「锚点边界法」（遇到下一个锚点就开新行），不依赖 DOM 是否真有行包装，
- *     所以「起止时间写在行首/行尾」两种版式都不会把上一行的空框串到下一行。
+ *  2) 同分区一次运行：一条档案最多绑定一个 UI 行（boundSignatures）；
+ *  3) 已消耗/已绑定的档案禁止再进新行任务；priority-0 只补「同一 slot」残留空；
+ *  4) 任意写入/跟写作用域不得退到整区 root；行容器必须「够紧」（锚点数不串行）；
+ *  5) 点「添加」后若新行已带与上一行相同的锚点值 → 视为克隆污染，先清空再绑下一条；
+ *  6) 一格一写、写完回读；计划值进 plannedValues，终局按计划复核对。
  *
  * 全程输出到 F12：分区锚点、每个字段归属、每个下拉读到什么选项、每次写入的回读结果。
  */
@@ -51,20 +50,28 @@ import {
   isWidgetTrigger,
   readControlText,
   resetLabelCache,
+  setNativeValue,
   sleep,
   toastProgress,
   tryCheckCurrentInBlock,
   writeField,
 } from './dom';
 import { chaoDebug } from './debug';
+import { getSettings } from '../../../shared/storage/settingsStore';
 
 /** 提交/文件类 input 不是填写目标 */
 const NON_FILLABLE_INPUT_TYPES = [
   'hidden', 'checkbox', 'radio', 'button', 'submit', 'file', 'password', 'image', 'reset', 'range', 'color',
 ];
 
-/** 行锚点字段：判断「这一行属于哪段档案」的依据 */
-const ANCHOR_SUBS = new Set(['org', 'title', 'name']);
+/**
+ * 行锚点字段：用来区分「第几块 UI」。
+ * 必须含 role——实习/工作的职位在档案里是 role，不含的话多行会认成同一块。
+ */
+const ANCHOR_SUBS = new Set(['org', 'title', 'name', 'role']);
+
+/** 本轮分配 slotId 的自增序号（仅内存，不落盘） */
+let nextRowSlotSerial = 1;
 
 /** 导航/侧栏容器：站点目录里也会有「项目经验」这类文字，必须排除，否则分区锚点会建到导航上 */
 const NAV_CONTAINER_SELECTOR = 'nav, aside, [role="navigation"], [role="tablist"], [role="menu"],'
@@ -534,15 +541,16 @@ async function runSecondPass(ctx) {
       const valueItem = ctx.values.find((item) => item.key === matchedKey);
       if (!valueItem) continue;
       const result = await writeField(field, valueItem.value);
-      if (result.ok) {
+      if (result.ok && await confirmCellAfterWrite(field, valueItem.value, ctx)) {
         field.el.classList.add(AUTOFILL_FILL_CLASS);
         ctx.done.add(field.el);
+        ctx.plannedValues.set(field.el, valueItem.value);
         wroteThisRound += 1;
         total += 1;
         ctx.dbg.push(debugLine('✓', field.blob, ` → ${valueItem.label}（补漏）`));
       } else {
         ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
-        ctx.missed.push({ label: field.blob, reason: `${valueItem.label}：${result.reason}` });
+        ctx.missed.push({ label: field.blob, reason: `${valueItem.label}：${result.ok ? '回读/核对未通过' : result.reason}` });
       }
       await sleep(45);
     }
@@ -642,6 +650,72 @@ function commonAncestorOf(group) {
   return node;
 }
 
+/**
+ * 行容器是否「够紧」：容器内本分区锚点控件数 ≤ 本组锚点数。
+ * 偏大（整区根）时禁止用 contains 认行，否则会把后续每一块都当成同一行补填同一条档案。
+ */
+function isTightRowContainer(container, group, sectionType, ctx) {
+  if (!container || !(container instanceof HTMLElement)) return false;
+  const anchorRules = (ROW_RULES[sectionType] || []).filter((rule) => ANCHOR_SUBS.has(rule.sub));
+  if (!anchorRules.length) {
+    // 无锚点分区：容器内控件总数不能明显大于本组（防整区）
+    const controls = container.querySelectorAll(
+      'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, select, [role="combobox"]',
+    );
+    return controls.length > 0 && controls.length <= Math.max(group.length * 2, group.length + 2);
+  }
+  const anchorSubs = new Set(anchorRules.map((rule) => rule.sub));
+  let anchorsInContainer = 0;
+  container.querySelectorAll('input, textarea, select, [role="combobox"]').forEach((el) => {
+    if (!(el instanceof HTMLElement) || isInsideTangtouUi(el)) return;
+    if (resolveSectionType(el, ctx) !== sectionType) return;
+    const blob = fieldLabelBlob(el);
+    if (matchRowRule(blob, anchorRules, anchorSubs)) anchorsInContainer += 1;
+  });
+  const groupAnchorCount = Math.max(1, group.filter((item) => ANCHOR_SUBS.has(item.sub)).length);
+  return anchorsInContainer > 0 && anchorsInContainer <= groupAnchorCount;
+}
+
+/**
+ * 规范化比较：用于回读核对与克隆检测（去空白、小写）。
+ */
+function normalizeCompareText(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, '');
+}
+
+/**
+ * 清空一行里的可填控件（用于「添加」后站点克隆了上一行带值的情况）。
+ * 不碰 checkbox/radio/file，避免误伤「至今」以外的状态；「至今」由后续逻辑按档案重勾。
+ */
+function clearRowEditableControls(container) {
+  if (!container) return 0;
+  let cleared = 0;
+  container.querySelectorAll(
+    'input, textarea, select, [role="combobox"], [contenteditable="true"], [contenteditable=""]',
+  ).forEach((el) => {
+    if (!(el instanceof HTMLElement) || isInsideTangtouUi(el)) return;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      if (NON_FILLABLE_INPUT_TYPES.includes(type)) return;
+    }
+    if (tag === 'select') {
+      el.selectedIndex = 0;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (el.isContentEditable) {
+      el.textContent = '';
+    } else {
+      setNativeValue(el, '');
+    }
+    el.classList.remove(AUTOFILL_FILL_CLASS, AUTOFILL_MISS_CLASS);
+    cleared += 1;
+  });
+  return cleared;
+}
+
 /* ============================ 阶段 E：写入一行 ============================ */
 
 /** 该组里是否有「已经写进去的锚点」（用于判断这一行是不是已填过） */
@@ -649,33 +723,64 @@ function groupAnchorElement(group) {
   return group.find((item) => ANCHOR_SUBS.has(item.sub))?.field?.el || null;
 }
 
-/** 记录某一行已用掉哪条档案，供「同一条档案补填这一行剩余空」使用 */
+/**
+ * 记录某一行已用掉哪条档案（slot 绑定）。
+ * 只在容器够紧时保存 container，供同行残留空回填；否则只靠锚点 + fieldEls。
+ */
 function rememberRow(sectionType, group, entry, ctx) {
   const anchorEl = groupAnchorElement(group);
+  const rawContainer = commonAncestorOf(group);
+  const container = isTightRowContainer(rawContainer, group, sectionType, ctx)
+    ? rawContainer
+    : null;
+  const signature = rowSignature(sectionType, entry);
+  const slotId = `${sectionType}-slot-${nextRowSlotSerial}`;
+  nextRowSlotSerial += 1;
   const record = {
+    slotId,
     sectionType,
     anchorEl,
-    container: commonAncestorOf(group),
+    container,
     entry,
+    signature,
     attempts: 0,
+    /** 本 slot 已见过的控件，用于精确认回残留空 */
+    fieldEls: new Set(group.map((item) => item.field.el)),
   };
   if (anchorEl) ctx.rowRecordByAnchor.set(anchorEl, record);
   ctx.rowRecords.push(record);
+  ctx.boundSignatures.set(signature, slotId);
   return record;
 }
 
-/** 找出这一组属于哪一行记录（回填用） */
+/**
+ * 找出这一组属于哪一行记录（只补同一 slot 的残留空）。
+ * 禁止「大容器 contains → 认成同一行」——那是添加后每一块都填成一样的主因。
+ */
 function findRowRecord(group, ctx) {
   const anchorEl = groupAnchorElement(group);
-  if (anchorEl && ctx.rowRecordByAnchor.has(anchorEl)) return ctx.rowRecordByAnchor.get(anchorEl);
-  // 没有锚点（或锚点未写入）：用「已记录的行容器是否包含本组字段」来判断归属，
-  // 这样「上一行填完后才出现的残留空格」（如分数框）能被认回原来那一行，而不是被当成新行。
-  const matched = ctx.rowRecords.find((record) => (
-    record.container
-    && document.contains(record.container)
-    && group.every((item) => record.container.contains(item.field.el))
-  ));
-  if (matched) return matched;
+  if (anchorEl && ctx.rowRecordByAnchor.has(anchorEl)) {
+    const byAnchor = ctx.rowRecordByAnchor.get(anchorEl);
+    group.forEach((item) => byAnchor.fieldEls.add(item.field.el));
+    return byAnchor;
+  }
+  // 本组任一控件已登记在某 slot → 同行残留
+  for (const record of ctx.rowRecords) {
+    if (!group.some((item) => record.fieldEls.has(item.field.el))) continue;
+    group.forEach((item) => record.fieldEls.add(item.field.el));
+    return record;
+  }
+  // 仅当「够紧」的行容器包住本组，且容器内没有其它 slot 的锚点时才认回
+  for (const record of ctx.rowRecords) {
+    if (!record.container || !document.contains(record.container)) continue;
+    if (!group.every((item) => record.container.contains(item.field.el))) continue;
+    if (!isTightRowContainer(record.container, group, record.sectionType, ctx)) continue;
+    // 若本组锚点已是另一控件，说明不是同一行
+    const groupAnchor = groupAnchorElement(group);
+    if (groupAnchor && record.anchorEl && groupAnchor !== record.anchorEl) continue;
+    group.forEach((item) => record.fieldEls.add(item.field.el));
+    return record;
+  }
   return null;
 }
 
@@ -715,9 +820,10 @@ function basicFallbackValue(sectionType, sub, ctx) {
 
 /**
  * 填一行：逐字段写 + 回读。
- * 返回 written 供调用方判断成败；失败原因一并带回。
+ * 跟写范围严格限制在「够紧」的行容器内，绝不退到分区 root（否则会把同区其它空行写成同一条档案）。
+ * @returns written 供调用方判断成败；失败原因一并带回。
  */
-async function fillRowGroup(group, entry, sectionType, ctx) {
+async function fillRowGroup(group, entry, sectionType, ctx, rowRecord = null) {
   let written = 0;
   let anchorWritten = false;
   let firstFailure = '';
@@ -741,8 +847,20 @@ async function fillRowGroup(group, entry, sectionType, ctx) {
     if (!value) continue;
     const result = await writeField(field, value);
     if (result.ok) {
+      const confirmed = await confirmCellAfterWrite(field, value, ctx);
+      if (!confirmed) {
+        firstFailure = firstFailure || `${sub}：回读/核对未通过`;
+        field.el.classList.remove(AUTOFILL_FILL_CLASS);
+        field.el.classList.add(AUTOFILL_MISS_CLASS);
+        ctx.attempts.set(field.el, (ctx.attempts.get(field.el) || 0) + 1);
+        ctx.missed.push({ label: field.blob, reason: `${sub}：回读/核对未通过` });
+        ctx.dbg.push(debugLine('✗', field.blob, ` → ${sub}（回读/核对未通过）`));
+        continue;
+      }
       field.el.classList.add(AUTOFILL_FILL_CLASS);
       ctx.done.add(field.el);
+      ctx.plannedValues.set(field.el, value);
+      if (rowRecord) rowRecord.fieldEls.add(field.el);
       written += 1;
       if (ANCHOR_SUBS.has(sub)) anchorWritten = true;
       if (fromBasic) ctx.dbg.push(debugLine('✓', field.blob, ` → ${sub}（基础信息回落）`));
@@ -757,46 +875,96 @@ async function fillRowGroup(group, entry, sectionType, ctx) {
 
   // 档案没有结束时间 / 明确「至今」→ 勾选行内「至今」
   const endValue = rowValue(entry.data, 'end');
-  const container = commonAncestorOf(group);
-  if ((needCurrent || !endValue) && container && tryCheckCurrentInBlock(container)) {
+  const container = (rowRecord?.container && document.contains(rowRecord.container))
+    ? rowRecord.container
+    : commonAncestorOf(group);
+  const tightContainer = isTightRowContainer(container, group, sectionType, ctx) ? container : null;
+  if ((needCurrent || !endValue) && tightContainer && tryCheckCurrentInBlock(tightContainer)) {
     written += 1;
     chaoDebug.ok('勾选「至今」', { 分区: sectionType });
   }
 
-  // 同行「写入后才渲染出来」的字段（结束时间、联动下拉）继续用同一段档案补。
-  // 扫描范围取「本行容器」，并额外覆盖「该分区根容器」里新增的字段，避免跨行新控件被漏掉。
-  for (let pass = 0; pass < 2; pass += 1) {
-    await sleep(240);
-    const anchor = ctx.anchors.find((item) => item.type === sectionType);
-    const scope = commonAncestorOf(group) || anchor?.root || container;
-    if (!scope) break;
-    const fresh = scanEmptyFields(ctx)
-      .filter((field) => scope.contains(field.el))
-      .filter((field) => !ctx.done.has(field.el));
-    if (!fresh.length) break;
-    const { entries: followEntries } = resolveSectionEntries(sectionType, fresh);
-    if (!followEntries.length) break;
-    let wroteThisPass = 0;
-    for (const item of followEntries) {
-      let value = rowValue(entry.data, item.sub);
-      if (!value || value === '至今') continue;
-      if (item.part) value = datePartValue(value, item.part);
-      const result = await writeField(item.field, value);
-      if (result.ok) {
-        item.field.el.classList.add(AUTOFILL_FILL_CLASS);
-        ctx.done.add(item.field.el);
-        written += 1;
-        wroteThisPass += 1;
-      } else {
-        ctx.attempts.set(item.field.el, (ctx.attempts.get(item.field.el) || 0) + 1);
+  // 同行「写入后才渲染出来」的字段：只在够紧的行容器内补，禁止用分区 root
+  if (tightContainer) {
+    for (let pass = 0; pass < 2; pass += 1) {
+      await sleep(240);
+      const fresh = scanEmptyFields(ctx)
+        .filter((field) => tightContainer.contains(field.el))
+        .filter((field) => !ctx.done.has(field.el));
+      if (!fresh.length) break;
+      const { entries: followEntries } = resolveSectionEntries(sectionType, fresh);
+      if (!followEntries.length) break;
+      let wroteThisPass = 0;
+      for (const item of followEntries) {
+        let value = rowValue(entry.data, item.sub);
+        if (!value || value === '至今') continue;
+        if (item.part) value = datePartValue(value, item.part);
+        const result = await writeField(item.field, value);
+        if (result.ok && await confirmCellAfterWrite(item.field, value, ctx)) {
+          item.field.el.classList.add(AUTOFILL_FILL_CLASS);
+          ctx.done.add(item.field.el);
+          ctx.plannedValues.set(item.field.el, value);
+          if (rowRecord) rowRecord.fieldEls.add(item.field.el);
+          written += 1;
+          wroteThisPass += 1;
+        } else {
+          ctx.attempts.set(item.field.el, (ctx.attempts.get(item.field.el) || 0) + 1);
+        }
       }
+      chaoDebug.info(`同行补充渲染出 ${followEntries.length} 个字段，本轮写入 ${wroteThisPass} 个`, { 分区: sectionType });
+      if (!wroteThisPass) break;
     }
-    chaoDebug.info(`同行补充渲染出 ${followEntries.length} 个字段，本轮写入 ${wroteThisPass} 个`, { 分区: sectionType });
-    if (!wroteThisPass) break;
   }
 
   ctx.progressMark += written;
   return { ok: written >= 1, written, anchorWritten, reason: firstFailure };
+}
+
+/**
+ * 写后核对：硬性回读必须过；Laya 开启时再发后台做一次「是否匹配」确认（失败开放，不挡已回读通过的格）。
+ */
+async function confirmCellAfterWrite(field, intendedValue, ctx) {
+  const actual = readControlText(field.el);
+  const want = normalizeCompareText(intendedValue);
+  const got = normalizeCompareText(actual);
+  if (!want) return false;
+  // 回读包含目标、或目标包含回读（日期控件短写）、或完全相等
+  const readbackOk = got === want
+    || (got.length >= 2 && want.includes(got))
+    || (want.length >= 2 && got.includes(want));
+  if (!readbackOk) {
+    chaoDebug.fail('回读核对未通过', { 标签: field.blob, 期望: intendedValue, 实际: actual });
+    return false;
+  }
+  if (!ctx.layaEnabled) return true;
+  try {
+    const requestId = `chao-laya-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const response = await chrome.runtime.sendMessage({
+      type: 'LAYA_CONFIRM_CELL',
+      requestId,
+      label: String(field.blob || '').slice(0, 80),
+      intended: String(intendedValue || '').slice(0, 200),
+      actual: String(actual || '').slice(0, 200),
+    });
+    // 仅当后台明确高置信否定时才判失败；其它情况（未就绪/跳过）信任回读
+    if (response?.type === 'LAYA_CONFIRM_CELL_RESULT'
+      && response.ok === false
+      && typeof response.confidence === 'number'
+      && response.confidence >= 0.85) {
+      chaoDebug.fail('Laya 否定本格', {
+        标签: field.blob,
+        置信度: response.confidence,
+        说明: response.message || '',
+      });
+      return false;
+    }
+    if (response?.type === 'LAYA_CONFIRM_CELL_RESULT' && response.ok === true) {
+      chaoDebug.ok('Laya 确认本格', { 标签: truncate(field.blob, 16) });
+    }
+  } catch {
+    // 失败开放：扩展消息不通时不阻断已回读通过的写入
+  }
+  return true;
 }
 
 /* ============================ 阶段 F：行数补齐 ============================ */
@@ -858,6 +1026,78 @@ function countEmptyGroups(sectionType, ctx) {
   return { count: countSectionRows(sectionType, sectionFields), groups };
 }
 
+/**
+ * 统计分区内锚点控件总数（含已填），用于 grow 判据。
+ * 站点「添加=克隆带值」时空行数不变，必须用锚点总数才能看出 +1。
+ */
+function countAnchorControls(sectionType, ctx) {
+  const anchorRules = (ROW_RULES[sectionType] || []).filter((rule) => ANCHOR_SUBS.has(rule.sub));
+  if (!anchorRules.length) {
+    // 无锚点分区：退回空行组数
+    return countEmptyGroups(sectionType, ctx).count;
+  }
+  const anchorSubs = new Set(anchorRules.map((rule) => rule.sub));
+  let count = 0;
+  document.querySelectorAll('input, textarea, select, [role="combobox"]').forEach((el) => {
+    if (!(el instanceof HTMLElement) || isInsideTangtouUi(el)) return;
+    if (!isPageFieldVisible(el)) return;
+    if (resolveSectionType(el, ctx) !== sectionType) return;
+    const blob = fieldLabelBlob(el);
+    if (matchRowRule(blob, anchorRules, anchorSubs)) count += 1;
+  });
+  return count;
+}
+
+/**
+ * 点「添加」后清掉克隆污染：新出现的锚点若已有值，且与同区另一锚点文案相同、又不是本轮 planned 写入，则清空其所在紧容器。
+ */
+function scrubClonedRowsAfterGrow(sectionType, ctx) {
+  const anchorRules = (ROW_RULES[sectionType] || []).filter((rule) => ANCHOR_SUBS.has(rule.sub));
+  if (!anchorRules.length) return 0;
+  const anchorSubs = new Set(anchorRules.map((rule) => rule.sub));
+  const anchors = [];
+  document.querySelectorAll('input, textarea, select, [role="combobox"]').forEach((el) => {
+    if (!(el instanceof HTMLElement) || isInsideTangtouUi(el)) return;
+    if (!isPageFieldVisible(el)) return;
+    if (resolveSectionType(el, ctx) !== sectionType) return;
+    const blob = fieldLabelBlob(el);
+    if (!matchRowRule(blob, anchorRules, anchorSubs)) return;
+    const value = readControlText(el);
+    anchors.push({ el, blob, value: normalizeCompareText(value) });
+  });
+  let scrubbed = 0;
+  anchors.forEach((item, index) => {
+    if (!item.value) return;
+    if (ctx.done.has(item.el) || ctx.plannedValues.has(item.el)) return;
+    const duplicateOfEarlier = anchors.some((other, otherIndex) => (
+      otherIndex < index
+      && other.value
+      && other.value === item.value
+    ));
+    if (!duplicateOfEarlier) return;
+    // 以该锚点为中心找够紧容器；找不到就只清锚点自身
+    const fakeGroup = [{ field: { el: item.el }, sub: 'org' }];
+    let node = item.el.parentElement;
+    let cleared = 0;
+    while (node && node !== document.body) {
+      if (isTightRowContainer(node, fakeGroup, sectionType, ctx)) {
+        cleared = clearRowEditableControls(node);
+        break;
+      }
+      node = node.parentElement;
+    }
+    if (!cleared) {
+      setNativeValue(item.el, '');
+      item.el.classList.remove(AUTOFILL_FILL_CLASS, AUTOFILL_MISS_CLASS);
+      cleared = 1;
+    }
+    scrubbed += cleared;
+    ctx.dbg.push(`🧹 [${sectionType}] 清除克隆预填（锚点与更早行相同）`);
+    chaoDebug.ok(`[${sectionType}] 已清除克隆预填`, { 锚点: truncate(item.blob, 16) });
+  });
+  return scrubbed;
+}
+
 /** 站点自己已经填好的行数（排除我们本轮写的），用于初始游标 */
 function countSitePrefilledRows(sectionType, ctx) {
   const anchorRules = (ROW_RULES[sectionType] || []).filter((rule) => ANCHOR_SUBS.has(rule.sub));
@@ -880,8 +1120,7 @@ function countSitePrefilledRows(sectionType, ctx) {
 
 /**
  * 在当前分区补出「一行」。
- * 节奏：点一次「添加」→ 等待 → 重新扫描确认行数真的 +1。
- * 这个函数被主循环按需调用，因此整体节奏就是「加一条 → 扫一次 → 填一条」。
+ * 节奏：点一次「添加」→ 等待 → 用锚点总数确认 +1 → 清克隆预填。
  * @returns {boolean} 是否成功新增一行
  */
 async function growOneRow(sectionType, ctx) {
@@ -897,14 +1136,14 @@ async function growOneRow(sectionType, ctx) {
     chaoDebug.fail(`[${sectionType}] 找不到「添加」按钮`, {});
     return false;
   }
-  const beforeRows = countEmptyGroups(sectionType, ctx).count;
+  const beforeRows = countAnchorControls(sectionType, ctx);
   ctx.progress.update(`➕ [${sectionType}] 正在新增一行…`);
   chaoDebug.op(`点击「添加」新增一行`, { 分区: sectionType, 当前行数: beforeRows });
   button.scrollIntoView({ block: 'center' });
   button.click();
   state.addRounds += 1;
   await sleep(700);
-  const afterRows = countEmptyGroups(sectionType, ctx).count;
+  const afterRows = countAnchorControls(sectionType, ctx);
   if (afterRows <= beforeRows) {
     state.addStall += 1;
     chaoDebug.fail(`[${sectionType}] 点了「添加」但行数没增加`, { 当前: beforeRows, 次数: state.addStall });
@@ -916,11 +1155,35 @@ async function growOneRow(sectionType, ctx) {
   }
   state.addStall = 0;
   ctx.progressMark += 1;
-  // 新增行会改变 DOM（新的空字段、新的祖先文本），分区缓存必须作废
+  // 新增行会改变 DOM；顺带清掉「克隆上一行带值」的污染，并剪掉已脱离文档的旧 slot
   ctx.sectionCache?.clear();
+  pruneDetachedRowRecords(ctx);
+  scrubClonedRowsAfterGrow(sectionType, ctx);
   ctx.dbg.push(`➕ [${sectionType}] 已新增一行（${beforeRows} → ${afterRows}）`);
   chaoDebug.ok(`[${sectionType}] 新增一行`, { 行数: afterRows });
   return true;
+}
+
+/**
+ * 剪掉已脱离文档的行记录。
+ * 未消耗的档案解除绑定，以便可以重新落到新行；已消耗的只清记录不释放签名。
+ */
+function pruneDetachedRowRecords(ctx) {
+  const kept = [];
+  ctx.rowRecords.forEach((record) => {
+    const alive = (record.anchorEl && document.contains(record.anchorEl))
+      || (record.container && document.contains(record.container))
+      || [...(record.fieldEls || [])].some((el) => el && document.contains(el));
+    if (alive) {
+      kept.push(record);
+      return;
+    }
+    if (record.anchorEl) ctx.rowRecordByAnchor.delete(record.anchorEl);
+    if (record.signature && !ctx.consumed.has(record.signature)) {
+      ctx.boundSignatures.delete(record.signature);
+    }
+  });
+  ctx.rowRecords = kept;
 }
 
 /**
@@ -946,7 +1209,7 @@ function inspectSectionRows(sectionType, ctx) {
 
 /* ============================ 阶段 G：任务调度 ============================ */
 
-/** 取该分区下一条还没用过的档案 */
+/** 取该分区下一条还没用过、也未绑定到其它 slot 的档案 */
 function nextUnconsumedEntry(sectionType, ctx) {
   const pool = ctx.entries[sectionType] || [];
   const state = ctx.sectionState.get(sectionType);
@@ -955,6 +1218,8 @@ function nextUnconsumedEntry(sectionType, ctx) {
     const entry = pool[index];
     const signature = rowSignature(sectionType, entry);
     if (ctx.consumed.has(signature) || state.skipped.has(signature)) continue;
+    // 已绑到某个 slot 的档案不能再开新行（防止同一条写进多块）
+    if (ctx.boundSignatures.has(signature)) continue;
     return { entry, index, signature };
   }
   return null;
@@ -964,13 +1229,10 @@ function nextUnconsumedEntry(sectionType, ctx) {
  * 取下一个要处理的「空」。
  *
  * 优先级（数字越小越先做，同档按文档序）：
- *   0 → 补填「已动过但仍有空」的行（用同一段档案继续补）
- *   1 → 行任务（带锚点的完整空行 / 无锚点分区的空行）
- *   2 → 散字段（基本信息、教育散字段等）
+ *   0 → 补填「已绑定 slot 内仍有空」的行（同一条档案、同一 slot）
+ *   1 → 新空行 + 下一条未绑定档案
+ *   2 → 散字段
  *   3 → grow：点一次「添加」补一行
- *
- * 结果：只要有空格就先填；某个分区填不动了才去补行，
- * 因此天然形成「加一条 → 扫一次 → 填一条 → 再核对」的节奏。
  */
 function pickNextTask(ctx, fields) {
   const candidates = [];
@@ -994,6 +1256,12 @@ function pickNextTask(ctx, fields) {
     groups.forEach((group) => {
       const record = findRowRecord(group, ctx);
       if (record) {
+        // priority-0：只允许补同一 slot；档案签名必须仍是该 record 的签名
+        const recordSignature = record.signature || rowSignature(sectionType, record.entry);
+        if (ctx.boundSignatures.get(recordSignature) && ctx.boundSignatures.get(recordSignature) !== record.slotId) {
+          chaoDebug.skip(`[${sectionType}] 串 slot`, '档案已绑到其它行，跳过');
+          return;
+        }
         if (record.attempts >= MAX_ROW_RETRY) return;
         candidates.push({
           kind: 'row',
@@ -1097,12 +1365,20 @@ async function runBasicTask(task, ctx) {
     return;
   }
   const result = await writeField(field, valueItem.value);
-  if (result.ok) {
+  if (result.ok && await confirmCellAfterWrite(field, valueItem.value, ctx)) {
     field.el.classList.add(AUTOFILL_FILL_CLASS);
     ctx.done.add(field.el);
+    ctx.plannedValues.set(field.el, valueItem.value);
     ctx.filledCount += 1;
     ctx.progressMark += 1;
     ctx.dbg.push(debugLine('✓', field.blob, ` → ${valueItem.label}${isOptionControl(field) ? '（点选）' : ''}`));
+  } else if (result.ok) {
+    field.el.classList.add(AUTOFILL_MISS_CLASS);
+    const tried = (ctx.attempts.get(field.el) || 0) + 1;
+    ctx.attempts.set(field.el, tried);
+    if (tried >= MAX_FIELD_RETRY) ctx.done.add(field.el);
+    ctx.missed.push({ label: field.blob, reason: `${valueItem.label}：回读/核对未通过` });
+    ctx.dbg.push(debugLine('✗', field.blob, ` → ${valueItem.label}（回读/核对未通过）`));
   } else {
     const tried = (ctx.attempts.get(field.el) || 0) + 1;
     ctx.attempts.set(field.el, tried);
@@ -1153,28 +1429,31 @@ async function runRowTask(task, ctx) {
 
   const record = task.record || rememberRow(sectionType, group, entry, ctx);
   ctx.dbg.push(`   → 行字段 [${group.map((item) => `${item.sub}${item.part ? `.${item.part}` : ''}`).join(' ')}]`
-    + ` 可写 ${writable.length} 记录容器 ${record.container ? truncate(record.container.className || record.container.tagName, 12) : '无'}`);
-  ctx.progress.update(`✍ [${sectionType}] 填写第 ${state.cursor + 1} 段：`
+    + ` 可写 ${writable.length} slot ${record.slotId} 容器 ${record.container ? truncate(record.container.className || record.container.tagName, 12) : '紧容器无'}`);
+  ctx.progress.update(`✍ [${sectionType}] 填写第 ${(typeof task.cursorIndex === 'number' ? task.cursorIndex : state.cursor) + 1} 段：`
     + `${truncate(rowDisplayName(entry, sectionType), 18)}`);
-  const result = await fillRowGroup(group, entry, sectionType, ctx);
+  const result = await fillRowGroup(group, entry, sectionType, ctx, record);
   ctx.filledCount += result.written;
   record.attempts += 1;
   // 收尾：档案里这一行本来就没有数据的空格，当场标记完成。
   // 否则它们会在下一轮被重新扫到、并和下一行的字段并成一组，把后面所有条目整体错位。
   group.forEach((item) => {
     if (!rowValue(entry.data, item.sub)) ctx.done.add(item.field.el);
+    record.fieldEls.add(item.field.el);
   });
 
   if (result.ok) {
-    ctx.consumed.add(rowSignature(sectionType, entry));
+    const signature = record.signature || rowSignature(sectionType, entry);
+    ctx.consumed.add(signature);
     if (typeof task.cursorIndex === 'number') state.cursor = Math.max(state.cursor, task.cursorIndex + 1);
     ctx.dbg.push(`✓ [${sectionType}] 已填：${escapeHtml(truncate(rowDisplayName(entry, sectionType), 20))}`
-      + `（写入 ${result.written} 项）`);
+      + `（写入 ${result.written} 项，slot ${record.slotId}）`);
     chaoDebug.ok(`[${sectionType}] 行填写完成`, {
       档案: rowDisplayName(entry, sectionType),
       写入项数: result.written,
       锚点已写: result.anchorWritten,
       尝试次数: record.attempts,
+      slot: record.slotId,
     });
   } else {
     // 失败不消耗档案：下一轮优先用同一条重试；连续失败超限才跳过该条
@@ -1186,8 +1465,10 @@ async function runRowTask(task, ctx) {
       原因: result.reason || '该行无可写字段',
     });
     if (record.attempts >= MAX_ROW_RETRY) {
-      const signature = rowSignature(sectionType, entry);
+      const signature = record.signature || rowSignature(sectionType, entry);
       state.skipped.add(signature);
+      // 放弃该条时解除绑定，避免永久占坑（本条已进 skipped，不会再分给新行）
+      ctx.boundSignatures.delete(signature);
       if (typeof task.cursorIndex === 'number') state.cursor = Math.max(state.cursor, task.cursorIndex + 1);
       ctx.missed.push({
         label: rowDisplayName(entry, sectionType),
@@ -1201,23 +1482,83 @@ async function runRowTask(task, ctx) {
 
 /* ============================ 阶段 H：核对与入口 ============================ */
 
-/** 最终核对：写入后被页面清空的，降级为漏填 */
+/**
+ * 最终核对：
+ * 1) 绿标控件被页面清空 → 降级漏填
+ * 2) 计划值与当前回读不一致 → 降级漏填（防串写后页面又改掉）
+ */
 function verifyFilled(ctx) {
   let downgraded = 0;
   [...document.querySelectorAll(`.${AUTOFILL_FILL_CLASS}`)].forEach((el) => {
     if (!(el instanceof HTMLElement)) return;
     if (classifyControl(el) === CONTROL.optionWidget) return;
     const value = readControlText(el);
-    if (value) return;
-    el.classList.remove(AUTOFILL_FILL_CLASS);
-    el.classList.add(AUTOFILL_MISS_CLASS);
-    ctx.missed.push({ label: fieldLabelBlob(el), reason: '写入后被页面清空' });
-    downgraded += 1;
+    const planned = ctx.plannedValues.get(el);
+    if (!value) {
+      el.classList.remove(AUTOFILL_FILL_CLASS);
+      el.classList.add(AUTOFILL_MISS_CLASS);
+      ctx.missed.push({ label: fieldLabelBlob(el), reason: '写入后被页面清空' });
+      downgraded += 1;
+      return;
+    }
+    if (planned) {
+      const want = normalizeCompareText(planned);
+      const got = normalizeCompareText(value);
+      const stillMatch = got === want
+        || (got.length >= 2 && want.includes(got))
+        || (want.length >= 2 && got.includes(want));
+      if (!stillMatch) {
+        el.classList.remove(AUTOFILL_FILL_CLASS);
+        el.classList.add(AUTOFILL_MISS_CLASS);
+        ctx.missed.push({
+          label: fieldLabelBlob(el),
+          reason: `写入后与计划值不符（计划「${truncate(planned, 20)}」实际「${truncate(value, 20)}」）`,
+        });
+        downgraded += 1;
+      }
+    }
   });
   if (downgraded) {
-    ctx.dbg.push(`🧪 核对发现 ${downgraded} 项写入后被清空，已标记为漏填`);
-    chaoDebug.fail('核对发现写入后被清空', { 数量: downgraded });
+    ctx.dbg.push(`🧪 核对发现 ${downgraded} 项写入后被清空或与计划不符，已标记为漏填`);
+    chaoDebug.fail('核对发现写入后异常', { 数量: downgraded });
   }
+}
+
+/**
+ * 终局串写检测：同分区多个锚点控件文案相同，但档案池里对应位置内容不同 → 记入漏填提示。
+ * （不做自动覆盖改写，避免二次伤害；主路径已靠 slot 绑定防止再犯。）
+ */
+function detectDuplicateRowPollution(ctx) {
+  ROW_SECTION_TYPES.forEach((sectionType) => {
+    const pool = ctx.entries[sectionType] || [];
+    if (pool.length < 2) return;
+    const anchorRules = (ROW_RULES[sectionType] || []).filter((rule) => ANCHOR_SUBS.has(rule.sub));
+    if (!anchorRules.length) return;
+    const anchorSubs = new Set(anchorRules.map((rule) => rule.sub));
+    const values = [];
+    document.querySelectorAll('input, textarea, select, [role="combobox"]').forEach((el) => {
+      if (!(el instanceof HTMLElement) || isInsideTangtouUi(el)) return;
+      if (resolveSectionType(el, ctx) !== sectionType) return;
+      const blob = fieldLabelBlob(el);
+      if (!matchRowRule(blob, anchorRules, anchorSubs)) return;
+      const text = normalizeCompareText(readControlText(el));
+      if (text) values.push(text);
+    });
+    if (values.length < 2) return;
+    const unique = new Set(values);
+    if (unique.size === 1 && pool.length >= 2) {
+      const poolFingerprints = new Set(pool.map((entry) => normalizeCompareText(
+        rowValue(entry, 'org') || rowValue(entry, 'name') || rowValue(entry, 'title') || rowValue(entry, 'role'),
+      )));
+      if (poolFingerprints.size >= 2) {
+        ctx.missed.push({
+          label: sectionType,
+          reason: `「${sectionType}」页面多行锚点文案相同，但档案有 ${pool.length} 条不同内容——疑似串行，请手动核对`,
+        });
+        chaoDebug.fail(`[${sectionType}] 疑似串行同文`, { 页面行: values.length, 档案: pool.length });
+      }
+    }
+  });
 }
 
 /**
@@ -1232,10 +1573,20 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
   ensureHighlightStyles();
   clearAutofillHighlights();
   resetLabelCache();
+  nextRowSlotSerial = 1;
 
   const values = buildAutofillValues(editable);
   const entries = buildRowEntries(editable);
   const progress = toastProgress('⏳ 正在扫描页面结构…');
+
+  // 读取是否启用 Laya：仅用于写后确认；未就绪时失败开放，不挡回读通过的格
+  let layaEnabled = false;
+  try {
+    const settings = await getSettings();
+    layaEnabled = Boolean(settings?.layaEnabled);
+  } catch {
+    layaEnabled = false;
+  }
 
   const ctx = {
     values,
@@ -1257,6 +1608,12 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
     /** 每个控件的失败次数 */
     attempts: new Map(),
     consumed: new Set(),
+    /** 档案签名 → 已绑定的 slotId（一条档案最多一行） */
+    boundSignatures: new Map(),
+    /** 控件 → 计划写入值（终局核对用） */
+    plannedValues: new Map(),
+    /** 是否尝试 Laya 写后确认 */
+    layaEnabled,
     rowRecords: [],
     rowRecordByAnchor: new Map(),
     missed: [],
@@ -1268,6 +1625,8 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
     dbg: [],
     progress,
   };
+  if (layaEnabled) ctx.dbg.push('🧠 Laya 确认：已开启（回读为主，Laya 高置信否定才打回）');
+  else ctx.dbg.push('🧠 Laya 确认：未开启（仅回读核对）');
 
   if (!values.length && !ROW_SECTION_TYPES.some((sectionType) => (entries[sectionType] || []).length > 0)) {
     progress.done('档案里没有可写入的内容');
@@ -1389,11 +1748,15 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
   ctx.filledCount += secondPassFilled;
   chaoDebug.stageEnd(`补漏写入 ${secondPassFilled} 项`);
 
-  // 阶段四：核对
+  // 阶段四：回读核对 + 串行同文检测（可再扫两轮计划值）
   chaoDebug.stage('回读核对');
   progress.update('🧪 正在回读核对…');
   await sleep(300);
   ctx.sectionCache.clear();
+  verifyFilled(ctx);
+  detectDuplicateRowPollution(ctx);
+  // 再扫一轮：计划值被页面改掉的再记一次
+  await sleep(200);
   verifyFilled(ctx);
   chaoDebug.stageEnd();
 
@@ -1447,7 +1810,7 @@ export async function runChaoRuleAutofill(editable: ChaoEditable): Promise<{
   chaoDebug.table('最终汇总', ROW_SECTION_TYPES.map((sectionType) => ({
     分区: sectionType,
     档案条数: (ctx.entries[sectionType] || []).length,
-    已落地: [...ctx.consumed].filter((signature) => signature.startsWith(`${sectionType}|`)).length,
+    已落地: [...ctx.consumed].filter((signature) => signature.startsWith(`${sectionType}#`)).length,
     添加次数: ctx.sectionState.get(sectionType)?.addRounds ?? 0,
   })));
   progress.done(deduped.length

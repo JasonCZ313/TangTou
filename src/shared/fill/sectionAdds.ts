@@ -26,7 +26,7 @@ export function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] 
     {
       sectionPattern: '实习经历|工作经历',
       neededRows: countNamedRows(
-        profileData.experience.map((item) => item.company || ''),
+        profileData.experience.map((item) => item.company || item.title || ''),
       ),
     },
     {

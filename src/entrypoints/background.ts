@@ -22,6 +22,7 @@ import {
   downloadLayaModelFromUrl,
   enableBuiltinLayaChoicePackage,
   getLayaModelStatus,
+  isLayaModelReady,
 } from '../shared/decision/layaModelStore';
 import { probeLayaServerHealth } from '../shared/decision/layaServerClient';
 import {
@@ -287,6 +288,73 @@ async function captureActiveTabOcrText(
       notice: `截图识字跳过：${describeUserFacingError(error)}`,
     };
   }
+}
+
+/**
+ * Chao 逐格写后确认：以规范化回读为主；Laya 未开/未就绪则 skipped 放行。
+ * 仅在期望与回读明显不符时返回 ok:false + 高置信度，供 content 打回绿标。
+ */
+async function handleLayaConfirmCell(
+  message: Extract<ExtensionMessage, { type: 'LAYA_CONFIRM_CELL' }>,
+): Promise<ExtensionMessage> {
+  const normalize = (raw: string) =>
+    String(raw || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\u3000]+/g, '');
+  const intended = normalize(message.intended);
+  const actual = normalize(message.actual);
+  const settings = await getSettings();
+
+  if (!intended) {
+    return {
+      type: 'LAYA_CONFIRM_CELL_RESULT',
+      requestId: message.requestId,
+      ok: false,
+      confidence: 0.99,
+      message: '期望值为空',
+    };
+  }
+
+  const readbackMatch =
+    Boolean(actual)
+    && (actual === intended
+      || (actual.length >= 2 && intended.includes(actual))
+      || (intended.length >= 2 && actual.includes(intended)));
+
+  if (!settings.layaEnabled) {
+    return {
+      type: 'LAYA_CONFIRM_CELL_RESULT',
+      requestId: message.requestId,
+      ok: readbackMatch,
+      confidence: readbackMatch ? 0.99 : 0.9,
+      message: readbackMatch ? 'Laya 未开启，回读一致' : 'Laya 未开启，回读不符',
+      skipped: true,
+    };
+  }
+
+  const modelReady = await isLayaModelReady();
+  if (!modelReady) {
+    return {
+      type: 'LAYA_CONFIRM_CELL_RESULT',
+      requestId: message.requestId,
+      ok: readbackMatch,
+      confidence: readbackMatch ? 0.9 : 0.85,
+      message: readbackMatch ? '本机 Laya 未就绪，信任回读' : '本机 Laya 未就绪，且回读不符',
+      skipped: true,
+    };
+  }
+
+  // 本机包就绪：回读一致 → 确认；不一致 → 高置信否定（由 content 决定是否打回）
+  return {
+    type: 'LAYA_CONFIRM_CELL_RESULT',
+    requestId: message.requestId,
+    ok: readbackMatch,
+    confidence: readbackMatch ? 0.96 : 0.92,
+    message: readbackMatch
+      ? `Laya 就绪 · 「${message.label}」回读确认`
+      : `Laya 就绪 · 「${message.label}」回读与档案不符`,
+  };
 }
 
 /**
@@ -1053,6 +1121,8 @@ async function dispatchMessage(
       return handleBuildFillPlan(message);
     case 'LAYA_MODEL_STATUS':
       return handleLayaModelStatus(message.requestId);
+    case 'LAYA_CONFIRM_CELL':
+      return handleLayaConfirmCell(message);
     case 'LAYA_MODEL_DOWNLOAD':
       return handleLayaModelDownload(message);
     case 'LAYA_MODEL_ENABLE_BUILTIN':
