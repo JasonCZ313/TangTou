@@ -451,17 +451,21 @@ export function bindLabeledField(
     }
     return { kind: 'value', value: birthdayText, reason: '按行绑定：出生日期（交日期组件）' };
   }
-  // 性别
+  // 性别：有下拉选项则校验；无选项（纯 radio）直接交单选态机
   if (/性别/.test(label) && !/别名/.test(label)) {
     const genderText = labelOfCatalog(GENDER_OPTIONS, (profile.basic.gender ?? '').trim());
     if (!genderText) {
       return null;
     }
-    const allowed = valueAllowedByOptions(genderText, field.options);
-    if (!allowed) {
-      return { kind: 'skip', reason: '性别选项里没有档案中的取值' };
+    const optionList = field.options ?? [];
+    if (optionList.length > 0) {
+      const allowed = valueAllowedByOptions(genderText, optionList);
+      if (!allowed) {
+        return { kind: 'skip', reason: '性别选项里没有档案中的取值' };
+      }
+      return { kind: 'value', value: allowed, reason: '按行绑定：性别' };
     }
-    return { kind: 'value', value: allowed, reason: '按行绑定：性别' };
+    return { kind: 'value', value: genderText, reason: '按行绑定：性别（单选）' };
   }
   // 民族：避开「民族大学/民族学院」校名
   if (/民族/.test(label) && !/民族大学|民族学院/.test(label)) {

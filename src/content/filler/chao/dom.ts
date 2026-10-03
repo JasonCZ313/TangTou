@@ -534,8 +534,7 @@ function valueLooksWritten(field, intended) {
 }
 
 /**
- * 统一写入入口：按控件类型选策略，写完后回读校验。
- * 全程输出到 F12：选了哪条策略、控件拒绝还是回读不一致，都能看到。
+ * 统一写入入口：按控件指纹走态机，写完后回读校验。
  * @returns {{ ok: boolean, reason: string }}
  */
 export async function writeField(field, intendedValue) {
@@ -550,60 +549,97 @@ export async function writeField(field, intendedValue) {
     chaoDebug.skip(`「${field.blob}」`, '长数字禁止写进点选控件');
     return { ok: false, reason: '数字不能写进点选控件' };
   }
-  const isDateLike = /^\d{4}-\d{2}/.test(normalizeDate(value))
-    || (/时间|日期|年月|生日/.test(labelBlob) && /(19|20)\d{2}/.test(value));
 
   const started = Date.now();
   let wrote = false;
   let strategy = '文本输入';
+  let failReason = '';
+
+  // 动态导入态机，避免与 widgetDrivers ↔ dom 循环依赖
+  const { driveWidgetWrite, fingerprintWidget } = await import('./widgetDrivers');
+
   if (isIdNumberField) {
     strategy = '证件号码纯文本';
     wrote = fillPlainField(field.el, value);
   } else if (field.control === CONTROL.nativeSelect) {
     strategy = '原生 select 选项比对';
     wrote = fillSelectOption(field.el, value);
-  } else if (field.control === CONTROL.optionWidget) {
-    if (isDateLike && (field.el.tagName.toLowerCase() === 'input' || field.el.getAttribute('role') === 'combobox')) {
-      strategy = '组件日期（多策略）';
-      wrote = await fillWidgetDate(field.el, value);
-    } else {
-      strategy = '组件选项（点开比对）';
-      wrote = await fillWidgetByOption(field.el, value);
-      // 双策略兜底：点选没命中且是「可输入的组件」时，回落成文本输入。
-      // 但含分隔符的多段文本（如「北京市 / 市辖区 / 朝阳区」）绝不回落 ——
-      // 整串打进输入框会产出错值，宁缺勿错，直接进漏填表。
+  } else {
+    // 性别等：即使被扫成普通控件，也优先走单选态机
+    const fingerprint = fingerprintWidget(field.el, value, labelBlob);
+    const shouldDrive = fingerprint === 'radioGroup'
+      || fingerprint === 'datePanel'
+      || fingerprint === 'suggestInput'
+      || fingerprint === 'regionModal'
+      || fingerprint === 'searchSelect'
+      || field.control === CONTROL.optionWidget
+      || field.control === CONTROL.dateInput
+      || fingerprint === 'simpleSelect';
+
+    if (shouldDrive && fingerprint !== 'plainText') {
+      const driven = await driveWidgetWrite(field.el, value, labelBlob);
+      strategy = `态机:${driven.fingerprint}`;
+      wrote = Boolean(driven.ok);
+      failReason = driven.reason || '';
+      // 纯文本可输入且态机失败：回落文本（多段地区串禁止硬塞）
       const multiSegment = /[/、,，]/.test(value);
       if (!wrote && !multiSegment
-        && field.el.tagName.toLowerCase() === 'input' && !field.el.readOnly && !field.el.isContentEditable) {
-        strategy = '组件选项未命中 → 回落文本输入';
+        && field.el instanceof HTMLInputElement
+        && !field.el.readOnly
+        && fingerprint !== 'datePanel'
+        && fingerprint !== 'regionModal'
+        && fingerprint !== 'radioGroup') {
+        strategy = `${strategy} → 回落文本`;
         wrote = fillPlainField(field.el, value);
+        if (wrote) failReason = '';
       }
-    }
-  } else if (field.control === CONTROL.dateInput || isDateLike) {
-    strategy = isDateLike && field.control !== CONTROL.dateInput
-      ? '日期形态文本/组件'
-      : '原生日期';
-    if (field.control === CONTROL.dateInput) {
+    } else if (field.control === CONTROL.dateInput) {
+      strategy = '原生日期';
       wrote = fillPlainField(field.el, value);
     } else {
-      wrote = await fillWidgetDate(field.el, value);
-      if (!wrote) wrote = fillPlainField(field.el, value);
+      wrote = fillPlainField(field.el, value);
     }
-  } else {
-    wrote = fillPlainField(field.el, value);
   }
 
   const actual = readControlText(field.el);
   if (!wrote) {
-    chaoDebug.value(field.blob, value, actual, Date.now() - started, { 策略: strategy, 结果: '控件拒绝' });
-    return { ok: false, reason: '控件拒绝写入' };
+    chaoDebug.value(field.blob, value, actual, Date.now() - started, {
+      策略: strategy,
+      结果: '控件拒绝',
+      原因: failReason,
+    });
+    return { ok: false, reason: failReason || '控件拒绝写入' };
+  }
+  // 单选：用 checked 判定，不走文本回读
+  if (/性别/.test(labelBlob) || (field.el instanceof HTMLInputElement && field.el.type === 'radio')) {
+    const radioOk = field.el instanceof HTMLInputElement && field.el.type === 'radio'
+      ? field.el.checked
+      : valueLooksWritten(field, value);
+    // 旁侧 radio 已勾时 readControlText 可能仍空：再扫附近
+    if (!radioOk) {
+      const nearbyChecked = field.el.closest('[class*="form-item" i], [class*="field" i], [class*="item" i], tr, div')
+        ?.querySelector('input[type="radio"]:checked');
+      if (nearbyChecked) {
+        chaoDebug.value(field.blob, value, 'radio:checked', Date.now() - started, {
+          策略: strategy,
+          结果: '回读一致',
+        });
+        return { ok: true, reason: '' };
+      }
+    } else {
+      chaoDebug.value(field.blob, value, actual, Date.now() - started, {
+        策略: strategy,
+        结果: '回读一致',
+      });
+      return { ok: true, reason: '' };
+    }
   }
   const verified = valueLooksWritten(field, value);
   chaoDebug.value(field.blob, value, actual, Date.now() - started, {
     策略: strategy,
     结果: verified ? '回读一致' : '回读不一致',
   });
-  if (!verified) return { ok: false, reason: '写入后回读不一致' };
+  if (!verified) return { ok: false, reason: failReason || '写入后回读不一致' };
   return { ok: true, reason: '' };
 }
 
