@@ -20,6 +20,13 @@ const SCAN_RESULT_WAIT_MS = 70_000;
 export function scanActivePage(
   requestId: string,
   onProgress: (progress: PageScanProgress) => void,
+  options?: {
+    workGeneration?: number;
+    /** 同代续扫：第二遍扫描，禁止内容脚本换代清停止 */
+    continueWork?: boolean;
+    /** 已停止则丢弃进度、结束等待 */
+    shouldAbort?: () => boolean;
+  },
 ): Promise<{ fields: FieldDescriptor[]; notice?: string }> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -34,6 +41,7 @@ export function scanActivePage(
       settled = true;
       chrome.runtime.onMessage.removeListener(onRuntimeMessage);
       window.clearTimeout(safetyTimer);
+      window.clearInterval(abortPollTimer);
       settle();
     };
 
@@ -44,7 +52,16 @@ export function scanActivePage(
       if (!message || !('requestId' in message) || message.requestId !== requestId) {
         return;
       }
+      if (options?.shouldAbort?.()) {
+        finish(() => {
+          resolve({ fields: [], notice: '已停止。' });
+        });
+        return;
+      }
       if (message.type === 'SCAN_PROGRESS') {
+        if (options?.shouldAbort?.()) {
+          return;
+        }
         onProgress({
           percent: message.percent,
           foundCount: message.foundCount,
@@ -73,13 +90,28 @@ export function scanActivePage(
         );
       });
     }, SCAN_RESULT_WAIT_MS);
+    const abortPollTimer = window.setInterval(() => {
+      if (options?.shouldAbort?.()) {
+        finish(() => {
+          resolve({ fields: [], notice: '已停止。' });
+        });
+      }
+    }, 200);
 
     void sendRuntimeMessage({
       type: 'SCAN_FIELDS',
       requestId,
+      workGeneration: options?.workGeneration,
+      continueWork: options?.continueWork === true,
     } satisfies ExtensionMessage)
       .then((response) => {
         if (settled) {
+          return;
+        }
+        if (options?.shouldAbort?.()) {
+          finish(() => {
+            resolve({ fields: [], notice: '已停止。' });
+          });
           return;
         }
         if (response.type === 'ERROR') {
@@ -110,20 +142,35 @@ export async function requestFillPlanWithWait(
   profileId: string,
   fields: FieldDescriptor[],
   onWaitSeconds: (elapsedSeconds: number) => void,
+  shouldAbort?: () => boolean,
+  workGeneration?: number,
 ): Promise<Extract<ExtensionMessage, { type: 'FILL_PLAN_RESULT' }>> {
   const startedAt = Date.now();
   const timer = window.setInterval(() => {
+    if (shouldAbort?.()) {
+      return;
+    }
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
     onWaitSeconds(elapsedSeconds);
   }, 1000);
   try {
+    if (shouldAbort?.()) {
+      throw new Error('USER_STOPPED');
+    }
     const response = await sendRuntimeMessage({
       type: 'BUILD_FILL_PLAN',
       requestId,
       profileId,
       fields,
+      workGeneration,
     } satisfies ExtensionMessage);
+    if (shouldAbort?.()) {
+      throw new Error('USER_STOPPED');
+    }
     if (response.type === 'ERROR') {
+      if (response.code === 'USER_STOPPED') {
+        throw new Error('USER_STOPPED');
+      }
       throw new Error(describeUserFacingError(response.message));
     }
     if (response.type !== 'FILL_PLAN_RESULT') {

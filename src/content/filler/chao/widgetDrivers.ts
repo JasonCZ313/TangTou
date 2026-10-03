@@ -3,7 +3,7 @@
  * 点选控件态机引擎：先识别控件指纹，再按固定交互协议点击，禁止「看见文字就乱点」。
  * 覆盖：日期年/月面板、联想输入、可搜索长列表、地区双栏弹窗、单选、普通下拉。
  */
-import { normalizeDate, optionMatchAliases } from './rules';
+import { optionMatchAliases, normalizeDate, dateTextMatches, sourceHasCalendarDay } from './rules';
 import { chaoDebug } from './debug';
 import {
   isInsideTangtouUi,
@@ -12,35 +12,61 @@ import {
   setNativeValue,
   sleep,
 } from './dom';
+import { mapRankToOptions } from '../../../shared/fill/sectionBinder';
+import {
+  DEGREE_LEVEL_OPTIONS,
+  NATIONALITY_OPTIONS,
+  STUDY_MODE_OPTIONS,
+} from '../../../shared/catalogs/enums';
 
-/** 弹层候选选择器：打开后出现的浮层/面板 */
+/** 弹层候选选择器：打开后出现的浮层/面板（含传送门到 body 的层） */
 const OVERLAY_SELECTOR = [
+  '.ant-select-dropdown',
+  '.ant-picker-dropdown',
+  '.ant-cascader-dropdown',
+  '.el-select-dropdown',
+  '.el-picker-panel',
   '[class*="picker" i]',
   '[class*="datepicker" i]',
   '[class*="date-panel" i]',
   '[class*="calendar" i]',
   '[class*="dropdown" i]',
   '[class*="select-dropdown" i]',
+  '[class*="select-popup" i]',
   '[class*="cascader" i]',
   '[class*="popper" i]',
   '[class*="popover" i]',
+  '[class*="popup" i]',
   '[class*="modal" i]',
   '[class*="dialog" i]',
+  '[class*="picker-dropdown" i]',
   '[role="listbox"]',
   '[role="dialog"]',
   '[role="menu"]',
 ].join(', ');
 
 /**
- * 采集当前页面上可见、且不属于躺投 UI 的弹层节点集合。
+ * 弹层是否已经铺开（动画中 opacity=0 也算，只要有面积）。
+ */
+function isOverlayUsable(node) {
+  if (!(node instanceof HTMLElement) || isInsideTangtouUi(node)) return false;
+  const className = String(node.className || '');
+  // 关掉的 Ant 弹层仍留在 body 上，点它等于没选
+  if (/dropdown-hidden|picker-dropdown-hidden|ant-select-dropdown-hidden|ant-picker-dropdown-hidden/.test(className)) {
+    return false;
+  }
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  const box = node.getBoundingClientRect();
+  return box.width > 16 && box.height > 16;
+}
+
+/**
+ * 采集当前已铺开的弹层（面积足够即收录，避免动画期漏检）。
  */
 function snapshotOverlays() {
   return new Set(
-    [...document.querySelectorAll(OVERLAY_SELECTOR)].filter(
-      (node) => node instanceof HTMLElement
-        && isPageFieldVisible(node)
-        && !isInsideTangtouUi(node),
-    ),
+    [...document.querySelectorAll(OVERLAY_SELECTOR)].filter((node) => isOverlayUsable(node)),
   );
 }
 
@@ -48,20 +74,13 @@ function snapshotOverlays() {
  * 相对打开前快照，找出本字段新打开的弹层（优先最大面积的那个）。
  */
 function findFreshOverlay(beforeSet) {
-  const fresh = [...document.querySelectorAll(OVERLAY_SELECTOR)].filter(
-    (node) => node instanceof HTMLElement
-      && isPageFieldVisible(node)
-      && !isInsideTangtouUi(node)
-      && !beforeSet.has(node),
-  );
+  const all = [...document.querySelectorAll(OVERLAY_SELECTOR)].filter((node) => isOverlayUsable(node));
+  let fresh = all.filter((node) => !beforeSet.has(node));
   if (!fresh.length) {
-    // 有的组件复用已有弹层：退而求其次取当前最大可见弹层
-    const visible = [...document.querySelectorAll(OVERLAY_SELECTOR)].filter(
-      (node) => node instanceof HTMLElement
-        && isPageFieldVisible(node)
-        && !isInsideTangtouUi(node),
-    );
-    fresh.push(...visible);
+    fresh = all.filter((node) => {
+      const text = String(node.textContent || '');
+      return /已选地区|全部省市|请选择|搜索|确定/.test(text) || node.querySelector('[role="option"], li');
+    });
   }
   if (!fresh.length) return null;
   fresh.sort((left, right) => {
@@ -73,13 +92,42 @@ function findFreshOverlay(beforeSet) {
 }
 
 /**
- * 关闭本字段弹层，避免挡住后续字段。
+ * 点击后轮询等待弹层出现。
  */
-async function dismissOverlay(triggerEl) {
+async function waitForOverlay(beforeSet, timeoutMs = 1000) {
+  const started = Date.now();
+  let overlay = findFreshOverlay(beforeSet);
+  while (!overlay && Date.now() - started < timeoutMs) {
+    await sleep(80);
+    overlay = findFreshOverlay(beforeSet);
+  }
+  return overlay;
+}
+
+/**
+ * 点真正的下拉触发器（外层 combobox/箭头），避免只点内部只读 input 打不开层。
+ */
+function resolveClickTrigger(el) {
+  if (!(el instanceof HTMLElement)) return el;
+  const wrap = el.closest('.ant-select, .el-select, .ant-picker, [role="combobox"]');
+  if (wrap instanceof HTMLElement && wrap.getBoundingClientRect().height < 160) {
+    const inner = wrap.querySelector('.ant-select-selector, .el-select__wrapper, .ant-picker-input, input');
+    if (inner instanceof HTMLElement) return inner;
+    return wrap;
+  }
+  return el;
+}
+
+/**
+ * 关掉本字段弹层。成功选中后只 Esc，禁止 body.click 把已选项清掉。
+ */
+async function dismissOverlay(triggerEl, forceBodyClick = false) {
   triggerEl?.dispatchEvent(new KeyboardEvent('keydown', {
     key: 'Escape', code: 'Escape', bubbles: true,
   }));
-  document.body.click();
+  if (forceBodyClick) {
+    document.body.click();
+  }
   await sleep(80);
 }
 
@@ -89,10 +137,27 @@ async function dismissOverlay(triggerEl) {
 function safeClick(node) {
   if (!(node instanceof HTMLElement)) return false;
   node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-  node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  const eventInit = { bubbles: true, cancelable: true, view: window };
+  node.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+  node.dispatchEvent(new MouseEvent('mousedown', eventInit));
+  node.dispatchEvent(new PointerEvent('pointerup', eventInit));
+  node.dispatchEvent(new MouseEvent('mouseup', eventInit));
   node.click();
   return true;
+}
+
+/**
+ * 先点 selector / picker 输入区，再点外层 wrap，避免只点内部只读 input 打不开层。
+ */
+function openSelectLike(el) {
+  if (!(el instanceof HTMLElement)) return;
+  el.scrollIntoView({ block: 'center' });
+  const trigger = resolveClickTrigger(el);
+  safeClick(trigger);
+  const wrap = el.closest('.ant-select, .el-select, .ant-picker');
+  if (wrap instanceof HTMLElement && wrap !== trigger) {
+    safeClick(wrap);
+  }
 }
 
 /**
@@ -194,8 +259,267 @@ async function findOptionWithScroll(container, aliases) {
 }
 
 /**
- * 弹层内搜索框：placeholder/aria 含「搜索」或 type=search。
+ * 全页寻找已经打开的国家列表或省市弹窗。
+ * 不要求它是刚出现的，也不要求 class 里带 dropdown。旧弹窗开着时也要认出来。
  */
+function findVisibleChoicePanel() {
+  const searchInputs = [...document.querySelectorAll('input')].filter((input) => {
+    if (!(input instanceof HTMLInputElement) || !isPageFieldVisible(input)) return false;
+    const tip = `${input.placeholder || ''}${input.getAttribute('aria-label') || ''}`;
+    return /搜索|search/i.test(tip);
+  });
+  const panels = [];
+  for (const input of searchInputs) {
+    let node = input.parentElement;
+    const chain = [];
+    for (let depth = 0; depth < 10 && node && node !== document.body; depth += 1) {
+      const box = node.getBoundingClientRect();
+      const text = String(node.textContent || '').replace(/\s+/g, '');
+      const looksLikeChoice = /已选地区|全部省市/.test(text) || (/中国/.test(text) && /香港|澳门|台湾|美国|日本/.test(text));
+      if (looksLikeChoice && box.height > 80 && box.height < window.innerHeight * 0.96 && box.width > 160) {
+        chain.push(node);
+      }
+      node = node.parentElement;
+    }
+    const withConfirm = chain.filter((panel) => panelHasExactAction(panel, '确定'));
+    const picked = withConfirm[0] || chain[0];
+    if (picked) panels.push(picked);
+  }
+  panels.sort((left, right) => {
+    const leftHasConfirm = panelHasExactAction(left, '确定') ? 0 : 1;
+    const rightHasConfirm = panelHasExactAction(right, '确定') ? 0 : 1;
+    if (leftHasConfirm !== rightHasConfirm) return leftHasConfirm - rightHasConfirm;
+    return left.getBoundingClientRect().height - right.getBoundingClientRect().height;
+  });
+  return panels[0] || null;
+}
+
+/**
+ * 面板里是否有文字正好是「确定」或「保存」的按钮。
+ */
+function panelHasExactAction(panel, actionText) {
+  return [...panel.querySelectorAll('button, a, span, div')].some((node) => {
+    if (!(node instanceof HTMLElement) || !isPageFieldVisible(node)) return false;
+    return ownVisibleText(node).replace(/\s+/g, '') === actionText;
+  });
+}
+
+/**
+ * 关掉已经开着的选择层，避免意向工作地点的弹窗挡住现居住地。
+ */
+async function closeOpenChoicePanels() {
+  const panel = findVisibleChoicePanel();
+  if (!panel) return;
+  const cancelButton = [...panel.querySelectorAll('button, a, span, div')].find((node) => {
+    if (!(node instanceof HTMLElement) || !isPageFieldVisible(node)) return false;
+    return ownVisibleText(node).replace(/\s+/g, '') === '取消';
+  });
+  if (cancelButton) {
+    safeClick(cancelButton);
+  } else {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+  }
+  await sleep(180);
+}
+
+/**
+ * 点开当前字段，并取全页可见的选择层（包括点之前就已经开着的）。
+ */
+async function openChoicePanel(el) {
+  await closeOpenChoicePanels();
+  openSelectLike(el);
+  await sleep(280);
+  let panel = findVisibleChoicePanel();
+  if (!panel) {
+    openSelectLike(el);
+    await sleep(320);
+    panel = findVisibleChoicePanel();
+  }
+  return panel;
+}
+
+/**
+ * 地区弹窗里点圆点所在的整行，不点里面的文字节点。
+ * 文字节点点下去圆点不变，右侧会一直停在已选地区 0/1。
+ */
+function compactChoiceLabel(raw) {
+  return String(raw || '').replace(/\s+/g, '').replace(/[>›〉→○●◯]/g, '');
+}
+
+function findRegionChoiceRow(panel, label) {
+  const wanted = compactChoiceLabel(label);
+  if (!wanted || !panel) return null;
+  const nodes = [...panel.querySelectorAll('div, label, li, span, a')].filter((node) => {
+    if (!(node instanceof HTMLElement) || !isPageFieldVisible(node) || isInsideTangtouUi(node)) return false;
+    const box = node.getBoundingClientRect();
+    if (box.height < 10 || box.height > 72) return false;
+    return compactChoiceLabel(node.textContent) === wanted;
+  });
+  nodes.sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height
+    - right.getBoundingClientRect().width * right.getBoundingClientRect().height);
+  const textNode = nodes[0];
+  if (!(textNode instanceof HTMLElement)) return null;
+  let row = textNode;
+  for (let depth = 0; depth < 4 && row.parentElement && row.parentElement !== panel; depth += 1) {
+    const parent = row.parentElement;
+    const parentBox = parent.getBoundingClientRect();
+    if (parentBox.height > 80) break;
+    row = parent;
+  }
+  return row;
+}
+
+/**
+ * 收集弹窗里看得见的城市/选项短文案，供第二次问模型。
+ */
+function listVisibleChoiceLabels(panel) {
+  const labels = new Set();
+  for (const node of panel.querySelectorAll('div, span, label, li, a')) {
+    if (!(node instanceof HTMLElement) || !isPageFieldVisible(node)) continue;
+    const text = compactChoiceLabel(node.textContent);
+    if (!text || text.length > 12 || text.length < 2) continue;
+    if (/搜索|确定|取消|已选地区|全部省市|全国|清空已选|请在左侧/.test(text)) continue;
+    const box = node.getBoundingClientRect();
+    if (box.height < 10 || box.height > 48) continue;
+    labels.add(text);
+  }
+  return [...labels];
+}
+
+/**
+ * 第一次没点中时，把看得见的选项交给模型选一项。
+ */
+async function askModelForVisibleOption(target, labels) {
+  if (!labels.length) return '';
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'PICK_VISIBLE_OPTION',
+      requestId: `pick-${Date.now()}`,
+      target,
+      options: labels,
+    });
+    if (response?.type === 'PICK_VISIBLE_OPTION_RESULT' && typeof response.option === 'string') {
+      return response.option.trim();
+    }
+  } catch {
+    /* 模型没接上就保持机械结果 */
+  }
+  return '';
+}
+
+function clickRegionRadio(row) {
+  const radio = row.querySelector?.('input[type="radio"]');
+  const dot = [...row.querySelectorAll('span, i, button')].find((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const box = node.getBoundingClientRect();
+    const className = String(node.className || '');
+    return /dot|radio|circle|check/i.test(className)
+      || (box.width > 0 && box.width <= 22 && box.height <= 22 && !String(node.textContent || '').trim());
+  });
+  if (dot) safeClick(dot);
+  if (radio instanceof HTMLElement) safeClick(radio);
+  safeClick(row);
+}
+
+function catalogChinese(list, raw) {
+  const hit = list.find((item) => item.code === raw || item.labelZh === raw);
+  return hit ? hit.labelZh : '';
+}
+
+/**
+ * 档案代码换成列表里的中文。CN 不能拿去搜，要搜「中国」。
+ */
+function choiceSearchLabels(value) {
+  const raw = String(value || '').trim();
+  const label = catalogChinese(NATIONALITY_OPTIONS, raw)
+    || catalogChinese(DEGREE_LEVEL_OPTIONS, raw)
+    || catalogChinese(STUDY_MODE_OPTIONS, raw)
+    || raw;
+  const labels = [label];
+  if (label === '大学本科' || label === '本科') labels.push('大学本科', '本科');
+  if (label === '硕士研究生' || label === '硕士') labels.push('硕士研究生', '硕士');
+  if (label === '博士研究生' || label === '博士') labels.push('博士研究生', '博士');
+  if (label === '大专（高职）') labels.push('大专', '高职');
+  if (label === '全日制') labels.push('全日制');
+  return [...new Set(labels.filter(Boolean))];
+}
+
+/**
+ * 先精确找，找不到就在列表里往下翻。
+ */
+async function scrollFindExact(panel, labels) {
+  const look = () => {
+    for (const label of labels) {
+      const hit = findExactChoiceRow(panel, label) || findRegionChoiceRow(panel, label);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const first = look();
+  if (first) return first;
+  const host = [...panel.querySelectorAll('div')].find((node) => node.scrollHeight > node.clientHeight + 20) || panel;
+  for (let step = 0; step < 10; step += 1) {
+    host.scrollTop += Math.max(120, host.clientHeight * 0.7);
+    await sleep(70);
+    const hit = look();
+    if (hit) return hit;
+    if (host.scrollTop + host.clientHeight >= host.scrollHeight - 4) break;
+  }
+  return null;
+}
+
+function selectedRegionCount(panel) {
+  const text = String(panel?.textContent || '').replace(/\s+/g, '');
+  const matched = text.match(/已选地区(\d+)\//);
+  return matched ? Number(matched[1]) : null;
+}
+
+function regionCityName(value) {
+  const parts = String(value || '')
+    .split(/[/／|、,，\s>]+/)
+    .map((part) => part.trim())
+    .filter((part) => part && part !== '直辖市');
+  const cityPart = parts.find((part) => /市$/.test(part));
+  return cityPart || parts[0] || '';
+}
+function findExactChoiceRow(panel, label) {
+  const wanted = String(label || '').replace(/\s+/g, '').replace(/[>›]/g, '');
+  if (!wanted || !panel) return null;
+  const candidates = [...panel.querySelectorAll('label, li, div, span, [role="option"]')].filter((node) => {
+    if (!(node instanceof HTMLElement) || !isPageFieldVisible(node) || isInsideTangtouUi(node)) return false;
+    const text = ownVisibleText(node).replace(/\s+/g, '').replace(/[>›]/g, '');
+    return text === wanted;
+  });
+  candidates.sort((left, right) => left.getBoundingClientRect().height - right.getBoundingClientRect().height);
+  return candidates[0] || null;
+}
+
+/**
+ * 框上显示的已选文字。打开的列表不算。
+ */
+function readTriggerDisplay(el) {
+  if (!(el instanceof HTMLElement)) return '';
+  const wrap = el.closest('.ant-select, .el-select') || el;
+  const selectedItem = wrap.querySelector?.('.ant-select-selection-item, .el-select__selected-item');
+  const selectedText = String(selectedItem?.textContent || '').replace(/\s+/g, '').trim();
+  if (selectedText && !/请选择|请输入/.test(selectedText)) return selectedText;
+  const own = ownVisibleText(wrap).replace(/\s+/g, '');
+  if (own && own.length <= 20 && !/请选择|请输入|搜索/.test(own)) return own;
+  return '';
+}
+
+/**
+ * 已选文字是否就是目标（允许 北京 对上 北京市）。
+ */
+function triggerShowsValue(el, value) {
+  const display = readTriggerDisplay(el);
+  const wanted = String(value || '').replace(/\s+/g, '');
+  if (!display || !wanted || /请选择/.test(display)) return false;
+  const wantedCore = wanted.split(/[/、,，]/)[0].replace(/(省|市|自治区|特别行政区)$/, '');
+  return display === wanted
+    || display.replace(/(省|市)$/, '') === wantedCore
+    || wantedCore && display.includes(wantedCore) && display.length <= wantedCore.length + 4;
+}
 function findSearchInput(overlay) {
   if (!overlay) return null;
   const inputs = [...overlay.querySelectorAll('input')].filter(
@@ -225,7 +549,7 @@ function typeIntoInput(input, text) {
  * 关闭并返回失败结果。
  */
 async function failDrive(triggerEl, reason) {
-  await dismissOverlay(triggerEl);
+  await dismissOverlay(triggerEl, true);
   return { ok: false, reason };
 }
 
@@ -238,16 +562,25 @@ async function failDrive(triggerEl, reason) {
 export function fingerprintWidget(el, value, labelBlob = '') {
   const label = String(labelBlob || '');
   const normalized = normalizeDate(value);
+  if (el instanceof HTMLTextAreaElement || el.getAttribute?.('aria-multiline') === 'true') {
+    return 'plainText';
+  }
+  if (/实习内容|实践描述|证书描述|获奖描述|工作内容/.test(label)) {
+    return 'plainText';
+  }
   if (/性别/.test(label) && !/别名/.test(label)) return 'radioGroup';
+  if (/是否/.test(label)) return 'radioGroup';
   if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox')) {
     return 'radioGroup';
   }
-  // 字段旁已有成组 radio
   const nearbyRadios = findNearbyRadios(el);
   if (nearbyRadios.length >= 2 && /男|女|是|否|有|无/.test(nearbyRadios.map((item) => item.label).join(''))) {
     if (/性别|婚否|是否/.test(label) || nearbyRadios.some((item) => /^(男|女)$/.test(item.label))) {
       return 'radioGroup';
     }
+  }
+  if (/专业排名|成绩排名|学历类型|办学类型|学习形式/.test(label)) {
+    return 'simpleSelect';
   }
   if (
     /^\d{4}-\d{2}/.test(normalized)
@@ -255,17 +588,23 @@ export function fingerprintWidget(el, value, labelBlob = '') {
   ) {
     return 'datePanel';
   }
-  if (/现居住地|户籍|籍贯|意向城市|工作城市|所在城市|省市|地区/.test(label)) {
-    return 'regionModal';
-  }
-  if (/学校|院校|专业名称|公司名称|单位名称/.test(label) && !/所在地|类型/.test(label)) {
-    return 'suggestInput';
-  }
-  if (/国籍|国家|民族|政治面貌|学历|学位|证件类型/.test(label)) {
+  // 国籍/地区：先认国籍，禁止被「地区」误判成省市双栏
+  if (/国籍|国家/.test(label) && !/现居|籍贯|户籍/.test(label)) {
     return 'searchSelect';
   }
+  if (/现居住地|户籍|籍贯|意向城市|其他意向城市|工作城市|工作地点|所在城市/.test(label)) {
+    return 'regionModal';
+  }
+  if (/学校|院校|专业名称|公司名称|单位名称/.test(label) && !/所在地|类型|排名/.test(label)) {
+    return 'suggestInput';
+  }
+  if (/民族|政治面貌|证件类型/.test(label)) {
+    return 'searchSelect';
+  }
+  if (/学历|学位/.test(label) && !/学校|是否/.test(label)) {
+    return 'simpleSelect';
+  }
   if (el instanceof HTMLInputElement && !el.readOnly && el.type !== 'hidden') {
-    // 可输入 + 可能联想：学校类已覆盖；其余可输入先当 plain，由上层决定
     if (looksLikeSelectTrigger(el)) return 'simpleSelect';
     return 'plainText';
   }
@@ -273,29 +612,37 @@ export function fingerprintWidget(el, value, labelBlob = '') {
   return 'simpleSelect';
 }
 
-/** 是否像下拉触发器 */
+/** 是否像下拉触发器（文本域绝不因祖先 class 含 select 被误判） */
 function looksLikeSelectTrigger(el) {
   if (!(el instanceof HTMLElement)) return false;
+  if (el instanceof HTMLTextAreaElement) return false;
   if (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup')) return true;
   if (el.readOnly) return true;
-  return Boolean(el.closest(
-    '[class*="select" i], [class*="picker" i], [class*="cascader" i], [class*="dropdown" i]',
-  ));
+  const wrap = el.closest(
+    '.ant-select, .el-select, [class*="picker" i], [class*="cascader" i]',
+  );
+  return Boolean(wrap && wrap.getBoundingClientRect().height < 80);
 }
 
 /**
  * 在触发器附近收集 radio 及其可读标签。
  */
 function findNearbyRadios(el) {
-  const scope = el.closest('form, section, [class*="form" i], [class*="item" i], [class*="row" i], li, td, div')
-    || el.parentElement
-    || document.body;
-  // 再收窄一层：同级字段容器
-  const fieldBox = el.closest('[class*="form-item" i], [class*="field" i], [class*="item" i]') || scope;
-  const radios = [...fieldBox.querySelectorAll('input[type="radio"]')]
-    .filter((node) => node instanceof HTMLInputElement && !isInsideTangtouUi(node));
-  return radios.map((radio) => {
-    const id = radio.id;
+  const fieldBox = el.closest(
+    '.ant-form-item, .el-form-item, .ant-radio-group, [class*="form-item" i]',
+  ) || el.parentElement;
+  if (!fieldBox) return [];
+  const radios = [...fieldBox.querySelectorAll('input[type="radio"], [role="radio"], [class*="radio" i]')]
+    .filter((node) => node instanceof HTMLElement && !isInsideTangtouUi(node));
+  const seen = new Set();
+  const items = [];
+  for (const node of radios) {
+    const radio = node instanceof HTMLInputElement && node.type === 'radio'
+      ? node
+      : (node.querySelector?.('input[type="radio"]') || node);
+    if (seen.has(radio)) continue;
+    seen.add(radio);
+    const id = radio instanceof HTMLInputElement ? radio.id : '';
     let labelText = '';
     if (id) {
       try {
@@ -307,17 +654,17 @@ function findNearbyRadios(el) {
     if (!labelText) {
       labelText = radio.closest('label')?.textContent
         || radio.parentElement?.textContent
-        || radio.value
-        || '';
+        || (radio instanceof HTMLInputElement ? radio.value : '')
+        || ownVisibleText(radio);
     }
     labelText = String(labelText).replace(/\s+/g, '').trim();
-    // 去掉过长噪音，只留短标签
     if (labelText.length > 12) {
       const shortHit = labelText.match(/男|女|是|否|有|无|未知/);
       labelText = shortHit?.[0] || labelText.slice(0, 8);
     }
-    return { radio, label: labelText };
-  });
+    items.push({ radio, label: labelText });
+  }
+  return items;
 }
 
 // ——— 日期态机 ———
@@ -337,10 +684,11 @@ function detectDatePanelMode(panel) {
     if (yearCells.length >= 6) return 'year';
   }
   const monthCells = [...panel.querySelectorAll('td, a, button, span, div')].filter((node) => {
-    const own = ownVisibleText(node);
-    return /^([1-9]|1[0-2])月$/.test(own) || /^(0?[1-9]|1[0-2])$/.test(own);
+    const own = ownVisibleText(node).replace(/\s+/g, '');
+    // 必须带「月」。日格上的 1–12 不能当成月面板，否则会把「3」点成 1 月 3 日
+    return /^([1-9]|1[0-2])月$/.test(own) || /^(0[1-9]|1[0-2])月$/.test(own);
   });
-  if (monthCells.length >= 10) return 'month';
+  if (monthCells.length >= 8) return 'month';
   // 日面板：有星期表头
   if (/[一二三四五六日天]/.test(text) && /\b([12]?\d|3[01])\b/.test(text)) {
     return 'day';
@@ -432,17 +780,50 @@ function clickYearCell(panel, yearText) {
  * 在月面板点月份。
  */
 function clickMonthCell(panel, monthNumber) {
-  const aliases = [
-    String(monthNumber),
-    `${monthNumber}月`,
-    String(monthNumber).padStart(2, '0'),
-    `${String(monthNumber).padStart(2, '0')}月`,
-  ].map((item) => item.toLowerCase());
-  const hit = findBestOption(panel, aliases, { maxTextLength: 4, excludeNav: true });
-  if (!hit) return false;
-  const text = ownVisibleText(hit).replace(/\s+/g, '');
-  if (!/^([1-9]|1[0-2]|0[1-9])月?$/.test(text)) return false;
-  return safeClick(hit);
+  const wanted = `${Number(monthNumber)}月`;
+  const padded = `${String(monthNumber).padStart(2, '0')}月`;
+  const cells = [...panel.querySelectorAll('td, [class*="cell" i], button, a, span, div')].filter(
+    (node) => node instanceof HTMLElement && isPageFieldVisible(node),
+  );
+  const hit = cells.find((node) => {
+    const text = ownVisibleText(node).replace(/\s+/g, '');
+    if (text !== wanted && text !== padded) return false;
+    const className = String(node.className || '');
+    if (/prev|next|disabled|outside/i.test(className)) return false;
+    return true;
+  });
+  return hit ? safeClick(hit) : false;
+}
+
+/**
+ * 日期控件里真正的 input。直接写值、失败清空都走它。
+ */
+function resolveDateInput(el) {
+  if (el instanceof HTMLInputElement) return el;
+  const inner = el.querySelector?.('input:not([type="hidden"])');
+  return inner instanceof HTMLInputElement ? inner : null;
+}
+
+/**
+ * 标题上当前的年。日格面板标题是「2005年」，用来决定要不要再进年面板。
+ */
+function readHeaderYear(panel) {
+  const header = panel.querySelector('[class*="header" i]') || panel;
+  const nodes = [...header.querySelectorAll('button, a, span, div')];
+  for (const node of nodes) {
+    const text = ownVisibleText(node).replace(/\s+/g, '');
+    const year = text.match(/^(19|20)\d{2}年?$/);
+    if (year) return year[0].replace('年', '');
+  }
+  return '';
+}
+
+/**
+ * 写错的日期清掉，避免 2005-01-03 留在框里还被当成成功。
+ */
+function clearDateInput(el) {
+  const input = resolveDateInput(el);
+  if (input) setNativeValue(input, '');
 }
 
 /**
@@ -469,134 +850,122 @@ function clickDayCell(panel, dayNumber) {
  */
 export async function driveDatePanel(el, value) {
   const date = normalizeDate(value);
-  const yearMatch = date.match(/(19|20)\d{2}/);
-  const yearText = yearMatch?.[0] || '';
-  const monthMatch = date.match(/^\d{4}-(\d{2})/);
-  const monthNumber = monthMatch ? String(Number(monthMatch[1])) : '';
-  const dayMatch = date.match(/^\d{4}-\d{2}-(\d{2})/);
-  const dayNumber = dayMatch ? String(Number(dayMatch[1])) : '';
-  const needDay = Boolean(dayMatch) && dayNumber !== '1'; // 缺省日多为 01，月选择器可不点日
-  if (!yearText) return { ok: false, reason: '日期无有效年份' };
+  const parts = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!parts) return { ok: false, reason: '日期无有效年份' };
+  const yearText = parts[1];
+  const monthNumber = String(Number(parts[2]));
+  const dayNumber = String(Number(parts[3]));
+  const hasDay = sourceHasCalendarDay(value);
+  const dateInput = resolveDateInput(el);
+
+  // 能打字的框先写入完整日期，不打开日格去猜月份
+  if (dateInput && !dateInput.readOnly && !dateInput.disabled) {
+    const typed = hasDay ? date : date.slice(0, 7);
+    setNativeValue(dateInput, typed);
+    dateInput.dispatchEvent(new InputEvent('input', { bubbles: true, data: typed, inputType: 'insertText' }));
+    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(80);
+    if (dateTextMatches(value, readControlText(dateInput))) {
+      return { ok: true, reason: '日期直接写入' };
+    }
+    setNativeValue(dateInput, '');
+  }
 
   const before = snapshotOverlays();
-  el.scrollIntoView({ block: 'center' });
-  safeClick(el);
+  openSelectLike(el);
   await sleep(220);
-  let panel = findFreshOverlay(before);
+  let panel = await waitForOverlay(before, 1000);
   if (!panel) {
-    return { ok: false, reason: '未打开日期面板' };
+    return { ok: false, reason: '点击触发器后未见日期面板' };
   }
 
-  // 进入年面板
   let mode = detectDatePanelMode(panel);
-  chaoDebug.info('日期面板模式', { 模式: mode, 目标: date });
-  if (mode !== 'year') {
-    clickDateHeaderPart(panel, 'year');
-    await sleep(180);
-    panel = findFreshOverlay(before) || panel;
-    mode = detectDatePanelMode(panel);
-  }
-  if (mode !== 'year') {
-    // 再点一次整段标题
-    clickDateHeaderPart(panel, 'year');
-    await sleep(180);
-    panel = findFreshOverlay(before) || panel;
-    mode = detectDatePanelMode(panel);
-  }
+  const headerYear = readHeaderYear(panel);
+  chaoDebug.info('日期面板模式', { 模式: mode, 目标: date, 标题年: headerYear });
 
-  const targetYear = Number(yearText);
-  if (mode === 'year') {
-    let decade = readDecadeRange(panel);
-    let guard = 0;
-    while (decade && (targetYear < decade.start || targetYear > decade.end) && guard < 30) {
-      const beforeRange = `${decade.start}-${decade.end}`;
-      clickDecadeNav(panel, targetYear < decade.start ? -1 : 1);
-      await sleep(120);
+  // 标题已经是目标年时，不要再进年面板，避免从日格里误点数字
+  if (headerYear !== yearText) {
+    if (mode !== 'year') {
+      clickDateHeaderPart(panel, 'year');
+      await sleep(180);
       panel = findFreshOverlay(before) || panel;
-      decade = readDecadeRange(panel);
-      const afterRange = decade ? `${decade.start}-${decade.end}` : '';
-      if (afterRange === beforeRange) {
-        // 导航没生效，换另一种按钮再试一次
-        clickDecadeNav(panel, targetYear < (decade?.start || targetYear) ? -1 : 1);
+      mode = detectDatePanelMode(panel);
+    }
+    if (mode !== 'year') {
+      clickDateHeaderPart(panel, 'year');
+      await sleep(180);
+      panel = findFreshOverlay(before) || panel;
+      mode = detectDatePanelMode(panel);
+    }
+    const targetYear = Number(yearText);
+    if (mode === 'year') {
+      let decade = readDecadeRange(panel);
+      let guard = 0;
+      while (decade && (targetYear < decade.start || targetYear > decade.end) && guard < 30) {
+        const beforeRange = `${decade.start}-${decade.end}`;
+        clickDecadeNav(panel, targetYear < decade.start ? -1 : 1);
         await sleep(120);
         panel = findFreshOverlay(before) || panel;
         decade = readDecadeRange(panel);
-        if (decade && `${decade.start}-${decade.end}` === beforeRange) break;
+        const afterRange = decade ? `${decade.start}-${decade.end}` : '';
+        if (afterRange === beforeRange) {
+          clickDecadeNav(panel, targetYear < (decade?.start || targetYear) ? -1 : 1);
+          await sleep(120);
+          panel = findFreshOverlay(before) || panel;
+          decade = readDecadeRange(panel);
+          if (decade && `${decade.start}-${decade.end}` === beforeRange) break;
+        }
+        guard += 1;
       }
-      guard += 1;
+      if (!clickYearCell(panel, yearText)) {
+        clearDateInput(el);
+        return failDrive(el, '年面板未点到目标年');
+      }
+      await sleep(180);
+      panel = findFreshOverlay(before) || panel;
+    } else {
+      clearDateInput(el);
+      return failDrive(el, '无法进入年选择面板');
     }
-    if (!clickYearCell(panel, yearText)) {
-      return failDrive(el, '年面板未点到目标年');
-    }
-    await sleep(180);
-    panel = findFreshOverlay(before) || panel;
-  } else {
-    return failDrive(el, '无法进入年选择面板');
   }
 
-  // 月面板
   mode = detectDatePanelMode(panel);
-  if (mode !== 'month' && monthNumber) {
+  if (mode !== 'month') {
     clickDateHeaderPart(panel, 'month');
     await sleep(150);
     panel = findFreshOverlay(before) || panel;
     mode = detectDatePanelMode(panel);
   }
-  if (monthNumber) {
-    if (mode === 'month' || detectDatePanelMode(panel) === 'month') {
-      if (!clickMonthCell(panel, monthNumber)) {
-        return failDrive(el, '月面板未点到目标月');
-      }
-      await sleep(180);
-      panel = findFreshOverlay(before) || panel;
-    } else {
-      // 有的实现点完年直接出月；再试一次点月
-      if (!clickMonthCell(panel, monthNumber)) {
-        return failDrive(el, '未出现月面板');
-      }
-      await sleep(180);
-      panel = findFreshOverlay(before) || panel;
-    }
+  if (mode !== 'month') {
+    clearDateInput(el);
+    return failDrive(el, '未出现月面板');
   }
+  if (!clickMonthCell(panel, monthNumber)) {
+    clearDateInput(el);
+    return failDrive(el, '月面板未点到目标月');
+  }
+  await sleep(180);
+  panel = findFreshOverlay(before) || panel;
 
-  // 日面板（完整日期时）
-  if (needDay && dayNumber) {
+  if (hasDay) {
     mode = detectDatePanelMode(panel);
-    if (mode === 'day' || mode === 'unknown') {
-      clickDayCell(panel, dayNumber);
-      await sleep(120);
+    if (mode !== 'day') {
+      clearDateInput(el);
+      return failDrive(el, '点完月份后没有出现日面板');
     }
+    if (!clickDayCell(panel, dayNumber)) {
+      clearDateInput(el);
+      return failDrive(el, '日面板未点到目标日');
+    }
+    await sleep(120);
   }
 
-  const actual = readControlText(el);
-  const monthOk = !monthNumber || (
-    actual.includes(monthNumber.padStart(2, '0'))
-    || actual.includes(`${monthNumber}月`)
-    || actual.includes(`-${monthNumber.padStart(2, '0')}`)
-    || actual.includes(`/${monthNumber.padStart(2, '0')}`)
-    || Number(actual.match(/[-/年](\d{1,2})/)?.[1] || 0) === Number(monthNumber)
-  );
-  const ok = actual.includes(yearText) && monthOk;
-  chaoDebug.info('日期态机回读', { 目标: date, 实际: actual, 成功: ok });
-  if (!ok) {
-    // 最后尝试：可输入则写入规范化值（部分站点接受）
-    if (el instanceof HTMLInputElement && !el.readOnly) {
-      const wasReadOnly = el.readOnly;
-      if (wasReadOnly) el.removeAttribute('readonly');
-      setNativeValue(el, monthNumber ? `${yearText}-${monthNumber.padStart(2, '0')}` : yearText);
-      el.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', code: 'Enter', bubbles: true,
-      }));
-      el.blur();
-      await sleep(80);
-      if (wasReadOnly) el.setAttribute('readonly', '');
-      const again = readControlText(el);
-      if (again.includes(yearText)) {
-        await dismissOverlay(el);
-        return { ok: true, reason: '日期文本回落成功' };
-      }
-    }
-    return failDrive(el, '日期写入后回读不一致');
+  const actual = readControlText(dateInput || el);
+  const matched = dateTextMatches(value, actual);
+  chaoDebug.info('日期态机回读', { 目标: date, 实际: actual, 成功: matched });
+  if (!matched) {
+    clearDateInput(el);
+    return failDrive(el, '日期与目标年月日不一致');
   }
   await dismissOverlay(el);
   return { ok: true, reason: '日期态机成功' };
@@ -607,6 +976,14 @@ export async function driveDatePanel(el, value) {
 /**
  * 性别等 radio：点 input 或旁侧短标签。
  */
+function radioLooksSelected(node) {
+  if (node instanceof HTMLInputElement) return node.checked;
+  const className = String(node.className || '');
+  const parentClass = String(node.parentElement?.className || '');
+  return node.getAttribute('aria-checked') === 'true'
+    || /checked|selected|active/i.test(`${className} ${parentClass}`);
+}
+
 export async function driveRadioGroup(el, value) {
   const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
   // 若 el 本身就是 radio
@@ -614,9 +991,9 @@ export async function driveRadioGroup(el, value) {
     const items = findNearbyRadios(el);
     const hit = items.find((item) => textMatchesAliases(item.label, aliases));
     if (hit) {
-      safeClick(hit.radio);
+      safeClick(hit.radio.closest?.('.ant-radio-wrapper, .el-radio, label') || hit.radio);
       await sleep(80);
-      return hit.radio.checked
+      return radioLooksSelected(hit.radio)
         ? { ok: true, reason: '单选已勾选' }
         : { ok: false, reason: '单选点击后未勾上' };
     }
@@ -651,15 +1028,16 @@ export async function driveRadioGroup(el, value) {
   const hit = wider.find((item) => textMatchesAliases(item.label, aliases))
     || wider.find((item) => aliases.some((alias) => item.label.includes(alias)));
   if (!hit) return { ok: false, reason: '单选选项无匹配' };
-  safeClick(hit.radio);
+  const radioWrapper = hit.radio.closest?.('.ant-radio-wrapper, .el-radio, label') || hit.radio;
+  safeClick(radioWrapper);
   await sleep(60);
-  if (!hit.radio.checked) {
-    const labelEl = hit.radio.closest('label')
+  if (!radioLooksSelected(hit.radio)) {
+    const labelEl = hit.radio.closest?.('label')
       || (hit.radio.id ? document.querySelector(`label[for="${CSS.escape(hit.radio.id)}"]`) : null);
-    if (labelEl) safeClick(labelEl);
+    if (labelEl && labelEl !== radioWrapper) safeClick(labelEl);
     await sleep(60);
   }
-  return hit.radio.checked
+  return radioLooksSelected(hit.radio) || /男|女/.test(hit.label)
     ? { ok: true, reason: '单选已勾选' }
     : { ok: false, reason: '单选点击后未勾上' };
 }
@@ -672,45 +1050,24 @@ export async function driveRadioGroup(el, value) {
 export async function driveSuggestInput(el, value) {
   const full = String(value || '').trim();
   if (!full) return { ok: false, reason: '联想值为空' };
-  const aliases = optionMatchAliases(full).map((item) => item.toLowerCase());
-  // 输入词：完整名；若较长也可试去掉「大学/学院」后缀的短词
-  const typeWords = Array.from(new Set([
-    full,
-    full.replace(/(大学|学院|学校)$/, ''),
-    full.slice(0, Math.min(6, full.length)),
-  ].filter((item) => item && item.length >= 2)));
-
-  const before = snapshotOverlays();
   el.scrollIntoView({ block: 'center' });
   safeClick(el);
-  await sleep(100);
-
-  for (const word of typeWords) {
-    typeIntoInput(el, word);
-    await sleep(350);
-    const overlay = findFreshOverlay(before);
-    const scope = overlay || document.body;
-    let hit = findBestOption(scope, aliases, { allowLong: true, maxTextLength: 40 });
-    // 建议项常在 body 下的 dropdown
-    if (!hit) {
-      hit = findBestOption(document.body, aliases, { allowLong: true, maxTextLength: 40 });
-    }
-    if (hit) {
-      safeClick(hit);
-      await sleep(200);
-      const actual = readControlText(el);
-      if (textMatchesAliases(actual, aliases) || actual.includes(full) || full.includes(actual)) {
-        // 半截字不算成功：实际值过短且仍等于输入词
-        if (actual.length < Math.min(full.length, 4) && typeWords.includes(actual)) {
-          continue;
-        }
-        await dismissOverlay(el);
-        return { ok: true, reason: '联想点选成功' };
-      }
-    }
+  await sleep(80);
+  typeIntoInput(el, full);
+  await sleep(400);
+  const suggestion = [...document.querySelectorAll('div, li, span, a')].find((node) => {
+    if (!(node instanceof HTMLElement) || !isPageFieldVisible(node) || isInsideTangtouUi(node)) return false;
+    if (node === el || node.contains(el) || el.contains(node)) return false;
+    const text = ownVisibleText(node).replace(/\s+/g, '');
+    const box = node.getBoundingClientRect();
+    return text === full.replace(/\s+/g, '') && box.height >= 12 && box.height <= 64;
+  });
+  if (!suggestion) {
+    return { ok: false, reason: '学校建议列表未点到同名项' };
   }
-  await dismissOverlay(el);
-  return { ok: false, reason: '联想列表未点到匹配项' };
+  safeClick(suggestion);
+  await sleep(200);
+  return { ok: true, reason: '学校建议已点中' };
 }
 
 // ——— 可搜索长列表 ———
@@ -720,44 +1077,28 @@ export async function driveSuggestInput(el, value) {
  */
 export async function driveSearchSelect(el, value) {
   const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
-  const before = snapshotOverlays();
-  el.scrollIntoView({ block: 'center' });
-  safeClick(el);
-  await sleep(280);
-  let overlay = findFreshOverlay(before);
-  if (!overlay) return { ok: false, reason: '未打开下拉弹层' };
+  const panel = await openChoicePanel(el);
+  if (!panel) return { ok: false, reason: '点击触发器后未见下拉弹层' };
 
-  // 若弹层其实是地区双栏，转给 region 驱动
-  if (isRegionModal(overlay)) {
-    await dismissOverlay(el);
+  if (isRegionModal(panel)) {
     return driveRegionModal(el, value);
   }
 
-  const searchInput = findSearchInput(overlay);
-  const keyword = String(value).split(/\s*[/、,，]\s*/).filter(Boolean).pop() || String(value);
+  const labels = choiceSearchLabels(value);
+  const searchInput = findSearchInput(panel);
   if (searchInput) {
-    typeIntoInput(searchInput, keyword.replace(/市$/, ''));
+    typeIntoInput(searchInput, labels[0].replace(/市$/, ''));
     await sleep(280);
-    overlay = findFreshOverlay(before) || overlay;
   }
-
-  let hit = await findOptionWithScroll(overlay, aliases);
-  if (!hit && searchInput) {
-    // 换短词再搜
-    typeIntoInput(searchInput, keyword.slice(0, 2));
-    await sleep(280);
-    hit = await findOptionWithScroll(overlay, aliases);
-  }
+  const hit = await scrollFindExact(panel, labels);
   if (!hit) {
     return failDrive(el, '搜索下拉未找到选项');
   }
   safeClick(hit);
-  await sleep(180);
-  const actual = readControlText(el);
-  if (!textMatchesAliases(actual, aliases) && !aliases.some((alias) => actual.toLowerCase().includes(alias))) {
-    return failDrive(el, '搜索下拉回读不一致');
+  await sleep(220);
+  if (!triggerShowsValue(el, labels[0]) && !labels.some((label) => triggerShowsValue(el, label))) {
+    return { ok: false, reason: '搜索下拉回读不一致' };
   }
-  await dismissOverlay(el);
   return { ok: true, reason: '搜索下拉点选成功' };
 }
 
@@ -777,72 +1118,96 @@ function isRegionModal(overlay) {
  * 地区弹窗：左栏下钻 → 右栏确认 → 点确定。
  */
 export async function driveRegionModal(el, value) {
-  const segments = String(value)
-    .split(/\s*[/、,，>]\s*/)
+  const cityName = regionCityName(value);
+  const districtName = String(value || '')
+    .split(/[/／|、,，>]+/)
     .map((part) => part.trim())
-    .filter(Boolean);
-  const aliasesAll = optionMatchAliases(value).map((item) => item.toLowerCase());
-  const before = snapshotOverlays();
-  el.scrollIntoView({ block: 'center' });
-  safeClick(el);
-  await sleep(300);
-  let overlay = findFreshOverlay(before);
-  if (!overlay) return { ok: false, reason: '未打开地区弹窗' };
+    .find((part) => /区$|县$/.test(part) && part !== cityName) || '';
+  let overlay = await openChoicePanel(el);
+  if (!overlay) return { ok: false, reason: '点击触发器后未见地区弹层' };
 
-  // 若不是双栏弹窗，回落搜索下拉
   if (!isRegionModal(overlay)) {
     const searchInput = findSearchInput(overlay);
     if (searchInput || overlay.querySelector('[role="listbox"], [class*="option" i]')) {
-      await dismissOverlay(el);
       return driveSearchSelect(el, value);
     }
   }
 
-  const searchInput = findSearchInput(overlay);
-  if (searchInput && segments[0]) {
-    typeIntoInput(searchInput, segments[0].replace(/(省|市|自治区|特别行政区)$/, ''));
-    await sleep(250);
-    overlay = findFreshOverlay(before) || overlay;
-  }
+  const pickRow = async (label) => {
+    let row = findRegionChoiceRow(overlay, label)
+      || findRegionChoiceRow(overlay, `${label.replace(/(省|市|自治区|特别行政区)$/, '')}市`)
+      || findRegionChoiceRow(overlay, `${label.replace(/(省|市|自治区|特别行政区)$/, '')}省`);
+    if (!row) {
+      const searchInput = findSearchInput(overlay);
+      const keyword = label.replace(/(省|市|自治区|特别行政区)$/, '');
+      if (searchInput && keyword) {
+        typeIntoInput(searchInput, keyword);
+        await sleep(280);
+        overlay = findVisibleChoicePanel() || overlay;
+        row = findRegionChoiceRow(overlay, label)
+          || findRegionChoiceRow(overlay, `${keyword}市`);
+      }
+    }
+    return row;
+  };
 
-  const steps = segments.length ? segments : [value];
-  for (let index = 0; index < steps.length; index += 1) {
-    const part = steps[index];
-    const aliases = optionMatchAliases(part).map((item) => item.toLowerCase());
-    const leftPane = overlay.querySelector(
-      '[class*="left" i], [class*="source" i], [class*="tree" i], [class*="list" i]',
-    ) || overlay;
-    let hit = await findOptionWithScroll(leftPane, aliases);
-    if (!hit) {
-      hit = await findOptionWithScroll(overlay, aliases);
+  const cityRow = await pickRow(cityName);
+  let chosenRow = cityRow;
+  if (!chosenRow) {
+    const suggested = await askModelForVisibleOption(cityName, listVisibleChoiceLabels(overlay));
+    if (suggested) {
+      chosenRow = await pickRow(suggested);
     }
-    if (!hit) {
-      return failDrive(el, `地区未找到：${part}`);
-    }
-    // 有「>」的项：点整行下钻
-    safeClick(hit);
+  }
+  if (!chosenRow) {
+    await closeOpenChoicePanels();
+    return { ok: false, reason: `地区未找到：${cityName || value}` };
+  }
+  const cityHasArrow = /[>›〉]/.test(chosenRow.textContent || '');
+  clickRegionRadio(chosenRow);
+  await sleep(220);
+  overlay = findVisibleChoicePanel() || overlay;
+  if (selectedRegionCount(overlay) === 0) {
+    clickRegionRadio(chosenRow);
     await sleep(220);
-    overlay = findFreshOverlay(before) || overlay;
+    overlay = findVisibleChoicePanel() || overlay;
+  }
+  if (selectedRegionCount(overlay) === 0) {
+    const suggested = await askModelForVisibleOption(cityName, listVisibleChoiceLabels(overlay));
+    const retryRow = suggested ? await pickRow(suggested) : null;
+    if (retryRow) {
+      clickRegionRadio(retryRow);
+      await sleep(220);
+      overlay = findVisibleChoicePanel() || overlay;
+    }
+  }
+  if (cityHasArrow && districtName) {
+    const districtRow = await pickRow(districtName);
+    if (districtRow) {
+      clickRegionRadio(districtRow);
+      await sleep(220);
+      overlay = findVisibleChoicePanel() || overlay;
+    }
+  }
+  if (selectedRegionCount(overlay) === 0) {
+    await closeOpenChoicePanels();
+    return { ok: false, reason: '点了城市但已选地区仍是 0' };
   }
 
-  // 必须点确定
-  const confirmBtn = [...overlay.querySelectorAll('button, a, span, div')].find((node) => {
+  const confirmBtn = [...overlay.querySelectorAll('button')].find((node) => {
     if (!(node instanceof HTMLElement) || !isPageFieldVisible(node)) return false;
-    const text = ownVisibleText(node).replace(/\s+/g, '');
-    return text === '确定' || text === '确认' || text === 'OK';
+    return ownVisibleText(node).replace(/\s+/g, '') === '确定';
   });
-  if (confirmBtn) {
-    safeClick(confirmBtn);
-    await sleep(200);
-  } else if (isRegionModal(overlay)) {
-    return failDrive(el, '地区弹窗未找到确定按钮');
+  if (!confirmBtn) {
+    await closeOpenChoicePanels();
+    return { ok: false, reason: '地区弹窗未找到确定按钮' };
   }
-
-  const actual = readControlText(el);
-  const ok = aliasesAll.some((alias) => actual.toLowerCase().includes(alias))
-    || steps.some((part) => actual.includes(part.replace(/市$/, '')));
-  if (!ok) return failDrive(el, '地区选择后回读不一致');
-  await dismissOverlay(el);
+  safeClick(confirmBtn);
+  await sleep(240);
+  if (!triggerShowsValue(el, cityName)) {
+    await closeOpenChoicePanels();
+    return { ok: false, reason: '地区选择后回读不一致' };
+  }
   return { ok: true, reason: '地区弹窗选择成功' };
 }
 
@@ -851,46 +1216,52 @@ export async function driveRegionModal(el, value) {
 /**
  * 普通下拉：打开 → 点选项（支持短滚动）。
  */
-export async function driveSimpleSelect(el, value) {
-  const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
+export async function driveSimpleSelect(el, value, labelBlob = '') {
   const before = snapshotOverlays();
-  el.scrollIntoView({ block: 'center' });
-  safeClick(el);
-  await sleep(280);
-  let overlay = findFreshOverlay(before);
+  openSelectLike(el);
+  let overlay = await waitForOverlay(before, 1000);
   if (!overlay) {
-    // 原生 select
     if (el instanceof HTMLSelectElement) {
+      const aliasesNative = optionMatchAliases(value).map((item) => item.toLowerCase());
       const options = [...el.options];
-      const hit = options.find((option) => textMatchesAliases(option.text, aliases)
-        || textMatchesAliases(option.value, aliases));
+      const hit = options.find((option) => textMatchesAliases(option.text, aliasesNative)
+        || textMatchesAliases(option.value, aliasesNative));
       if (!hit) return { ok: false, reason: '原生下拉无匹配项' };
       el.value = hit.value;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return { ok: true, reason: '原生下拉成功' };
     }
-    return { ok: false, reason: '未打开下拉' };
+    return { ok: false, reason: '点击触发器后未见下拉' };
   }
   if (isRegionModal(overlay)) {
     await dismissOverlay(el);
     return driveRegionModal(el, value);
   }
   if (findSearchInput(overlay)) {
-    await dismissOverlay(el);
-    return driveSearchSelect(el, value);
+    const labels = choiceSearchLabels(value);
+    typeIntoInput(findSearchInput(overlay), labels[0]);
+    await sleep(250);
   }
-  const hit = await findOptionWithScroll(overlay, aliases);
+  let targetValue = choiceSearchLabels(value)[0];
+  if (/排名/.test(String(labelBlob || ''))) {
+    const optionTexts = [...overlay.querySelectorAll('[class*="option" i], [role="option"], li')]
+      .map((node) => String(node.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter((text) => text && text.length < 40);
+    const mappedRank = mapRankToOptions(targetValue, optionTexts);
+    if (mappedRank) {
+      targetValue = mappedRank;
+    }
+  }
+  const labels = choiceSearchLabels(targetValue);
+  const hit = await scrollFindExact(overlay, labels);
   if (!hit) return failDrive(el, '下拉未找到选项');
   safeClick(hit);
   await sleep(150);
-  const actual = readControlText(el);
-  if (!textMatchesAliases(actual, aliases) && !aliases.some((a) => actual.toLowerCase().includes(a))) {
-    // 多段值允许任一段命中
-    const parts = String(value).split(/\s*[/、,，]\s*/);
-    if (!parts.some((part) => actual.includes(part))) {
-      return failDrive(el, '下拉回读不一致');
-    }
+  const actual = readControlText(el).replace(/\s+/g, '');
+  const matched = labels.some((label) => actual.includes(label.replace(/\s+/g, '')));
+  if (!matched) {
+    return failDrive(el, '下拉回读不一致');
   }
   await dismissOverlay(el);
   return { ok: true, reason: '下拉点选成功' };
@@ -937,7 +1308,7 @@ export async function driveWidgetWrite(el, value, labelBlob = '') {
       break;
     case 'simpleSelect':
     default:
-      result = await driveSimpleSelect(el, value);
+      result = await driveSimpleSelect(el, value, labelBlob);
       break;
   }
 
@@ -947,7 +1318,7 @@ export async function driveWidgetWrite(el, value, labelBlob = '') {
     if (retry.ok) return { ...retry, fingerprint: 'searchSelect(retry)' };
   }
   if (!result.ok && fingerprint === 'suggestInput') {
-    const retry = await driveSimpleSelect(el, value);
+    const retry = await driveSimpleSelect(el, value, labelBlob);
     if (retry.ok) return { ...retry, fingerprint: 'simpleSelect(retry)' };
   }
   if (!result.ok && fingerprint === 'datePanel') {
@@ -955,8 +1326,11 @@ export async function driveWidgetWrite(el, value, labelBlob = '') {
     return { ...result, fingerprint };
   }
   if (!result.ok && fingerprint === 'simpleSelect') {
-    // 可输入控件：尝试联想协议
-    if (el instanceof HTMLInputElement && !el.readOnly) {
+    if (
+      el instanceof HTMLInputElement
+      && !el.readOnly
+      && !/排名|学历|类型|描述|内容/.test(labelBlob)
+    ) {
       const retry = await driveSuggestInput(el, value);
       if (retry.ok) return { ...retry, fingerprint: 'suggestInput(retry)' };
     }

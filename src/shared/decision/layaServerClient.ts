@@ -5,6 +5,7 @@
  * P6：健康检查结果短 TTL 缓存，减少误配 URL 反复打 /health、弹权限。
  */
 import { ensureHostPermission } from '../llm/openaiCompatible';
+import { getPageWorkAbortSignal } from '../workAbort';
 import type { FieldDescriptor } from '../types/fill';
 import type { ProfileData } from '../types/profile';
 import type {
@@ -277,6 +278,14 @@ export async function requestLayaServerDecide(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LAYA_SERVER_TIMEOUT_MS);
+  const userAbortSignal = getPageWorkAbortSignal();
+  const onUserAbort = (): void => {
+    controller.abort();
+  };
+  userAbortSignal?.addEventListener('abort', onUserAbort);
+  if (userAbortSignal?.aborted) {
+    controller.abort();
+  }
 
   const fieldsPayload: Array<Pick<
     FieldDescriptor,
@@ -331,8 +340,12 @@ export async function requestLayaServerDecide(
         typeof payload.notice === 'string' ? payload.notice : undefined,
     };
   } catch {
+    if (userAbortSignal?.aborted) {
+      throw new Error('USER_STOPPED');
+    }
     return null;
   } finally {
+    userAbortSignal?.removeEventListener('abort', onUserAbort);
     clearTimeout(timer);
   }
 }

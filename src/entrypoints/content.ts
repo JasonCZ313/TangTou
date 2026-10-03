@@ -1,7 +1,12 @@
 import { scanFieldsSettled } from '../content/scanner/scanFields';
 import { applyFillPlan, undoLastFill } from '../content/filler/fillFields';
 import { ensureSectionRows } from '../content/filler/ensureSectionRows';
-import { clearFillStop, requestFillStop } from '../content/fillAbort';
+import {
+  alignFillWorkGeneration,
+  beginFillWork,
+  requestFillStop,
+  shouldFillStop,
+} from '../content/fillAbort';
 import {
   hidePageOverlay,
   updatePageOverlay,
@@ -31,12 +36,8 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener(
       (message: ExtensionMessage, _sender, sendResponse) => {
         if (message.type === 'STOP_PAGE_WORK') {
-          requestFillStop();
-          updatePageOverlay({
-            percent: 0,
-            message: '已请求停止…',
-            showCancel: false,
-          });
+          requestFillStop(message.workGeneration);
+          hidePageOverlay();
           sendResponse({
             type: 'STOP_PAGE_WORK_ACK',
             requestId: message.requestId,
@@ -112,7 +113,28 @@ export default defineContentScript({
 
         if (message.type === 'SCAN_FIELDS') {
           const requestId = message.requestId;
-          clearFillStop();
+          // 同代续扫只对齐代次；新开一轮才 begin。禁止清停止。
+          if (message.continueWork) {
+            if (typeof message.workGeneration === 'number') {
+              alignFillWorkGeneration(message.workGeneration);
+            }
+          } else {
+            beginFillWork(message.workGeneration);
+          }
+          if (shouldFillStop()) {
+            hidePageOverlay();
+            reportToExtension({
+              type: 'SCAN_FIELDS_RESULT',
+              requestId,
+              fields: [],
+              notice: '已停止。',
+            });
+            sendResponse({
+              type: 'SCAN_FIELDS_STARTED',
+              requestId,
+            } satisfies ExtensionMessage);
+            return true;
+          }
           updatePageOverlay({
             percent: 4,
             message: '正在滚动扫描页面…',
@@ -126,6 +148,9 @@ export default defineContentScript({
             message: '正在滚动页面，已发现 0 个输入框。',
           });
           void scanFieldsSettled(document, (update) => {
+            if (shouldFillStop()) {
+              return;
+            }
             updatePageOverlay({
               percent: update.percent,
               message: update.message,
@@ -140,6 +165,16 @@ export default defineContentScript({
             });
           })
             .then((result) => {
+              if (shouldFillStop()) {
+                hidePageOverlay();
+                reportToExtension({
+                  type: 'SCAN_FIELDS_RESULT',
+                  requestId,
+                  fields: result.fields,
+                  notice: '已停止。',
+                });
+                return;
+              }
               updatePageOverlay({
                 percent: 100,
                 message: result.notice
@@ -183,7 +218,6 @@ export default defineContentScript({
         }
 
         if (message.type === 'ENSURE_SECTION_ROWS') {
-          clearFillStop();
           updatePageOverlay({
             percent: 10,
             message: '正在按档案补齐分区行…',
@@ -212,7 +246,7 @@ export default defineContentScript({
         }
 
         if (message.type === 'APPLY_FILL_PLAN') {
-          clearFillStop();
+          beginFillWork(message.workGeneration);
           void applyFillPlan(
             message.plan,
             message.filePayloads ?? [],
@@ -241,7 +275,7 @@ export default defineContentScript({
 
         // P7b：用户确认后的探活逐步执行（含回读；永不点提交）
         if (message.type === 'EXECUTE_PLAYBOOK') {
-          clearFillStop();
+          beginFillWork();
           updatePageOverlay({
             percent: 5,
             message: '正在按确认过的探活方案逐步执行…',

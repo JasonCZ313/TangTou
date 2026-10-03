@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>复杂网申对照</title>
+  <style>
+    body { background: #f4f4f4; color: #d0d0d0; font-family: sans-serif; }
+    .ghost { background: #f3f3f3; border: 1px solid #e6e6e6; color: #c8c8c8; height: 32px; width: 220px; }
+    .row { display: flex; gap: 12px; align-items: center; margin: 10px 0; }
+    .panel { display: none; position: absolute; background: #fff; color: #222; border: 1px solid #ddd; padding: 8px; max-height: 160px; overflow: auto; width: 280px; z-index: 2; }
+    .open .panel { display: block; }
+    .city-item { display: inline-flex; width: 120px; align-items: center; gap: 4px; }
+    .dot { width: 14px; height: 14px; border: 1px solid #999; border-radius: 50%; display: inline-block; }
+    .name { pointer-events: none; }
+    #region { width: 520px; max-height: none; }
+    #regionList { max-height: 120px; overflow: auto; }
+    button.ok { background: #1677ff; color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="row"><span>姓名</span><input id="name" class="ghost" /></div>
+  <div class="row" id="idRow"><span>证件号码</span><span>身份证</span><input id="idnum" class="ghost" placeholder="请输入" /></div>
+  <div class="row" id="nationRow"><span>国籍/地区</span><button id="nationBtn" type="button" class="ghost">请选择</button>
+    <div id="nationPanel" class="panel"></div>
+  </div>
+  <div class="row" id="liveRow"><span>现居住地</span><button id="liveBtn" type="button" class="ghost">请选择</button></div>
+  <div id="region" class="panel">
+    <input id="regionSearch" placeholder="搜索" />
+    <div>已选地区 <span id="pickedCount">0</span>/1 <span id="pickedName"></span></div>
+    <div id="regionList"></div>
+    <button id="regionCancel" type="button">取消</button>
+    <button id="regionOk" class="ok" type="button">确定</button>
+  </div>
+  <div class="row" id="schoolRow"><span>学校名称</span><input id="school" class="ghost" />
+    <div id="schoolPanel" class="panel"></div>
+  </div>
+  <div class="row" id="degreeRow"><span>学历</span><button id="degreeBtn" type="button" class="ghost">请选择</button>
+    <div id="degreePanel" class="panel"></div>
+  </div>
+  <div class="row" id="skillRow"><span>技能</span><button id="skillBtn" type="button" class="ghost">请选择</button>
+    <div id="skillPanel" class="panel">
+      <div id="skillList"></div>
+      <button id="skillOk" class="ok" type="button">确定</button>
+    </div>
+  </div>
+  <pre id="log"></pre>
+  <script>
+    const countries = ['中国', '中国香港', '中国澳门', '中国台湾', '美国', '英国', '日本', '韩国', '新加坡', '德国', '法国', '加拿大', '澳大利亚'];
+    const degrees = [];
+    for (let index = 0; index < 28; index += 1) degrees.push('选项' + index);
+    degrees.push('本科', '大学本科', '硕士研究生');
+    const cities = ['北京市', '天津市', '河北省', '山西省', '辽宁省', '吉林省', '黑龙江省', '上海市', '江苏省', '浙江省', '安徽省', '福建省', '江西省', '山东省', '河南省', '湖北省', '湖南省', '广东省', '广西壮族自治区', '海南省', '重庆市', '四川省', '贵州省', '云南省', '陕西省'];
+    const skills = ['Java', 'Python', 'C++', 'Go', 'Rust', 'SQL', 'Vue', 'React'];
+
+    function compact(text) {
+      return String(text || '').replace(/\s+/g, '').replace(/[>›〉→○●]/g, '');
+    }
+    function fillList(panel, names, onPick) {
+      panel.innerHTML = '';
+      for (const name of names) {
+        const item = document.createElement('div');
+        item.textContent = name;
+        item.style.height = '28px';
+        item.addEventListener('click', () => onPick(name, item));
+        panel.append(item);
+      }
+    }
+
+    const nationPanel = document.getElementById('nationPanel');
+    document.getElementById('nationBtn').addEventListener('click', () => {
+      nationPanel.parentElement.classList.add('open');
+      fillList(nationPanel, countries, (name) => {
+        document.getElementById('nationBtn').textContent = name;
+        nationPanel.parentElement.classList.remove('open');
+      });
+    });
+    document.getElementById('nationPanel').parentElement.style.position = 'relative';
+
+    const region = document.getElementById('region');
+    const regionList = document.getElementById('regionList');
+    let pickedCity = '';
+    function renderCities(filter) {
+      regionList.innerHTML = '';
+      for (const name of cities) {
+        if (filter && !name.includes(filter)) continue;
+        const item = document.createElement('div');
+        item.className = 'city-item';
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        const label = document.createElement('span');
+        label.className = 'name';
+        label.textContent = name;
+        label.addEventListener('click', (event) => event.stopPropagation());
+        dot.addEventListener('click', () => {
+          pickedCity = name;
+          document.getElementById('pickedCount').textContent = '1';
+          document.getElementById('pickedName').textContent = name;
+          dot.style.background = '#1677ff';
+        });
+        item.append(dot, label);
+        regionList.append(item);
+      }
+    }
+    renderCities('');
+    document.getElementById('liveBtn').addEventListener('click', () => { region.style.display = 'block'; });
+    document.getElementById('regionSearch').addEventListener('input', (event) => renderCities(event.target.value.trim()));
+    document.getElementById('regionOk').addEventListener('click', () => {
+      if (!pickedCity) return;
+      document.getElementById('liveBtn').textContent = pickedCity;
+      region.style.display = 'none';
+    });
+    document.getElementById('regionCancel').addEventListener('click', () => { region.style.display = 'none'; });
+
+    const school = document.getElementById('school');
+    const schoolPanel = document.getElementById('schoolPanel');
+    school.addEventListener('input', () => {
+      schoolPanel.style.display = 'block';
+      fillList(schoolPanel, ['北京建筑大学', '北京大学'], (name) => {
+        school.value = name;
+        school.dataset.picked = '1';
+        schoolPanel.style.display = 'none';
+      });
+    });
+
+    const degreePanel = document.getElementById('degreePanel');
+    document.getElementById('degreeBtn').addEventListener('click', () => {
+      degreePanel.style.display = 'block';
+      fillList(degreePanel, degrees, (name) => {
+        document.getElementById('degreeBtn').textContent = name;
+        degreePanel.style.display = 'none';
+      });
+    });
+
+    const chosenSkills = new Set();
+    const skillList = document.getElementById('skillList');
+    for (const name of skills) {
+      const item = document.createElement('div');
+      item.textContent = name;
+      item.addEventListener('click', () => {
+        if (chosenSkills.has(name)) chosenSkills.delete(name);
+        else chosenSkills.add(name);
+        item.style.background = chosenSkills.has(name) ? '#dbeafe' : '';
+      });
+      skillList.append(item);
+    }
+    document.getElementById('skillBtn').addEventListener('click', () => {
+      document.getElementById('skillPanel').style.display = 'block';
+    });
+    document.getElementById('skillOk').addEventListener('click', () => {
+      document.getElementById('skillBtn').textContent = [...chosenSkills].join('、') || '请选择';
+      document.getElementById('skillPanel').style.display = 'none';
+    });
+
+    function findRow(panel, label) {
+      const wanted = compact(label);
+      const nodes = [...panel.querySelectorAll('div, span, label')].filter((node) => {
+        const box = node.getBoundingClientRect();
+        return box.height >= 10 && box.height <= 72 && compact(node.textContent) === wanted;
+      });
+      nodes.sort((left, right) => left.getBoundingClientRect().height - right.getBoundingClientRect().height);
+      const textNode = nodes[0];
+      if (!textNode) return null;
+      return textNode.closest('.city-item') || textNode;
+    }
+    function clickDot(row) {
+      const dot = row.querySelector?.('.dot') || row;
+      dot.click();
+    }
+    function scrollFind(panel, label) {
+      const host = panel;
+      host.scrollTop = 0;
+      for (let step = 0; step < 12; step += 1) {
+        const hit = findRow(host, label);
+        if (hit) return hit;
+        host.scrollTop += 80;
+      }
+      return null;
+    }
+
+    const results = [];
+    function check(name, ok) { results.push(name + (ok ? ' 通过' : ' 失败')); }
+
+    document.getElementById('idnum').value = '110112200503130310';
+    check('证件号不进姓名', document.getElementById('name').value === '' && document.getElementById('idnum').value.length === 18);
+
+    document.getElementById('nationBtn').click();
+    const nationHit = findRow(nationPanel, '中国');
+    if (nationHit) nationHit.click();
+    check('国籍点中国而不是CN', document.getElementById('nationBtn').textContent === '中国');
+
+    document.getElementById('liveBtn').click();
+    const cityRow = findRow(regionList, '北京市');
+    if (cityRow) clickDot(cityRow);
+    const counted = document.getElementById('pickedCount').textContent === '1';
+    if (counted) document.getElementById('regionOk').click();
+    check('现居地点圆点后确定', document.getElementById('liveBtn').textContent === '北京市');
+
+    school.value = '北京建筑大学';
+    school.dispatchEvent(new Event('input'));
+    const schoolHit = findRow(schoolPanel, '北京建筑大学');
+    if (schoolHit && schoolHit !== school) schoolHit.click();
+    check('学校要点中建议', school.dataset.picked === '1');
+
+    document.getElementById('degreeBtn').click();
+    const degreeHit = scrollFind(degreePanel, '本科');
+    if (degreeHit) degreeHit.click();
+    check('学历滑动点本科', document.getElementById('degreeBtn').textContent === '本科');
+
+    document.getElementById('skillBtn').click();
+    findRow(skillList, 'Java')?.click();
+    findRow(skillList, 'Python')?.click();
+    document.getElementById('skillOk').click();
+    check('多选后点确定', document.getElementById('skillBtn').textContent === 'Java、Python');
+
+    const ghost = getComputedStyle(document.getElementById('name'));
+    check('浅色框仍可定位', document.getElementById('name').getBoundingClientRect().width > 40 && ghost.opacity !== '0' && ghost.display !== 'none');
+
+    document.getElementById('log').textContent = results.join('\n');
+  </script>
+</body>
+</html>

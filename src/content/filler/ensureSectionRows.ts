@@ -89,3 +89,23 @@ export async function ensureSectionRows(
 
   return { clicks, notices };
 }
+
+/**
+ * 只再点一次「添加」，给当前分区多出一行。成功返回 true。
+ */
+export async function addOneSectionRow(sectionPattern: string): Promise<boolean> {
+  const snapshot = locateRepeatSection(sectionPattern);
+  if (!snapshot?.addButton) {
+    return false;
+  }
+  const rowsBefore = snapshot.rows;
+  pressAddButton(snapshot.addButton);
+  await wait(ADD_SETTLE_MS);
+  const rowsAfter = locateRepeatSection(sectionPattern)?.rows ?? rowsBefore;
+  if (rowsAfter <= rowsBefore) {
+    return false;
+  }
+  labelNextEmptyCard(sectionPattern, rowsAfter);
+  relabelAllSectionCards(sectionPattern);
+  return true;
+}

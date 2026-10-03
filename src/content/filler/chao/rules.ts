@@ -26,6 +26,34 @@ export const normalizeDate = (value) => {
   return `${year}-${matched[2].padStart(2, '0')}-${(matched[3] || '01').padStart(2, '0')}`;
 };
 
+/**
+ * 原文里是否写了「日」（2005-03-13 算有日，2005-03 不算）。
+ * normalizeDate 会把缺日补成 01，不能拿补过的结果判断。
+ */
+export function sourceHasCalendarDay(value) {
+  return /\d{4}\D+\d{1,2}\D+\d{1,2}/.test(String(value || ''));
+}
+
+/**
+ * 像不像日历日期。用来禁止「只对上年份就算写对」。
+ */
+export function isCalendarDate(value) {
+  return /\d{4}\D+\d{1,2}/.test(String(value || ''));
+}
+
+/**
+ * 年、月必须一致；原文带日时日也必须一致。
+ * 禁止用「文字里出现 03」把 2005-01-03 当成 2005-03-13。
+ */
+export function dateTextMatches(intended, actual) {
+  const want = normalizeDate(intended).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const got = normalizeDate(actual).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!want || !got) return false;
+  if (want[1] !== got[1] || want[2] !== got[2]) return false;
+  if (!sourceHasCalendarDay(intended)) return true;
+  return want[3] === got[3];
+}
+
 /** 完整日期按控件角色截取：年控件拿 2023，月控件拿 6（不补零，兼容「6月」「06」两种文案） */
 export const datePartValue = (value, part) => {
   const normalized = normalizeDate(value);

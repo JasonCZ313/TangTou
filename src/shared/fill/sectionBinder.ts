@@ -1,11 +1,15 @@
 import {
+  AWARD_LEVEL_OPTIONS,
   AWARD_PRIZE_OPTIONS,
   DEGREE_LEVEL_OPTIONS,
   ETHNICITY_OPTIONS,
   GENDER_OPTIONS,
+  NATIONALITY_OPTIONS,
   POLITICAL_STATUS_OPTIONS,
+  STUDY_MODE_OPTIONS,
   labelOfCatalog,
 } from '../catalogs/enums';
+import { canonicalFieldRole } from './fieldRole';
 import { restoreListLineBreaks } from '../resume/restoreListBreaks';
 import type { FieldDescriptor, FillPlan } from '../types/fill';
 import type {
@@ -42,6 +46,8 @@ interface BoundRow {
   endDate: string;
   isCurrent: boolean;
   name: string;
+  /** 获奖级别中文：校级/省级，禁止写 catalog code */
+  awardLevel: string;
   school: string;
   college: string;
   company: string;
@@ -129,6 +135,7 @@ function emptyRow(): BoundRow {
     endDate: '',
     isCurrent: false,
     name: '',
+    awardLevel: '',
     school: '',
     college: '',
     company: '',
@@ -154,7 +161,7 @@ function rowFromEducation(item: EducationItem): BoundRow {
   row.college = item.college ?? '';
   row.major = item.major ?? '';
   row.degree = labelOfCatalog(DEGREE_LEVEL_OPTIONS, item.degreeLevel || item.degree || '');
-  row.educationType = (item.educationType ?? '').trim();
+  row.educationType = labelOfCatalog(STUDY_MODE_OPTIONS, item.educationType || item.studyMode || '');
   row.rank = item.rank ?? '';
   row.city = cityNameOnly(item.city ?? '');
   row.description = item.description ?? '';
@@ -203,7 +210,9 @@ function rowFromAward(item: AwardItem): BoundRow {
   row.startDate = item.date ?? '';
   row.name = item.name ?? '';
   row.prize = labelOfCatalog(AWARD_PRIZE_OPTIONS, item.prizeRank ?? '');
-  row.description = item.level ?? '';
+  row.awardLevel = labelOfCatalog(AWARD_LEVEL_OPTIONS, item.level ?? '');
+  // 描述写真实描述；禁止把 province 这种级别 code 打进描述框
+  row.description = item.description ?? '';
   return row;
 }
 
@@ -349,6 +358,44 @@ function valueAllowedByOptions(rawValue: string, options: string[] | undefined):
 }
 
 /**
+ * 档案「前40%」对选项「前5%/10%/…/50%/其他」：精确命中优先，否则取覆盖该比例且最贴近的一档（最小 x ≥ p）。
+ */
+export function mapRankToOptions(rankText: string, options: string[] | undefined): string | null {
+  const raw = rankText.trim();
+  if (!raw) {
+    return null;
+  }
+  const exact = valueAllowedByOptions(raw, options);
+  if (exact) {
+    return exact;
+  }
+  const percentMatch = raw.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (!percentMatch) {
+    return exact;
+  }
+  const profilePercent = Number(percentMatch[1]);
+  const usable = (options ?? []).filter((optionText) => optionText.trim() && optionText.trim() !== '暂无选项');
+  if (usable.length === 0) {
+    return raw;
+  }
+  const ranked: Array<{ optionText: string; percentValue: number }> = [];
+  for (const optionText of usable) {
+    const optionPercent = optionText.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (optionPercent) {
+      ranked.push({ optionText: optionText.trim(), percentValue: Number(optionPercent[1]) });
+    }
+  }
+  const covering = ranked
+    .filter((item) => item.percentValue >= profilePercent)
+    .sort((left, right) => left.percentValue - right.percentValue);
+  if (covering[0]) {
+    return covering[0].optionText;
+  }
+  const otherOption = usable.find((optionText) => /其他|其它/.test(optionText));
+  return otherOption?.trim() ?? null;
+}
+
+/**
  * 把一个已经标好「卡片第几行」的字段绑到对应档案条目。
  * 排名框没有对应选项时跳过，避免把「大学本科」打进成绩排名。
  */
@@ -357,7 +404,24 @@ export function bindLabeledField(
   profile: ProfileData,
 ): SectionBindResult {
   const label = field.label ?? '';
-  if (/意向|期望城市|工作城市/.test(label) && /城市/.test(label) && !/区|县|街道/.test(label)) {
+  const fieldRole = canonicalFieldRole(label);
+  if (fieldRole === '姓名' || (/姓名|名字/.test(label) && !/学校|单位|公司|证书|项目|奖|组织|证件/.test(label))) {
+    const fullName = profile.basic.fullName.trim();
+    if (!fullName) {
+      return null;
+    }
+    return { kind: 'value', value: fullName, reason: '按行绑定：姓名' };
+  }
+  if (/意向工作地点|工作地点/.test(label) && !/其他/.test(label)) {
+    const cityText = cityNameOnly(
+      profile.jobIntent.expectedCities || profile.jobIntent.workCity || profile.basic.currentCity || '',
+    );
+    if (!cityText) {
+      return null;
+    }
+    return { kind: 'value', value: cityText, reason: '按行绑定：意向工作地点只写城市名' };
+  }
+  if (/意向|期望城市|工作城市|其他意向城市/.test(label) && /城市/.test(label) && !/区|县|街道/.test(label)) {
     const cityText = cityNameOnly(
       profile.jobIntent.expectedCities || profile.jobIntent.workCity || profile.basic.currentCity || '',
     );
@@ -378,7 +442,16 @@ export function bindLabeledField(
     }
     return { kind: 'value', value: allowed, reason: '按行绑定：省用城市名去对直辖市' };
   }
-  if (/最高学历/.test(label) && !/学校|专业|排名|时间|成绩/.test(label)) {
+  if (/是否/.test(label) && /最高学历/.test(label)) {
+    const educationIndex = rowIndex(label) ?? 0;
+    const educationItem = profile.education[educationIndex];
+    if (!educationItem) {
+      return { kind: 'skip', reason: '这一行没有对应的学历' };
+    }
+    const yesNo = educationItem.isHighest ? '是' : '否';
+    return { kind: 'value', value: yesNo, reason: '按行绑定：是否最高学历' };
+  }
+  if (/最高学历/.test(label) && !/是否|学校|专业|排名|时间|成绩/.test(label)) {
     const highest = profile.education[0];
     const degreeText = highest
       ? labelOfCatalog(DEGREE_LEVEL_OPTIONS, highest.degreeLevel || highest.degree || '')
@@ -392,19 +465,43 @@ export function bindLabeledField(
     }
     return { kind: 'value', value: allowed, reason: '按行绑定：最高学历用当前学历' };
   }
-  if (/姓/.test(label) && !/姓名/.test(label)) {
-    const surname = profile.basic.fullName.trim().slice(0, 1);
-    if (!surname) {
-      return null;
-    }
-    return { kind: 'value', value: surname, reason: '按行绑定：姓' };
+  if (fieldRole === '国籍') {
+    const nationalityText = labelOfCatalog(NATIONALITY_OPTIONS, (profile.basic.nationality ?? '').trim()) || '中国';
+    return { kind: 'value', value: nationalityText, reason: '按行绑定：国籍' };
   }
-  if (/名/.test(label) && !/姓名|名称|排名/.test(label)) {
-    const givenName = profile.basic.fullName.trim().slice(1);
-    if (!givenName) {
+  if (fieldRole === '籍贯') {
+    const nativePlaceText = (profile.basic.nativePlace ?? '').trim();
+    if (!nativePlaceText) {
       return null;
     }
-    return { kind: 'value', value: givenName, reason: '按行绑定：名' };
+    return { kind: 'value', value: nativePlaceText, reason: '按行绑定：籍贯' };
+  }
+  if (fieldRole === '现居住地') {
+    const liveText = cityNameOnly(profile.basic.currentCity ?? profile.basic.hukouLocation ?? '');
+    if (!liveText) {
+      return null;
+    }
+    return { kind: 'value', value: liveText, reason: '按行绑定：现居住地只写城市名' };
+  }
+  if (/姓/.test(label) && !/姓名|名字/.test(label) && !/民族/.test(label)) {
+    const roleOnly = label.replace(/^.*?第\d+行/, '');
+    if (/^姓$/.test(roleOnly) || /^(姓氏)$/.test(roleOnly)) {
+      const surname = profile.basic.fullName.trim().slice(0, 1);
+      if (!surname) {
+        return null;
+      }
+      return { kind: 'value', value: surname, reason: '按行绑定：姓' };
+    }
+  }
+  {
+    const roleOnly = label.replace(/^.*?第\d+行/, '');
+    if (/^名$/.test(roleOnly)) {
+      const givenName = profile.basic.fullName.trim().slice(1);
+      if (!givenName) {
+        return null;
+      }
+      return { kind: 'value', value: givenName, reason: '按行绑定：名' };
+    }
   }
   if (/证件类型/.test(label) || (field.options?.some((optionText) => /身份证|护照/.test(optionText)) && !/号码|手机/.test(label))) {
     const idType = (profile.basic.idType ?? '').trim() || ((profile.basic.idNumber ?? '').trim() ? '身份证' : '');
@@ -419,9 +516,7 @@ export function bindLabeledField(
     if (!idNumber) {
       return null;
     }
-    if (field.options?.some((optionText) => /身份证|护照/.test(optionText))) {
-      return { kind: 'skip', reason: '这是证件类型下拉，号码不能打进去' };
-    }
+    // 同一表单项里类型下拉的「身份证/护照」选项，不能当成号码框去 skip
     return { kind: 'value', value: idNumber, reason: '按行绑定：证件号码' };
   }
   if (/手机号码|手机号/.test(label) && !/区号/.test(label)) {
@@ -571,11 +666,11 @@ export function bindLabeledField(
     if (!rankText) {
       return { kind: 'skip', reason: '成绩排名不能拿学历来填' };
     }
-    const allowed = valueAllowedByOptions(rankText, field.options);
+    const allowed = mapRankToOptions(rankText, field.options);
     if (!allowed) {
-      return { kind: 'skip', reason: '成绩排名的选项里没有档案中的名次' };
+      return { kind: 'skip', reason: '成绩排名的选项里没有可覆盖档案名次的档位' };
     }
-    return { kind: 'value', value: allowed, reason: '按行绑定：成绩排名' };
+    return { kind: 'value', value: allowed, reason: '按行绑定：成绩排名（含档位换算）' };
   }
 
   const row = boundRow(profile, label);
@@ -607,7 +702,10 @@ export function bindLabeledField(
   } else if (/(开始时间|起始时间|开始日期|入学时间|入职时间)/.test(label)) {
     rawValue = row.startDate;
   } else if (/(结束时间|结束日期|截止时间|离职时间|毕业时间|获得时间)/.test(label)) {
-    rawValue = row.endDate || row.startDate;
+    rawValue = row.endDate;
+    if (!rawValue.trim() && row.isCurrent) {
+      return { kind: 'skip', reason: '这一条到至今，不写结束时间' };
+    }
   } else if ((/城市|所在地/.test(label)) && !/区|县|街道/.test(label)) {
     rawValue = row.city;
   } else if (/学院/.test(label) && !/学校|院校/.test(label)) {
@@ -630,10 +728,14 @@ export function bindLabeledField(
     rawValue = row.duty;
   } else if (/奖次|等第/.test(label)) {
     rawValue = row.prize;
+  } else if (/级别|等级/.test(label) && !/描述/.test(label)) {
+    rawValue = row.awardLevel;
+  } else if (/获奖项|奖项名称|证书名称/.test(label)) {
+    rawValue = row.name;
   } else if (/名称|姓名/.test(label) && !/证件/.test(label)) {
     rawValue = row.name;
-  } else if (/描述|内容|职责|实习内容|实践描述|获奖描述|证书描述/.test(label)) {
-    rawValue = row.description;
+  } else if (/描述|内容|职责|实习内容|实践描述|获奖描述|证书描述/.test(label) || fieldRole === '描述') {
+    rawValue = row.description || row.duty;
   }
   if (!rawValue.trim()) {
     if (sectionKind(label)) {

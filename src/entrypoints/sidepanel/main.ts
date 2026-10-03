@@ -77,6 +77,10 @@ let currentSession: FillSession | null = null;
 /** 最近一次智能探活产出的方案（合并/执行用） */
 let latestPlaybook: SitePlaybook | null = null;
 let isBusy = false;
+/** 侧栏点了停止：立刻改文案，并让对照等待不再刷「已等待 N 秒」 */
+let userRequestedStop = false;
+/** 本轮用户操作的工作代次；停止作废该代，续扫/对照共用同一代 */
+let sidepanelWorkGeneration = 0;
 
 const settingsDetails = document.getElementById(
   'settingsDetails',
@@ -1530,6 +1534,8 @@ function showFillDoneDialog(filled: number, misses: FillMiss[]): void {
 }
 
 async function runConfirmWrite(): Promise<void> {
+  userRequestedStop = false;
+  sidepanelWorkGeneration += 1;
   const selectedProfileId = profileSelect.value;
   if (!selectedProfileId) {
     showError('请先选择档案');
@@ -1552,9 +1558,26 @@ async function runConfirmWrite(): Promise<void> {
       requestId: createRequestId(),
       plan: editedPlan,
       profileId: selectedProfileId,
+      workGeneration: sidepanelWorkGeneration,
     });
+    if (userRequestedStop || applyResponse.type === 'ERROR') {
+      if (applyResponse.type === 'ERROR' && applyResponse.code === 'USER_STOPPED') {
+        showScanProgress(100, '已停止。');
+        showStatus('已停止。', 'info');
+        return;
+      }
+      if (userRequestedStop) {
+        showScanProgress(100, '已停止。');
+        showStatus('已停止。', 'info');
+        return;
+      }
+    }
     if (applyResponse.type !== 'APPLY_FILL_RESULT') {
-      throw new Error('写入页面失败');
+      throw new Error(
+        applyResponse.type === 'ERROR'
+          ? describeUserFacingError(applyResponse.message)
+          : '写入页面失败',
+      );
     }
     const misses = applyResponse.misses ?? [];
     renderMissTable(misses);
@@ -1603,32 +1626,39 @@ async function runUndoFlow(): Promise<void> {
 /**
  * 扫描出预览前：按档案条数只点「添加」补行，不写任何档案正文。
  */
-async function ensureRowsBeforePlan(profileId: string): Promise<void> {
-  showScanProgress(72, '正在按档案条数补行…');
-  const ensureResponse = await requestBackground({
-    type: 'ENSURE_SECTION_ROWS',
-    requestId: createRequestId(),
-    profileId,
-  });
-  if (ensureResponse.type !== 'ENSURE_SECTION_ROWS_RESULT') {
-    return;
-  }
-  if (ensureResponse.clicks > 0) {
-    showScanProgress(
-      78,
-      `已点击添加 ${ensureResponse.clicks} 次，正在重新扫描新行…`,
-    );
-  }
+async function ensureRowsBeforePlan(_profileId: string): Promise<void> {
+  // 补行改到写入阶段「填完一行再添加一行」，预览不再一次加满空壳。
 }
 
 async function runRescanFlow(profileId: string): Promise<void> {
+  userRequestedStop = false;
+  sidepanelWorkGeneration += 1;
+  const workGeneration = sidepanelWorkGeneration;
+  const isStopped = (): boolean =>
+    userRequestedStop || workGeneration !== sidepanelWorkGeneration;
   stopButton.hidden = false;
   showScanProgress(4, '正在滚动页面，已发现 0 个输入框。');
   try {
-    // ① 先扫一遍（滚动、展开）
-    const firstScan = await scanActivePage(createRequestId(), (progress) => {
-      showScanProgress(progress.percent, progress.message);
-    });
+    // ① 先扫一遍（滚动、展开）—— 本轮换代开始
+    const firstScan = await scanActivePage(
+      createRequestId(),
+      (progress) => {
+        if (isStopped()) {
+          return;
+        }
+        showScanProgress(progress.percent, progress.message);
+      },
+      {
+        workGeneration,
+        continueWork: false,
+        shouldAbort: isStopped,
+      },
+    );
+    if (isStopped()) {
+      showScanProgress(100, '已停止。');
+      showStatus('已停止。', 'info');
+      return;
+    }
     if (firstScan.fields.length === 0) {
       await clearPendingSession();
       renderMappingTable();
@@ -1642,15 +1672,36 @@ async function runRescanFlow(profileId: string): Promise<void> {
 
     // ② 按档案条数只点「添加」补行（不写正文）
     await ensureRowsBeforePlan(profileId);
+    if (isStopped()) {
+      showScanProgress(100, '已停止。');
+      showStatus('已停止。', 'info');
+      return;
+    }
 
-    // ③ 再扫一遍，拿到新行的 fieldId
-    const scanResult = await scanActivePage(createRequestId(), (progress) => {
-      const remappedPercent = Math.min(
-        88,
-        78 + Math.floor(progress.percent * 0.1),
-      );
-      showScanProgress(remappedPercent, progress.message);
-    });
+    // ③ 再扫一遍，拿到新行的 fieldId（同代续扫，禁止清停止）
+    const scanResult = await scanActivePage(
+      createRequestId(),
+      (progress) => {
+        if (isStopped()) {
+          return;
+        }
+        const remappedPercent = Math.min(
+          88,
+          78 + Math.floor(progress.percent * 0.1),
+        );
+        showScanProgress(remappedPercent, progress.message);
+      },
+      {
+        workGeneration,
+        continueWork: true,
+        shouldAbort: isStopped,
+      },
+    );
+    if (isStopped()) {
+      showScanProgress(100, '已停止。');
+      showStatus('已停止。', 'info');
+      return;
+    }
     const scannedFields =
       scanResult.fields.length > 0 ? scanResult.fields : firstScan.fields;
     if (scannedFields.length === 0) {
@@ -1670,10 +1721,20 @@ async function runRescanFlow(profileId: string): Promise<void> {
       profileId,
       scannedFields,
       (elapsedSeconds) => {
+        if (isStopped()) {
+          return;
+        }
         const waitPercent = Math.min(99, 90 + Math.floor(elapsedSeconds / 15));
         showScanProgress(waitPercent, `正在对照档案，已等待 ${elapsedSeconds} 秒。`);
       },
+      isStopped,
+      workGeneration,
     );
+    if (isStopped()) {
+      showScanProgress(100, '已停止。');
+      showStatus('已停止。', 'info');
+      return;
+    }
     showScanProgress(
       100,
       scanResult.notice
@@ -1711,7 +1772,13 @@ async function withBusy(action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error: unknown) {
-    showError(describeUserFacingError(error));
+    const facing = describeUserFacingError(error);
+    if (facing === '已停止。' || (error instanceof Error && error.message === 'USER_STOPPED')) {
+      showScanProgress(100, '已停止。');
+      showStatus('已停止。', 'info');
+      return;
+    }
+    showError(facing);
   } finally {
     isBusy = false;
     syncBusyUi();
@@ -1917,11 +1984,13 @@ function bindEvents(): void {
   });
 
   stopButton.addEventListener('click', () => {
+    userRequestedStop = true;
+    showScanProgress(100, '已停止。');
+    showStatus('已停止。', 'info');
     void requestBackground({
       type: 'STOP_PAGE_WORK',
       requestId: createRequestId(),
-    }).then(() => {
-      showStatus('已要求停止，当前这一格结束后不再继续。', 'info');
+      workGeneration: sidepanelWorkGeneration,
     });
   });
 

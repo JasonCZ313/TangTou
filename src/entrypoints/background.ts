@@ -1,6 +1,7 @@
 import { ensureHostPermission,
   requestResumeProfilePatch,
   requestTextPolish,
+  requestVisibleOptionPick,
   testApiConnection,
 } from '../shared/llm/openaiCompatible';
 import { listProfiles, getProfile } from '../shared/storage/profileStore';
@@ -35,6 +36,13 @@ import { buildSitePlaybook } from '../shared/decision/playbookEngine';
 import type { EvidencePack } from '../shared/playbook/types';
 import { sendToActiveTab } from '../shared/messaging/send';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
+import {
+  abortPageWork,
+  beginPageWorkAbort,
+  getPageWorkAbortSignal,
+  getPageWorkGeneration,
+  isPageWorkAborted,
+} from '../shared/workAbort';
 import type { FieldDescriptor } from '../shared/types/fill';
 import type { ProfileData } from '../shared/types/profile';
 import { resolveSiteAdapter } from '../content/adapters/registry';
@@ -71,9 +79,21 @@ function normalizeError(error: unknown): { code: string; message: string } {
       };
     }
     if (error.name === 'AbortError') {
+      if (isPageWorkAborted() || errorMessage === 'USER_STOPPED') {
+        return {
+          code: 'USER_STOPPED',
+          message: '已停止。',
+        };
+      }
       return {
         code: 'LLM_TIMEOUT',
         message: '模型超过等待时间还没返回。请检查网络和接口地址后再试。',
+      };
+    }
+    if (errorMessage === 'USER_STOPPED') {
+      return {
+        code: 'USER_STOPPED',
+        message: '已停止。',
       };
     }
     return { code: 'UNKNOWN', message: describeUserFacingError(error) };
@@ -509,6 +529,25 @@ async function handleCapturePageOcr(
 async function handleBuildFillPlan(
   message: Extract<ExtensionMessage, { type: 'BUILD_FILL_PLAN' }>,
 ): Promise<ExtensionMessage> {
+  // 对照与扫描同代：已停止则立刻返回；禁止换新 AbortController 把停止作废
+  if (typeof message.workGeneration === 'number' && message.workGeneration > 0) {
+    if (getPageWorkGeneration() !== message.workGeneration) {
+      // 代次不一致且尚未建锁时才建；已有同代锁则不动
+      if (!getPageWorkAbortSignal() || getPageWorkGeneration() < message.workGeneration) {
+        beginPageWorkAbort(message.workGeneration);
+      }
+    }
+  } else if (!getPageWorkAbortSignal()) {
+    beginPageWorkAbort();
+  }
+  if (isPageWorkAborted()) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'USER_STOPPED',
+      message: '已停止。',
+    };
+  }
   const profile = await getProfile(message.profileId);
   if (!profile) {
     return {
@@ -537,6 +576,14 @@ async function handleBuildFillPlan(
 
   // P4b：截图识字（失败不挡主路径）
   const ocrCapture = await captureActiveTabOcrText(message.requestId);
+  if (isPageWorkAborted()) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'USER_STOPPED',
+      message: '已停止。',
+    };
+  }
   const fieldsForDecision: FieldDescriptor[] = enrichFieldsWithPageOcr(
     message.fields,
     ocrCapture.ocrText,
@@ -555,6 +602,14 @@ async function handleBuildFillPlan(
     decisionMinConfidence: settings.decisionMinConfidence,
     layaModelUrl: settings.layaModelUrl,
   });
+  if (isPageWorkAborted()) {
+    return {
+      type: 'ERROR',
+      requestId: message.requestId,
+      code: 'USER_STOPPED',
+      message: '已停止。',
+    };
+  }
 
   // 把 OCR 轻量提案并入计划：只补尚未有提案的字段，不覆盖主路径结果
   let plan = decisionResult.plan;
@@ -1052,6 +1107,36 @@ async function handlePolishText(
 }
 
 /**
+ * 弹窗已经打开但没点中时，请模型在看得见的选项里选一项。
+ */
+async function handlePickVisibleOption(
+  message: Extract<ExtensionMessage, { type: 'PICK_VISIBLE_OPTION' }>,
+): Promise<ExtensionMessage> {
+  const settings = await getSettings();
+  if (!settings.apiBaseUrl.trim() || !settings.apiKey.trim() || !settings.model.trim()) {
+    return {
+      type: 'PICK_VISIBLE_OPTION_RESULT',
+      requestId: message.requestId,
+      option: '',
+      confirm: true,
+    };
+  }
+  const picked = await requestVisibleOptionPick({
+    apiBaseUrl: settings.apiBaseUrl,
+    apiKey: settings.apiKey,
+    model: settings.model,
+    target: message.target,
+    options: message.options,
+  });
+  return {
+    type: 'PICK_VISIBLE_OPTION_RESULT',
+    requestId: message.requestId,
+    option: picked.option,
+    confirm: picked.confirm,
+  };
+}
+
+/**
  * 当前标签没有内容脚本时，Chrome 会用这句英文拒绝连接。
  */
 function isMissingContentScript(error: unknown): boolean {
@@ -1117,6 +1202,8 @@ async function dispatchMessage(
       return handleGetState(message.requestId, sender);
     case 'TEST_API':
       return handleTestApi(message);
+    case 'PICK_VISIBLE_OPTION':
+      return handlePickVisibleOption(message);
     case 'BUILD_FILL_PLAN':
       return handleBuildFillPlan(message);
     case 'LAYA_MODEL_STATUS':
@@ -1141,8 +1228,6 @@ async function dispatchMessage(
       return handleOpenSidePanel(message.requestId, sender.tab?.id);
     case 'RESET_TOKEN_USAGE':
       return handleResetTokenUsage(message.requestId);
-    case 'APPLY_FILL_PLAN':
-      return forwardApplyWithFiles(message);
     case 'ENSURE_SECTION_ROWS':
       return forwardEnsureSectionRows(message);
     case 'PARSE_RESUME':
@@ -1157,9 +1242,28 @@ async function dispatchMessage(
     case 'PAGE_OVERLAY_UPDATE':
     case 'PAGE_OVERLAY_HIDE':
     case 'COLLECT_PAGE_EVIDENCE':
-    case 'SCAN_FIELDS':
-    case 'STOP_PAGE_WORK':
     case 'UNDO_LAST_FILL':
+      return forwardToActiveTab(message);
+    case 'SCAN_FIELDS': {
+      // 新开一轮扫描才换代；同代续扫只转发，绝不重置停止锁
+      if (!message.continueWork) {
+        beginPageWorkAbort(message.workGeneration);
+      }
+      if (isPageWorkAborted()) {
+        return {
+          type: 'SCAN_FIELDS_RESULT',
+          requestId: message.requestId,
+          fields: [],
+          notice: '已停止。',
+        };
+      }
+      return forwardToActiveTab(message);
+    }
+    case 'APPLY_FILL_PLAN':
+      beginPageWorkAbort(message.workGeneration);
+      return forwardApplyWithFiles(message);
+    case 'STOP_PAGE_WORK':
+      abortPageWork(message.workGeneration);
       return forwardToActiveTab(message);
     default:
       return {

@@ -12,8 +12,13 @@ import {
   isJunkRoleText,
   pickUsableRoleText,
 } from '../../shared/fill/fieldRole';
-import { prepareFieldForWrite, relabelAllSectionCards } from '../scanner/scanFields';
-import { ensureSectionRows } from './ensureSectionRows';
+import {
+  prepareFieldForWrite,
+} from '../scanner/scanFields';
+import { fillProfileByCards } from './cardFill';
+import { runCommitClicks } from './commitClick';
+import { shouldFillStop as isFillStopRequested } from '../fillAbort';
+import { dateTextMatches, isCalendarDate, optionMatchAliases } from './chao/rules';
 import {
   AUTOFILL_FILL_CLASS,
   AUTOFILL_MISS_CLASS,
@@ -52,9 +57,23 @@ function readbackMatches(intended: string, actual: string): boolean {
   const want = normalizeCompareText(intended);
   const got = normalizeCompareText(actual);
   if (!want) return false;
-  return got === want
-    || (got.length >= 2 && want.includes(got))
-    || (want.length >= 2 && got.includes(want));
+  if (isCalendarDate(intended)) {
+    return dateTextMatches(intended, actual);
+  }
+  if (got === want || (got.length >= 2 && want.includes(got)) || (want.length >= 2 && got.includes(want))) {
+    return true;
+  }
+  const aliases = optionMatchAliases(intended).map((item) => normalizeCompareText(item));
+  if (aliases.some((alias) => alias && (got.includes(alias) || alias.includes(got)))) {
+    return true;
+  }
+  const stripCity = (text: string) => text.replace(/市/g, '');
+  if (stripCity(got) && stripCity(want) && (
+    stripCity(got).includes(stripCity(want)) || stripCity(want).includes(stripCity(got))
+  )) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -65,6 +84,9 @@ async function confirmCellWithLaya(
   intended: string,
   actual: string,
 ): Promise<boolean> {
+  if (isFillStopRequested()) {
+    return false;
+  }
   if (!readbackMatches(intended, actual)) {
     return false;
   }
@@ -450,7 +472,6 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
     captureUndoSnapshotsForElements([matched], true);
     if (assignFilePayload(matched, payload)) {
       filled += 1;
-      matched.classList.add(AUTOFILL_FILL_CLASS);
     } else {
       misses.push({
         label: payload.fileName || '附件',
@@ -468,7 +489,7 @@ export async function applyFillPlan(
   plan: FillPlan,
   filePayloads: FileUploadPayload[] = [],
   _profileId?: string,
-  sectionAdds: SectionAddRequest[] = [],
+  _sectionAdds: SectionAddRequest[] = [],
   profileData?: ProfileData,
 ): Promise<{
   filled: number;
@@ -479,19 +500,7 @@ export async function applyFillPlan(
   const { updatePageOverlay, hidePageOverlay } = await import('../ui/pageOverlay');
   const { shouldFillStop } = await import('../fillAbort');
 
-  if (sectionAdds.length > 0) {
-    updatePageOverlay({
-      percent: 4,
-      message: '正在按档案补齐分区行数…',
-      showCancel: true,
-    });
-    await ensureSectionRows(sectionAdds);
-    // 写入前再全量重标，防止补行后行号丢失
-    for (const request of sectionAdds) {
-      relabelAllSectionCards(request.sectionPattern);
-    }
-    await settle(200);
-  }
+  // 不在写入前一次性加满空行；按「填完一行再添加一行」增长。
 
   const writableItems = plan.items.filter(
     (item) => item.value.trim().length > 0 || item.attachmentId,
@@ -574,14 +583,26 @@ export async function applyFillPlan(
       continue;
     }
 
-    const writeResult = await writeField(
-      {
-        el: element,
-        blob: liveLabel,
-        control: classifyControl(element),
-      },
-      resolved.value,
-    );
+    let writeResult: { ok: boolean; reason: string };
+    try {
+      writeResult = await writeField(
+        {
+          el: element,
+          blob: liveLabel,
+          control: classifyControl(element),
+        },
+        resolved.value,
+      );
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : '写入异常';
+      misses.push({
+        label: liveLabel,
+        reason: /Illegal invocation/i.test(detail) ? '控件类型不匹配，已跳过本格' : detail.slice(0, 60),
+      });
+      element.classList.add(AUTOFILL_MISS_CLASS);
+      await settle(60);
+      continue;
+    }
     if (!writeResult.ok) {
       misses.push({
         label: liveLabel,
@@ -599,17 +620,35 @@ export async function applyFillPlan(
         label: liveLabel,
         reason: '回读/Laya 核对未通过',
       });
-      element.classList.remove(AUTOFILL_FILL_CLASS);
       element.classList.add(AUTOFILL_MISS_CLASS);
       await settle(60);
       continue;
     }
 
     filled += 1;
-    element.classList.add(AUTOFILL_FILL_CLASS);
     element.classList.remove(AUTOFILL_MISS_CLASS);
-    // 逐格节奏：给页面联动与用户可见进度
     await settle(80);
+  }
+
+  // 按卡片重写：第 i 张卡对档案第 i 条。不再走「第N行」补填（行号经常没打上，第二张卡会空着）。
+  if (profileData) {
+    const cardFilled = await fillProfileByCards(profileData, misses, (message) => {
+      updatePageOverlay({
+        percent: 93,
+        message,
+        showCancel: true,
+      });
+    });
+    filled += cardFilled;
+  }
+
+  if (!shouldFillStop()) {
+    updatePageOverlay({
+      percent: 95,
+      message: '正在点击确定和保存…',
+      showCancel: true,
+    });
+    await runCommitClicks();
   }
 
   if (!shouldFillStop()) {

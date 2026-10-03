@@ -46,6 +46,52 @@ export function pickUsableRoleText(...candidates: Array<string | null | undefine
 }
 
 /**
+ * 页面标题与档案字段名可以不同：用角色归并后再绑（姓名=名字）。
+ * 不含公司/学校/证书等「名称」，避免把单位名称当成姓名。
+ */
+export function canonicalFieldRole(rawLabel: string): string {
+  const text = String(rawLabel || '')
+    .replace(/\s+/g, '')
+    .replace(/^.*?第\d+行/, '');
+  if (/姓名|名字/.test(text) && !/学校|单位|公司|证书|项目|奖|组织|证件/.test(text)) {
+    return '姓名';
+  }
+  if (/证件号码|证件号|身份证号/.test(text) && !/类型/.test(text)) {
+    return '证件号码';
+  }
+  if (/证件类型/.test(text)) {
+    return '证件类型';
+  }
+  if (/国籍|国家/.test(text) && !/现居|籍贯|户籍/.test(text)) {
+    return '国籍';
+  }
+  if (/籍贯/.test(text)) {
+    return '籍贯';
+  }
+  if (/现居住地|现居地|居住地|现居/.test(text) && !/省$|市$/.test(text)) {
+    return '现居住地';
+  }
+  if (/专业排名|成绩排名|排名/.test(text)) {
+    return '专业排名';
+  }
+  if (/学历类型|办学类型|学习形式/.test(text)) {
+    return '学历类型';
+  }
+  if (/实习内容|实践描述|证书描述|获奖描述|工作内容/.test(text) || (/描述|内容/.test(text) && !/名称/.test(text))) {
+    return '描述';
+  }
+  return text;
+}
+
+/**
+ * 标签是否表示给定角色（含同义词）。
+ */
+export function labelHasRole(rawLabel: string, roleName: string): boolean {
+  return canonicalFieldRole(rawLabel) === roleName
+    || String(rawLabel || '').includes(roleName);
+}
+
+/**
  * 按控件形态猜一个兜底角色（仍可能被上层覆盖）。
  */
 export function guessRoleByControlHint(options: {

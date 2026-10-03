@@ -346,7 +346,17 @@ export function waitForFormSettle(rootDocument: Document = document): Promise<vo
     let settled = false;
     let quietTimer = window.setTimeout(finish, SCAN_QUIET_MS);
     const maxTimer = window.setTimeout(finish, SCAN_MAX_WAIT_MS);
+    /** 停止后尽快结束安静等待，避免点停止还卡在 MutationObserver 里 */
+    const stopPollTimer = window.setInterval(() => {
+      if (shouldFillStop()) {
+        finish();
+      }
+    }, 120);
     const observer = new MutationObserver(() => {
+      if (shouldFillStop()) {
+        finish();
+        return;
+      }
       window.clearTimeout(quietTimer);
       quietTimer = window.setTimeout(finish, SCAN_QUIET_MS);
     });
@@ -362,6 +372,7 @@ export function waitForFormSettle(rootDocument: Document = document): Promise<vo
       observer.disconnect();
       window.clearTimeout(quietTimer);
       window.clearTimeout(maxTimer);
+      window.clearInterval(stopPollTimer);
       resolve();
     }
 

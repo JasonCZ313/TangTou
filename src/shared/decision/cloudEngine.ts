@@ -3,6 +3,7 @@
  * Key 仅经本模块参数传入，不得写入 content 消息。
  */
 import { requestFillPlan } from '../llm/openaiCompatible';
+import { getPageWorkAbortSignal } from '../workAbort';
 import { buildBatchMapPrompt } from './prompts';
 import type {
   DecisionBatchRequest,
@@ -63,6 +64,7 @@ export function createCloudEngine(options: {
           system,
           user,
           timeoutMs: CLOUD_BATCH_TIMEOUT_MS,
+          abortSignal: getPageWorkAbortSignal(),
         });
         const acceptedItems = plan.items.filter(
           (item) => item.confidence >= request.minConfidence,

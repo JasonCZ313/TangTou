@@ -65,6 +65,12 @@ function translateRawError(rawMessage: string): string {
   if (detail === 'EMPTY_RUNTIME_RESPONSE' || detail === 'EMPTY_TAB_RESPONSE') {
     return '扩展后台没有回音。请在扩展管理页对躺投点一次重新加载，再刷新网申页。';
   }
+  if (detail === 'USER_STOPPED' || detail === '已停止。') {
+    return '已停止。';
+  }
+  if (/Illegal invocation/i.test(detail)) {
+    return '某一格控件类型不匹配导致写入中断。请重新加载扩展并刷新网申页后再扫一次；单格失败不应再打断整轮。';
+  }
   if (detail === '请求超时' || detail === 'LLM_TIMEOUT' || detail === 'AbortError') {
     return '模型超过等待时间还没返回。请检查网络和接口地址后再试。本机已经配上的项会留下来。';
   }

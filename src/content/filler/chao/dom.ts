@@ -8,7 +8,7 @@
  *  3) 全工程「读控件值 / 判断是否为空」只走 readControlText / isControlEmpty 两个函数，
  *     避免出现「扫描看它是空的、行内匹配说它已有值」这类自相矛盾（历史上年/月下拉永远填不进去就是这个原因）。
  */
-import { normalizeDate, optionMatchAliases } from './rules';
+import { dateTextMatches, isCalendarDate, normalizeDate, optionMatchAliases } from './rules';
 import { chaoDebug } from './debug';
 
 /** 面板 id：排除扩展自身 DOM，避免扫到自己画的浮层 */
@@ -233,9 +233,22 @@ export function readControlText(el) {
     return String(el.options?.[el.selectedIndex]?.text || el.value || '').trim();
   }
   if (el.isContentEditable) return String(el.textContent || '').trim();
+  const selectWrap = el.closest?.('.ant-select, .el-select');
+  if (selectWrap instanceof HTMLElement) {
+    const selectedItem = selectWrap.querySelector('.ant-select-selection-item, .el-select__selected-item');
+    const selectedText = String(selectedItem?.textContent || '').replace(/\s+/g, ' ').trim();
+    if (selectedText && !isPlaceholderText(selectedText)) return selectedText.slice(0, 60);
+    const placeholderNode = selectWrap.querySelector('.ant-select-selection-placeholder, .el-select__placeholder');
+    if (placeholderNode) return '';
+  }
   const ownValue = String(el.value || '').trim();
-  if (ownValue) return ownValue;
+  if (ownValue && !isPlaceholderText(ownValue)) return ownValue;
   const ownText = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+  const compactText = ownText.replace(/\s+/g, '');
+  // 打开的国家列表、省市弹窗整段文字不能当成这个框已经选中的值
+  if (compactText.length > 24 && /请选择|中国香港|全部省市|已选地区/.test(compactText)) {
+    return '';
+  }
   if (ownText && !isPlaceholderText(ownText)) return ownText.slice(0, 60);
   // 组件把选中值渲染在专门的节点里时才回读；读不到就当作空
   const scope = el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i]');
@@ -259,14 +272,39 @@ export function isControlEmpty(el) {
   return isPlaceholderText(ownText);
 }
 
-/** 原生方式写值：绕过 React/Vue 的受控 value setter，并派发 input/change */
+/**
+ * 原生方式写值：绕过 React/Vue 受控 value。
+ * 必须用「当前节点自己原型上的」setter；禁止把 HTMLInputElement 的 setter 套到 div/.ant-select 上（会 Illegal invocation）。
+ */
 export function setNativeValue(el, value) {
-  const proto = Object.getPrototypeOf(el);
-  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-  if (descriptor?.set) descriptor.set.call(el, value);
-  else el.value = value;
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.dispatchEvent(new Event('change', { bubbles: true }));
+  if (!(el instanceof HTMLElement)) {
+    return;
+  }
+  try {
+    if (el instanceof HTMLInputElement) {
+      const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (inputSetter) {
+        inputSetter.call(el, value);
+      } else {
+        el.value = value;
+      }
+    } else if (el instanceof HTMLTextAreaElement) {
+      const areaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      if (areaSetter) {
+        areaSetter.call(el, value);
+      } else {
+        el.value = value;
+      }
+    } else if ('value' in el) {
+      el.value = value;
+    } else {
+      return;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  } catch {
+    // Illegal invocation / 只读控件：当作本格写失败，绝不抛到整轮
+  }
 }
 
 /** 原生 select：按别名匹配 option 文案 */
@@ -287,35 +325,50 @@ function fillSelectOption(el, value) {
   return true;
 }
 
-/** 文本/日期/可编辑控件写入（不含点选控件） */
+/** 文本/日期/可编辑控件写入（不含点选控件）；外壳 div / select 直接失败 */
 function fillPlainField(el, value) {
   const text = String(value || '').trim();
   if (!text || text === '至今') return false;
-  if (el.isContentEditable) {
+  try {
+    if (el.isContentEditable) {
+      el.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('insertText', false, text);
+      return true;
+    }
+    if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+    const type = (el.getAttribute('type') || 'text').toLowerCase();
+    let output = text;
+    if (type === 'date') {
+      const date = normalizeDate(text);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+      output = date;
+    }
+    if (type === 'month') {
+      const date = normalizeDate(text);
+      if (!/^\d{4}-\d{2}/.test(date)) return false;
+      output = date.slice(0, 7);
+    }
     el.focus();
-    document.execCommand('selectAll', false, null);
-    document.execCommand('insertText', false, text);
+    try {
+      el.select();
+    } catch {
+      /* 部分控件无 select */
+    }
+    setNativeValue(el, output);
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, data: output, inputType: 'insertText' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    // 日期被控件改写成不含年份的碎片 → 清空判失败（宁缺勿错）
+    if (/^\d{4}/.test(output) && !String(el.value || '').includes(output.slice(0, 4))) {
+      setNativeValue(el, '');
+      return false;
+    }
     return true;
-  }
-  const type = (el.getAttribute('type') || 'text').toLowerCase();
-  let output = text;
-  if (type === 'date') {
-    const date = normalizeDate(text);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
-    output = date;
-  }
-  if (type === 'month') {
-    const date = normalizeDate(text);
-    if (!/^\d{4}-\d{2}/.test(date)) return false;
-    output = date.slice(0, 7);
-  }
-  setNativeValue(el, output);
-  // 日期被控件改写成不含年份的碎片 → 清空判失败（宁缺勿错）
-  if (/^\d{4}/.test(output) && !String(el.value || '').includes(output.slice(0, 4))) {
-    setNativeValue(el, '');
+  } catch {
     return false;
   }
-  return true;
 }
 
 /** 自定义日期组件：多策略写入（面板点选 → 多格式去 readonly → 可输入回落文本） */
@@ -511,6 +564,10 @@ function valueLooksWritten(field, intended) {
   if (!actual) return false;
   const want = String(intended || '').trim().toLowerCase();
   if (!want) return false;
+  // 日期必须年、月、日分开对，禁止「有 2005 或有 03 就算对」
+  if (isCalendarDate(intended)) {
+    return dateTextMatches(intended, actual);
+  }
   if (actual.includes(want) || want.includes(actual)) return true;
   const aliases = optionMatchAliases(intended).map((alias) => alias.toLowerCase());
   if (aliases.some((alias) => actual.includes(alias) || alias.includes(actual))) return true;
@@ -528,23 +585,68 @@ function valueLooksWritten(field, intended) {
       return true;
     }
   }
-  const yearMatch = want.match(/(?:19|20)\d{2}/);
-  if (yearMatch && actual.includes(yearMatch[0])) return true;
   return false;
 }
 
 /**
+ * 复合框（证件号码：类型下拉 + 号码输入）里找出真正的文本输入。
+ * 禁止返回 .ant-select 内部搜索框。
+ */
+function resolveAddonTextInput(el) {
+  let box = el.parentElement;
+  for (let depth = 0; depth < 6 && box && box !== document.body; depth += 1) {
+    const text = String(box.textContent || '').replace(/\s+/g, '');
+    if (/姓名/.test(text) && /证件/.test(text)) {
+      break;
+    }
+    const inputs = [...box.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])')]
+      .filter((input) => input instanceof HTMLInputElement
+        && !input.readOnly
+        && !input.disabled
+        && !input.closest('.ant-select, .el-select, .ant-picker')
+        && input.getBoundingClientRect().width > 40);
+    const numberInput = inputs.find((input) => /请输入/.test(input.placeholder || ''));
+    if (numberInput && /证件/.test(text)) {
+      return numberInput;
+    }
+    box = box.parentElement;
+  }
+  return null;
+}
+
+/**
  * 统一写入入口：按控件指纹走态机，写完后回读校验。
+ * 单格异常只记失败，绝不抛到整轮（防止 Illegal invocation 红字打断）。
  * @returns {{ ok: boolean, reason: string }}
  */
 export async function writeField(field, intendedValue) {
+  try {
+    return await writeFieldInner(field, intendedValue);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error || '');
+    chaoDebug.skip(`「${field?.blob || ''}」`, `写入异常：${detail.slice(0, 80)}`);
+    return {
+      ok: false,
+      reason: /Illegal invocation/i.test(detail)
+        ? '控件类型不匹配，已跳过本格'
+        : (detail.slice(0, 60) || '写入异常'),
+    };
+  }
+}
+
+/** writeField 实际逻辑（外层已包 try/catch） */
+async function writeFieldInner(field, intendedValue) {
   const value = String(intendedValue || '').trim();
   if (!value) return { ok: false, reason: '档案为空' };
   if (value === '至今') return { ok: false, reason: '「至今」需勾选复选框，跳过文本写入' };
   const labelBlob = String(field.blob || '');
+  const isNameField = /姓名|名字/.test(labelBlob) && !/学校|单位|公司|证件|英文/.test(labelBlob);
+  const isIdNumberValue = /^[0-9Xx]{15,18}$/.test(value);
+  if (isNameField && isIdNumberValue) {
+    return { ok: false, reason: '身份证号不能写入姓名' };
+  }
   const isIdNumberField = /证件号码|证件号|身份证号/.test(labelBlob) && !/类型/.test(labelBlob);
   const isLongDigit = /^\d{6,}$/.test(value) || /^[0-9Xx]{15,18}$/.test(value);
-  // 长数字禁入点选（区号/类型下拉）；证件号码框即便被误判成下拉也强制纯文本
   if (isLongDigit && isOptionControl(field) && !isIdNumberField) {
     chaoDebug.skip(`「${field.blob}」`, '长数字禁止写进点选控件');
     return { ok: false, reason: '数字不能写进点选控件' };
@@ -554,18 +656,31 @@ export async function writeField(field, intendedValue) {
   let wrote = false;
   let strategy = '文本输入';
   let failReason = '';
+  let writeTarget = field.el;
 
-  // 动态导入态机，避免与 widgetDrivers ↔ dom 循环依赖
   const { driveWidgetWrite, fingerprintWidget } = await import('./widgetDrivers');
 
-  if (isIdNumberField) {
-    strategy = '证件号码纯文本';
-    wrote = fillPlainField(field.el, value);
+  if (isIdNumberField && isLongDigit) {
+    // 只写右侧号码格；找不到就漏填，禁止对类型下拉 setNativeValue
+    const numberInput = resolveAddonTextInput(field.el);
+    if (numberInput) {
+      strategy = '证件号码纯文本（复合框右侧）';
+      writeTarget = numberInput;
+      wrote = fillPlainField(numberInput, value);
+    } else {
+      strategy = '证件号码：未找到号码输入框';
+      wrote = false;
+      failReason = '证件号码复合框未找到可输入的号码格';
+    }
+  } else if (isIdNumberField && /身份证|护照/.test(value)) {
+    strategy = '证件类型点选';
+    const driven = await driveWidgetWrite(field.el, value, '证件类型');
+    wrote = Boolean(driven.ok);
+    failReason = driven.ok ? '' : (driven.reason || '');
   } else if (field.control === CONTROL.nativeSelect) {
     strategy = '原生 select 选项比对';
     wrote = fillSelectOption(field.el, value);
   } else {
-    // 性别等：即使被扫成普通控件，也优先走单选态机
     const fingerprint = fingerprintWidget(field.el, value, labelBlob);
     const shouldDrive = fingerprint === 'radioGroup'
       || fingerprint === 'datePanel'
@@ -580,12 +695,12 @@ export async function writeField(field, intendedValue) {
       const driven = await driveWidgetWrite(field.el, value, labelBlob);
       strategy = `态机:${driven.fingerprint}`;
       wrote = Boolean(driven.ok);
-      failReason = driven.reason || '';
-      // 纯文本可输入且态机失败：回落文本（多段地区串禁止硬塞）
+      failReason = driven.ok ? '' : (driven.reason || '');
       const multiSegment = /[/、,，]/.test(value);
       if (!wrote && !multiSegment
         && field.el instanceof HTMLInputElement
         && !field.el.readOnly
+        && !field.el.closest('.ant-select, .el-select')
         && fingerprint !== 'datePanel'
         && fingerprint !== 'regionModal'
         && fingerprint !== 'radioGroup') {
@@ -601,7 +716,7 @@ export async function writeField(field, intendedValue) {
     }
   }
 
-  const actual = readControlText(field.el);
+  const actual = readControlText(writeTarget) || readControlText(field.el);
   if (!wrote) {
     chaoDebug.value(field.blob, value, actual, Date.now() - started, {
       策略: strategy,
@@ -610,36 +725,24 @@ export async function writeField(field, intendedValue) {
     });
     return { ok: false, reason: failReason || '控件拒绝写入' };
   }
-  // 单选：用 checked 判定，不走文本回读
   if (/性别/.test(labelBlob) || (field.el instanceof HTMLInputElement && field.el.type === 'radio')) {
-    const radioOk = field.el instanceof HTMLInputElement && field.el.type === 'radio'
-      ? field.el.checked
-      : valueLooksWritten(field, value);
-    // 旁侧 radio 已勾时 readControlText 可能仍空：再扫附近
-    if (!radioOk) {
-      const nearbyChecked = field.el.closest('[class*="form-item" i], [class*="field" i], [class*="item" i], tr, div')
-        ?.querySelector('input[type="radio"]:checked');
-      if (nearbyChecked) {
-        chaoDebug.value(field.blob, value, 'radio:checked', Date.now() - started, {
-          策略: strategy,
-          结果: '回读一致',
-        });
-        return { ok: true, reason: '' };
-      }
-    } else {
-      chaoDebug.value(field.blob, value, actual, Date.now() - started, {
+    const nearbyChecked = field.el.closest('[class*="form-item" i], [class*="field" i], [class*="item" i], tr, div')
+      ?.querySelector('input[type="radio"]:checked, [class*="radio" i][class*="checked" i]');
+    if (nearbyChecked) {
+      chaoDebug.value(field.blob, value, 'radio:checked', Date.now() - started, {
         策略: strategy,
         结果: '回读一致',
       });
       return { ok: true, reason: '' };
     }
   }
-  const verified = valueLooksWritten(field, value);
+  const verified = valueLooksWritten({ ...field, el: writeTarget }, value)
+    || valueLooksWritten(field, value);
   chaoDebug.value(field.blob, value, actual, Date.now() - started, {
     策略: strategy,
     结果: verified ? '回读一致' : '回读不一致',
   });
-  if (!verified) return { ok: false, reason: failReason || '写入后回读不一致' };
+  if (!verified) return { ok: false, reason: '写入后回读不一致' };
   return { ok: true, reason: '' };
 }
 
@@ -668,7 +771,6 @@ export function ensureHighlightStyles() {
   const style = document.createElement('style');
   style.id = 'tangtou-chao-autofill-style';
   style.textContent = `
-    .${AUTOFILL_FILL_CLASS} { outline: 2px solid #22c55e !important; outline-offset: 1px; }
     .${AUTOFILL_MISS_CLASS} { outline: 2px solid #f59e0b !important; outline-offset: 1px; }
   `;
   document.documentElement.appendChild(style);

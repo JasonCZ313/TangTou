@@ -17,9 +17,21 @@ export interface FileUploadPayload {
 
 /** 扩展内部消息联合类型（UI / Background / Content） */
 export type ExtensionMessage =
-  | { type: 'STOP_PAGE_WORK'; requestId: string }
+  | {
+      type: 'STOP_PAGE_WORK';
+      requestId: string;
+      /** 要作废的工作代次；缺省则作废内容脚本当前代次 */
+      workGeneration?: number;
+    }
   | { type: 'STOP_PAGE_WORK_ACK'; requestId: string }
-  | { type: 'SCAN_FIELDS'; requestId: string }
+  | {
+      type: 'SCAN_FIELDS';
+      requestId: string;
+      /** 侧栏本轮工作代次；同代续扫不得换代清停止 */
+      workGeneration?: number;
+      /** true=同代续扫（第二遍），禁止 beginFillWork / 清停止 */
+      continueWork?: boolean;
+    }
   | { type: 'SCAN_FIELDS_STARTED'; requestId: string }
   | {
       type: 'SCAN_PROGRESS';
@@ -41,6 +53,8 @@ export type ExtensionMessage =
       requestId: string;
       profileId: string;
       fields: FieldDescriptor[];
+      /** 与扫描同代；已停止则立刻返回 USER_STOPPED，且不得换新 AbortController */
+      workGeneration?: number;
     }
   | {
       type: 'FILL_PLAN_RESULT';
@@ -66,6 +80,8 @@ export type ExtensionMessage =
       sectionAdds?: SectionAddRequest[];
       /** 页面上逐格对照用的档案正文，由后台附上，不经过预先扫描 */
       profileData?: ProfileData;
+      /** 用户新点确认写入时的工作代次 */
+      workGeneration?: number;
     }
   | {
       type: 'APPLY_FILL_RESULT';
@@ -112,6 +128,21 @@ export type ExtensionMessage =
     }
   | { type: 'OPEN_SIDE_PANEL'; requestId: string }
   | { type: 'OPEN_SIDE_PANEL_RESULT'; requestId: string; ok: boolean }
+  | {
+      type: 'PICK_VISIBLE_OPTION';
+      requestId: string;
+      /** 档案里要填的城市或选项 */
+      target: string;
+      /** 当前弹窗里看得见的选项原文 */
+      options: string[];
+    }
+  | {
+      type: 'PICK_VISIBLE_OPTION_RESULT';
+      requestId: string;
+      /** 要点的那一项原文；空字符串表示没判断出来 */
+      option: string;
+      confirm: boolean;
+    }
   | {
       type: 'TEST_API';
       requestId: string;

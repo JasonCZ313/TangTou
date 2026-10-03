@@ -380,7 +380,7 @@ function bindEvents(): void {
       type: 'STOP_PAGE_WORK',
       requestId: createRequestId(),
     }).then(() => {
-      showStatus('已要求停止，当前这一格结束后不再继续。', 'info');
+      showStatus('已停止。', 'info');
     });
   });
 }

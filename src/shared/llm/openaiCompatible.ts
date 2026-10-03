@@ -87,6 +87,8 @@ export interface RequestFillPlanOptions {
   system: string;
   user: string;
   timeoutMs?: number;
+  /** 用户点停止时立刻断开这次对照请求 */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -190,6 +192,14 @@ export async function requestFillPlan(
     () => controller.abort(),
     options.timeoutMs ?? 60_000,
   );
+  const extraAbortSignal = options.abortSignal;
+  const onUserAbort = (): void => {
+    controller.abort();
+  };
+  extraAbortSignal?.addEventListener('abort', onUserAbort);
+  if (extraAbortSignal?.aborted) {
+    controller.abort();
+  }
 
   const messages: ChatMessage[] = [
     { role: 'system', content: options.system },
@@ -257,6 +267,68 @@ export async function requestFillPlan(
     });
     const usage = parseUsageFromPayload(payload);
     return { plan, usage };
+  } catch (error: unknown) {
+    if (extraAbortSignal?.aborted) {
+      throw new Error('USER_STOPPED');
+    }
+    throw error;
+  } finally {
+    extraAbortSignal?.removeEventListener('abort', onUserAbort);
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 第一次没点中时，请模型在已经看得见的选项里选一项。
+ * 只返回选项原文，不生成整份填写计划。
+ */
+export async function requestVisibleOptionPick(options: {
+  apiBaseUrl: string;
+  apiKey: string;
+  model: string;
+  target: string;
+  options: string[];
+}): Promise<{ option: string; confirm: boolean }> {
+  const endpointUrl = `${options.apiBaseUrl.replace(/\/$/, '')}/chat/completions`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  const listed = options.options.slice(0, 40).join('\n');
+  try {
+    const response = await postChatCompletions({
+      endpointUrl,
+      apiKey: options.apiKey,
+      model: options.model,
+      temperature: 0,
+      useJsonObjectFormat: true,
+      maxTokens: 80,
+      signal: controller.signal,
+      messages: [
+        {
+          role: 'system',
+          content: '你只从给定选项里选一项。只返回 JSON：{"option":"选项原文","confirm":true}。option 必须与某一行完全一致。',
+        },
+        {
+          role: 'user',
+          content: `要填的值：${options.target}\n看得见的选项：\n${listed}`,
+        },
+      ],
+    });
+    if (!response.ok) {
+      return { option: '', confirm: true };
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') {
+      return { option: '', confirm: true };
+    }
+    const parsed = JSON.parse(content) as { option?: unknown; confirm?: unknown };
+    const option = typeof parsed.option === 'string' ? parsed.option.trim() : '';
+    const allowed = options.options.includes(option);
+    return { option: allowed ? option : '', confirm: parsed.confirm !== false };
+  } catch {
+    return { option: '', confirm: true };
   } finally {
     clearTimeout(timer);
   }
