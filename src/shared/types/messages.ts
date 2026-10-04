@@ -90,6 +90,8 @@ export type ExtensionMessage =
       skipped: number;
       /** 没写进去的格子，侧栏用另一张表显示 */
       misses?: FillMiss[];
+      /** 本轮每一步操作记录，侧边栏复制后贴回排查 */
+      trace?: string;
     }
   | { type: 'UNDO_LAST_FILL'; requestId: string }
   | {

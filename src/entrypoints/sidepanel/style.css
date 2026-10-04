@@ -19,6 +19,11 @@ body {
   padding: 14px 16px;
 }
 
+#copyFillTraceButton {
+  margin-top: 10px;
+  width: 100%;
+}
+
 .section-heading-row {
   display: flex;
   align-items: center;

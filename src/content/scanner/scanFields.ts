@@ -1499,15 +1499,11 @@ function assignStructuredLabels(fields: FieldDescriptor[]): void {
 }
 
 /**
- * 点开还没读到选项的下拉，把真实选项记下来再关掉。
- * 月份是 8 还是 08、成绩排名里有什么，都以这时看到的列表为准。
+ * 扫描只读原生下拉的选项，不点开自定义弹层。
+ * 日期、地区、学历这类框关上时页面上没有选项，点开会叠在一起挡住后面的空。选项留到填写那一格时再读。
  */
 async function samplePickerOptions(fields: FieldDescriptor[]): Promise<void> {
-  let sampledCount = 0;
   for (const field of fields) {
-    if (sampledCount >= 120) {
-      break;
-    }
     const element = fieldElementById.get(field.fieldId);
     if (!(element instanceof HTMLElement) || !isElementVisible(element)) {
       continue;
@@ -1525,7 +1521,7 @@ async function samplePickerOptions(fields: FieldDescriptor[]): Promise<void> {
     const looksLikePicker =
       element.getAttribute('role') === 'combobox' ||
       Boolean(element.getAttribute('aria-haspopup')) ||
-      Boolean(element.closest('.ant-select, .el-select')) ||
+      Boolean(element.closest('.ant-select, .el-select, .ant-picker')) ||
       (element instanceof HTMLInputElement && element.readOnly) ||
       /请选择/.test(placeholderText) ||
       /select|picker|dropdown/i.test(classText);
@@ -1533,35 +1529,6 @@ async function samplePickerOptions(fields: FieldDescriptor[]): Promise<void> {
       continue;
     }
     element.setAttribute('data-raf-must-pick', '1');
-    element.scrollIntoView({ block: 'center', inline: 'nearest' });
-    element.click();
-    await wait(180);
-    const optionList = [
-      ...new Set(
-        Array.from(document.querySelectorAll('[role="option"], .ant-select-item-option, .el-select-dropdown__item'))
-          .filter((node): node is HTMLElement => {
-          if (!(node instanceof HTMLElement) || !isElementVisible(node)) {
-            return false;
-          }
-          const dropdown = node.closest('.ant-select-dropdown, .el-select-dropdown');
-          if (dropdown instanceof HTMLElement && dropdown.classList.contains('ant-select-dropdown-hidden')) {
-            return false;
-          }
-          const rect = node.getBoundingClientRect();
-          return rect.width > 2 && rect.height > 2;
-        })
-          .map((node) => (node.getAttribute('title') || node.textContent || '').replace(/\s+/g, ' ').trim())
-          .filter((optionLabel) => optionLabel.length > 0 && optionLabel.length <= 40 && optionLabel !== '暂无选项'),
-      ),
-    ].slice(0, 60);
-    if (optionList.length > 0) {
-      field.options = optionList;
-      element.setAttribute('data-raf-options', JSON.stringify(optionList));
-      sampledCount += 1;
-    }
-    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await wait(60);
   }
 }
 
@@ -1583,8 +1550,8 @@ export function absorbNewFields(scope: ParentNode = document): FieldDescriptor[]
 }
 
 /**
- * 新冒出来的框先采样下拉选项，再按年/月和分区打标签。
- * 添加行之后必须走这条，否则学历、区号没有选项会被跳过或硬填。
+ * 新冒出来的框只标记哪些要到填写时再点开，再按年/月和分区打标签。
+ * 添加行之后必须走这条，否则学历、区号会被当成普通文本硬填。
  */
 export async function absorbNewFieldsReady(scope: ParentNode = document): Promise<FieldDescriptor[]> {
   const freshFields = absorbNewFields(scope);

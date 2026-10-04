@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>逻辑检查</title></head>
+<body>
+<div id="form">
+  <div class="line"><span>姓名</span><input id="name" placeholder="请输入"></div>
+  <div class="line"><span>证件号码</span><span class="type">身份证</span><input id="idnum" placeholder="请输入"></div>
+  <div class="line" id="genderLine"><span>性别</span><span class="fake">男</span><span class="fake">女</span></div>
+  <div class="line"><span>籍贯</span><div class="fake-select">请选择</div></div>
+  <div class="line"><span>现居住地</span><button id="live" type="button">请选择</button></div>
+</div>
+<div id="region" style="display:none">
+  <input placeholder="搜索">
+  <div>已选地区 <b id="count">0</b>/1</div>
+  <div id="cities"></div>
+  <button type="button" id="cancel">取消</button>
+  <button type="button" id="ok">确定</button>
+</div>
+<div id="degree" style="display:none;height:80px;overflow:auto"></div>
+<pre id="log"></pre>
+<script>
+const cities = ['北京市','天津市','河北省','山西省','上海市'];
+const degreeNames = [...Array(24)].map((_,i)=>'备选项'+i).concat(['本科','大学本科']);
+let picked = '';
+const citiesBox = document.getElementById('cities');
+for (const name of cities) {
+  const item = document.createElement('div');
+  item.className = 'city-item';
+  item.style.height = '28px';
+  const dot = document.createElement('i');
+  dot.className = 'ats-icon';
+  const text = document.createElement('span');
+  text.textContent = name;
+  text.addEventListener('click', (event) => event.stopPropagation());
+  item.addEventListener('click', (event) => {
+    if (event.target !== dot) return;
+    picked = name;
+    document.getElementById('count').textContent = '1';
+  });
+  dot.addEventListener('click', () => {
+    picked = name;
+    document.getElementById('count').textContent = '1';
+  });
+  item.append(dot, text);
+  citiesBox.append(item);
+}
+for (const name of degreeNames) {
+  const item = document.createElement('div');
+  item.textContent = name;
+  item.style.height = '28px';
+  document.getElementById('degree').append(item);
+}
+
+function ownVisibleText(node) {
+  let text = '';
+  for (const child of node.childNodes) if (child.nodeType === Node.TEXT_NODE) text += child.textContent || '';
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  return cleaned || String(node.textContent || '').replace(/\s+/g, ' ').trim();
+}
+function compact(raw) { return String(raw || '').replace(/\s+/g, '').replace(/[>›〉→○●◯]/g, ''); }
+function resolveAddonTextInput(el) {
+  let box = el.parentElement;
+  for (let depth = 0; depth < 6 && box && box !== document.body; depth += 1) {
+    const text = String(box.textContent || '').replace(/\s+/g, '');
+    if (/姓名/.test(text) && /证件/.test(text)) break;
+    const inputs = [...box.querySelectorAll('input')].filter((input) => /请输入/.test(input.placeholder || ''));
+    if (inputs[0] && /证件/.test(text)) return inputs[0].id;
+    box = box.parentElement;
+  }
+  return null;
+}
+function findRegionChoiceRow(panel, label) {
+  const wanted = compact(label);
+  const nodes = [...panel.querySelectorAll('div, label, li, span, a, i')].filter((node) => {
+    const box = node.getBoundingClientRect();
+    if (box.height < 10 || box.height > 72) return false;
+    return compact(node.textContent) === wanted;
+  });
+  nodes.sort((a, b) => a.getBoundingClientRect().width * a.getBoundingClientRect().height - b.getBoundingClientRect().width * b.getBoundingClientRect().height);
+  let row = nodes[0];
+  if (!row) return null;
+  for (let depth = 0; depth < 4 && row.parentElement && row.parentElement !== panel; depth += 1) {
+    if (row.parentElement.getBoundingClientRect().height > 80) break;
+    row = row.parentElement;
+  }
+  return row;
+}
+function clickRegionRadio(row) {
+  const radio = row.querySelector?.('input[type="radio"]');
+  const dot = [...row.querySelectorAll('span, i, button')].find((node) => {
+    const box = node.getBoundingClientRect();
+    const className = String(node.className || '');
+    return /dot|radio|circle|check/i.test(className) || (box.width > 0 && box.width <= 22 && box.height <= 22 && !String(node.textContent || '').trim());
+  });
+  if (dot) dot.click();
+  if (radio) radio.click();
+  row.click();
+}
+function choiceLabels(raw) {
+  const nationality = { CN: '中国', HK: '中国香港' };
+  const degree = { bachelor: '大学本科' };
+  const label = nationality[raw] || degree[raw] || raw;
+  const labels = [label];
+  if (label === '大学本科' || label === '本科') labels.push('大学本科', '本科');
+  return [...new Set(labels)];
+}
+function scrollFind(panel, labels) {
+  const look = () => {
+    for (const label of labels) {
+      const nodes = [...panel.querySelectorAll('div')].filter((node) => compact(node.textContent) === compact(label) && node.getBoundingClientRect().height <= 72 && node.getBoundingClientRect().height >= 10);
+      if (nodes[0]) return nodes[0];
+    }
+    return null;
+  };
+  let hit = look();
+  if (hit) return hit.className || hit.textContent;
+  for (let step = 0; step < 10; step += 1) {
+    panel.scrollTop += 80;
+    hit = look();
+    if (hit) return 'scrolled:' + (hit.textContent || '');
+  }
+  return null;
+}
+
+const idInput = document.getElementById('idnum');
+const nameInput = document.getElementById('name');
+const lines = [];
+lines.push('A 证件号定位: ' + resolveAddonTextInput(idInput));
+lines.push('A 从姓名出发定位证件号: ' + resolveAddonTextInput(nameInput));
+lines.push('B 性别行里有没有 radio: ' + !!document.getElementById('genderLine').querySelector('input[type="radio"]'));
+lines.push('B 性别行里有没有请选择: ' + [...document.getElementById('genderLine').querySelectorAll('div,span')].some((node) => (node.textContent || '').replace(/\s+/g,'') === '请选择'));
+document.getElementById('region').style.display = 'block';
+const row = findRegionChoiceRow(document.getElementById('region'), '北京市');
+lines.push('C 找到的地区节点: ' + (row ? row.className || row.tagName : 'null'));
+if (row) clickRegionRadio(row);
+lines.push('C 点完已选人数: ' + document.getElementById('count').textContent);
+document.getElementById('degree').style.display = 'block';
+document.getElementById('degree').style.maxHeight = '40px';
+lines.push('D 学历 CN/本科标签: ' + JSON.stringify(choiceLabels('CN')) + ' / ' + JSON.stringify(choiceLabels('bachelor')));
+lines.push('D 精确找本科: ' + scrollFind(document.getElementById('degree'), ['大学本科']));
+lines.push('D 别名找本科: ' + scrollFind(document.getElementById('degree'), ['本科','大学本科']));
+document.getElementById('log').textContent = lines.join('\n');
+</script>
+</body>
+</html>

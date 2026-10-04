@@ -50,7 +50,7 @@ export function dateTextMatches(intended, actual) {
   const got = normalizeDate(actual).match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!want || !got) return false;
   if (want[1] !== got[1] || want[2] !== got[2]) return false;
-  if (!sourceHasCalendarDay(intended)) return true;
+  if (!sourceHasCalendarDay(intended) || !sourceHasCalendarDay(actual)) return true;
   return want[3] === got[3];
 }
 

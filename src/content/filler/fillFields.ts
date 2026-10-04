@@ -22,12 +22,17 @@ import { dateTextMatches, isCalendarDate, optionMatchAliases } from './chao/rule
 import {
   AUTOFILL_FILL_CLASS,
   AUTOFILL_MISS_CLASS,
+  CONTROL,
   classifyControl,
   ensureHighlightStyles,
   fieldLabelBlob,
+  isControlEmpty,
+  isPageFieldVisible,
   readControlText,
-  writeField,
 } from './chao/dom';
+import { commitFieldValue, commitUnmappedChoice, rescanCommittedFields } from './fieldCommit';
+import { beginFillTrace, fillTraceText, recordFillStep } from './fillTrace';
+import { ensurePanelsClosed } from './chao/widgetDrivers';
 
 /** 撤销快照：写入前控件原值，方便 undoLastFill 还原 */
 let lastUndoSnapshots: Array<{ element: Element; previousValue: string; isFile: boolean }> =
@@ -495,8 +500,10 @@ export async function applyFillPlan(
   filled: number;
   skipped: number;
   misses: FillMiss[];
+  trace?: string;
 }> {
   ensureHighlightStyles();
+  beginFillTrace();
   const { updatePageOverlay, hidePageOverlay } = await import('../ui/pageOverlay');
   const { shouldFillStop } = await import('../fillAbort');
 
@@ -538,6 +545,17 @@ export async function applyFillPlan(
   const misses: FillMiss[] = [];
   const totalWriteSteps = Math.max(orderedItems.length, 1);
   let writeStepIndex = 0;
+  let currentGroupKey = '';
+  let currentGroup: Array<{ element: HTMLElement; label: string; value: string }> = [];
+
+  const flushGroup = async () => {
+    if (currentGroup.length === 0) {
+      return;
+    }
+    const stayed = await rescanCommittedFields(currentGroup, misses);
+    filled += stayed;
+    currentGroup = [];
+  };
 
   for (const item of orderedItems) {
     if (shouldFillStop()) {
@@ -551,8 +569,8 @@ export async function applyFillPlan(
     const element = await prepareFieldForWrite(item.fieldId);
     const labelText = resolveMissLabel(item.fieldId, element);
     updatePageOverlay({
-      percent: Math.min(92, Math.round((writeStepIndex / totalWriteSteps) * 90) + 5),
-      message: `正在写入：${labelText}`,
+      percent: Math.min(88, Math.round((writeStepIndex / totalWriteSteps) * 80) + 5),
+      message: `正在写入并核对：${labelText}`,
       highlightFieldIds: [item.fieldId],
       showCancel: true,
     });
@@ -570,9 +588,13 @@ export async function applyFillPlan(
       element,
       profileData,
     );
-    // 再绑可能现场重标了 data-raf-label，进度与漏填表用最新标签
     const liveLabel =
       element.getAttribute('data-raf-label') || labelText;
+    const groupKey = liveLabel.match(/第\d+行/)?.[0] ?? '未分行';
+    if (currentGroupKey && groupKey !== currentGroupKey) {
+      await flushGroup();
+    }
+    currentGroupKey = groupKey;
     if (resolved.skip || !resolved.value.trim()) {
       misses.push({
         label: liveLabel,
@@ -583,55 +605,61 @@ export async function applyFillPlan(
       continue;
     }
 
-    let writeResult: { ok: boolean; reason: string };
-    try {
-      writeResult = await writeField(
-        {
-          el: element,
-          blob: liveLabel,
-          control: classifyControl(element),
-        },
-        resolved.value,
-      );
-    } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : '写入异常';
-      misses.push({
-        label: liveLabel,
-        reason: /Illegal invocation/i.test(detail) ? '控件类型不匹配，已跳过本格' : detail.slice(0, 60),
-      });
-      element.classList.add(AUTOFILL_MISS_CLASS);
-      await settle(60);
-      continue;
-    }
+    const nextItem = orderedItems[writeStepIndex];
+    const nextElement = nextItem ? await prepareFieldForWrite(nextItem.fieldId) : null;
+    const nextLabelNode = nextElement instanceof HTMLElement
+      ? nextElement.closest('label') as HTMLElement | null
+      : null;
+    const writeResult = await commitFieldValue(element, liveLabel, resolved.value, nextLabelNode);
+    recordFillStep(
+      liveLabel,
+      '收尾',
+      writeResult.ok ? '留下了' : '没留下',
+      writeResult.reason || readControlText(element),
+    );
+    currentGroup.push({ element, label: liveLabel, value: resolved.value });
     if (!writeResult.ok) {
-      misses.push({
-        label: liveLabel,
-        reason: writeResult.reason || '写入失败',
-      });
       element.classList.add(AUTOFILL_MISS_CLASS);
-      await settle(60);
-      continue;
+    } else {
+      element.classList.remove(AUTOFILL_MISS_CLASS);
     }
-
-    const actual = readControlText(element);
-    const confirmed = await confirmCellWithLaya(liveLabel, resolved.value, actual);
-    if (!confirmed) {
-      misses.push({
-        label: liveLabel,
-        reason: '回读/Laya 核对未通过',
-      });
-      element.classList.add(AUTOFILL_MISS_CLASS);
-      await settle(60);
-      continue;
-    }
-
-    filled += 1;
-    element.classList.remove(AUTOFILL_MISS_CLASS);
     await settle(80);
   }
+  await flushGroup();
 
-  // 按卡片重写：第 i 张卡对档案第 i 条。不再走「第N行」补填（行号经常没打上，第二张卡会空着）。
-  if (profileData) {
+  const panelsClosedForFollowUp = !shouldFillStop() && await ensurePanelsClosed();
+  if (panelsClosedForFollowUp) {
+    updatePageOverlay({
+      percent: 90,
+      message: '正在核对没有档案值的下拉…',
+      showCancel: true,
+    });
+    const plannedIds = new Set(orderedItems.map((item) => item.fieldId));
+    const unmapped = [...document.querySelectorAll('[data-raf-id]')].filter((node) => {
+      if (!(node instanceof HTMLElement) || !isPageFieldVisible(node) || !isControlEmpty(node)) {
+        return false;
+      }
+      const fieldId = node.getAttribute('data-raf-id') || '';
+      return fieldId && !plannedIds.has(fieldId);
+    });
+    for (const node of unmapped) {
+      if (shouldFillStop() || !(node instanceof HTMLElement)) {
+        break;
+      }
+      const controlKind = classifyControl(node);
+      if (controlKind !== CONTROL.optionWidget && controlKind !== CONTROL.nativeSelect) {
+        continue;
+      }
+      const unmappedLabel = node.getAttribute('data-raf-label') || fieldLabelBlob(node);
+      const unmappedResult = await commitUnmappedChoice(node, unmappedLabel);
+      if (unmappedResult.ok) {
+        filled += 1;
+      }
+    }
+  }
+
+  // 计划没覆盖到的格子（例如性别）仍按卡片补。弹层还开着就不要补，避免把名单文字粘进字段名。
+  if (profileData && panelsClosedForFollowUp) {
     const cardFilled = await fillProfileByCards(profileData, misses, (message) => {
       updatePageOverlay({
         percent: 93,
@@ -640,6 +668,8 @@ export async function applyFillPlan(
       });
     });
     filled += cardFilled;
+  } else if (profileData) {
+    recordFillStep('卡片补写', '开始前关窗', '弹层关不掉', '这一遍没有再点');
   }
 
   if (!shouldFillStop()) {
@@ -674,6 +704,7 @@ export async function applyFillPlan(
     filled: filled + fileResult.filled,
     skipped: plan.skippedFieldIds.length,
     misses: [...misses, ...fileResult.misses],
+    trace: fillTraceText(),
   };
 }
 

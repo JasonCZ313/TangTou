@@ -5,6 +5,7 @@
 import type { FillMiss } from '../../shared/types/fill';
 import type {
   AwardItem,
+  CampusActivityItem,
   CertificateItem,
   EducationItem,
   ExperienceItem,
@@ -19,12 +20,12 @@ import {
 } from '../../shared/catalogs/enums';
 import { shouldFillStop } from '../fillAbort';
 import {
-  classifyControl,
   readControlText,
-  writeField,
 } from './chao/dom';
+import { commitFieldValue, rescanCommittedFields } from './fieldCommit';
 import { dateTextMatches, isCalendarDate } from './chao/rules';
 import { cityNameOnly } from '../../shared/fill/sectionBinder';
+import { recordFillStep } from './fillTrace';
 
 /** 点「添加」后等新卡挂上 */
 const ADD_WAIT_MS = 700;
@@ -59,9 +60,24 @@ function ownShortText(element: HTMLElement): string {
 }
 
 /**
- * 是否像分区标题（教育经历、获奖情况）。
+ * 右侧导航里的「实习经历」不是表单标题。
+ * 拿它当边界，后面新加的卡会落在分区外面，数不到也填不到。
+ */
+function isNavigationChrome(node: HTMLElement): boolean {
+  if (node.closest('nav, aside, [role="navigation"]')) {
+    return true;
+  }
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.width < 160 && rect.left > window.innerWidth * 0.75;
+}
+
+/**
+ * 是否像分区标题（教育经历、获奖情况）。导航和「添加」按钮不算。
  */
 function isSectionHeading(element: HTMLElement, pattern: RegExp): boolean {
+  if (isNavigationChrome(element)) {
+    return false;
+  }
   const text = ownShortText(element).replace(/[（(].*$/, '');
   if (text.length < 2 || text.length > 8 || /^添加|删除/.test(text)) {
     return false;
@@ -104,7 +120,8 @@ function findSectionBounds(pattern: RegExp): { heading: HTMLElement; nextHeading
   }
   let nextHeading: HTMLElement | null = null;
   let passed = false;
-  const laterPattern = /教育|实习|工作|项目|校内|获奖|荣誉|证书|培训|技能|语言|自我|论文/;
+  // 只认分区标题。字段名「证书名称」「实践名称」含有这些字，不能拿来当边界
+  const laterTitle = /^(教育经历|教育背景|在校实践|校内实践|校园实践|在校经历|实习经历|工作经历|实习经验|项目经历|获奖情况|获奖经历|荣誉奖项|证书|培训经历|技能特长|语言能力|自我评价|论文专利)$/;
   for (const node of nodes) {
     if (!(node instanceof HTMLElement)) {
       continue;
@@ -113,11 +130,11 @@ function findSectionBounds(pattern: RegExp): { heading: HTMLElement; nextHeading
       passed = true;
       continue;
     }
-    if (!passed) {
+    if (!passed || isNavigationChrome(node)) {
       continue;
     }
     const text = ownShortText(node).replace(/[（(].*$/, '');
-    if (text.length >= 2 && text.length <= 8 && laterPattern.test(text) && !pattern.test(text)) {
+    if (laterTitle.test(text) && !pattern.test(text)) {
       nextHeading = node;
       break;
     }
@@ -129,6 +146,17 @@ function findSectionBounds(pattern: RegExp): { heading: HTMLElement; nextHeading
  * 左边标题。不用「请输入 / 请选择」。
  */
 function captionBeside(control: HTMLElement): string {
+  const ariaLabel = (control.getAttribute('aria-label') || '').replace(/[*＊\s：:]/g, '');
+  if (ariaLabel && ariaLabel.length <= 12 && !/请输入|请选择|删除|添加|必填/.test(ariaLabel)) {
+    return ariaLabel;
+  }
+  if (control.id) {
+    const boundLabel = document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
+    const boundText = (boundLabel?.textContent || '').replace(/[*＊\s：:]/g, '');
+    if (boundText && boundText.length <= 12 && !/请输入|请选择|删除|添加|必填/.test(boundText)) {
+      return boundText;
+    }
+  }
   const root = control.closest('.ant-select, .ant-picker, .ant-radio-group, .el-select') || control;
   let current: HTMLElement | null = root;
   for (let depth = 0; depth < 5 && current; depth += 1) {
@@ -225,17 +253,88 @@ function splitCards(controls: HTMLElement[], deleteButtons: HTMLElement[]): HTML
 }
 
 /**
- * 分区里的「添加」按钮。
+ * 没有「删除」时，用第一次重复出现的标题把第 1、2、3 张卡切开。
+ * 只按删除切的话，第一张卡还没有删除按钮时，新加出来的卡会被当成同一张。
+ */
+function groupControlsByRepeatedCaption(controls: HTMLElement[]): HTMLElement[][] {
+  const captions = controls.map((control) => captionBeside(control));
+  const captionCounts = new Map<string, number>();
+  for (const caption of captions) {
+    if (!caption) {
+      continue;
+    }
+    captionCounts.set(caption, (captionCounts.get(caption) || 0) + 1);
+  }
+  let splitCaption = '';
+  for (const caption of captions) {
+    if (caption && (captionCounts.get(caption) || 0) >= 2) {
+      splitCaption = caption;
+      break;
+    }
+  }
+  if (!splitCaption) {
+    return controls.length > 0 ? [controls] : [];
+  }
+  const cards: HTMLElement[][] = [];
+  let currentCard: HTMLElement[] = [];
+  let seenSplitCaption = false;
+  for (let controlIndex = 0; controlIndex < controls.length; controlIndex += 1) {
+    const caption = captions[controlIndex] || '';
+    if (caption === splitCaption) {
+      if (seenSplitCaption && currentCard.length > 0) {
+        cards.push(currentCard);
+        currentCard = [];
+      }
+      seenSplitCaption = true;
+    }
+    const control = controls[controlIndex];
+    if (control) {
+      currentCard.push(control);
+    }
+  }
+  if (currentCard.length > 0) {
+    cards.push(currentCard);
+  }
+  return cards;
+}
+
+/**
+ * 重新扫描这一分区现在有几张卡。删除切出来的张数和标题重复切出来的张数，取更多的那份。
+ */
+function listSectionCards(
+  heading: HTMLElement,
+  nextHeading: HTMLElement | null,
+): HTMLElement[][] {
+  const controls = collectControls(heading, nextHeading);
+  const deleteButtons = collectDeleteButtons(heading, nextHeading);
+  const cardsByCaption = groupControlsByRepeatedCaption(controls);
+  const cardsByDelete = deleteButtons.length > 0 ? splitCards(controls, deleteButtons) : [];
+  if (cardsByDelete.length > cardsByCaption.length) {
+    return cardsByDelete;
+  }
+  return cardsByCaption;
+}
+
+/**
+ * 锁定这一分区的添加按钮。优先「添加」加标题原文，避免点到别的分区的添加。
  */
 function findAddButton(heading: HTMLElement, nextHeading: HTMLElement | null): HTMLElement | null {
+  const headingText = ownShortText(heading).replace(/[（(].*$/, '');
+  const namedAddText = headingText ? `添加${headingText}` : '';
   const candidates = [...document.querySelectorAll('button, a, span, div')].filter((node): node is HTMLElement => {
-    if (!(node instanceof HTMLElement) || !isInsideSection(heading, nextHeading, node)) {
+    if (!(node instanceof HTMLElement)) {
       return false;
     }
     const text = ownShortText(node);
-    return /^添加/.test(text) && text.length <= 12;
+    if (namedAddText && text === namedAddText) {
+      return true;
+    }
+    return isInsideSection(heading, nextHeading, node) && /^添加/.test(text) && text.length <= 12;
   });
-  return candidates[0] ?? null;
+  const namedButton = namedAddText
+    ? candidates.find((node) => ownShortText(node) === namedAddText)
+    : null;
+  return namedButton ?? candidates[0] ?? null;
 }
 
 /**
@@ -314,6 +413,28 @@ function awardValue(item: AwardItem, caption: string): string {
 }
 
 /**
+ * 在校实践这一张卡。名称、角色、描述各写各的，不把描述写进名称。
+ */
+function campusValue(item: CampusActivityItem, caption: string): string {
+  if (/角色|职务|职位/.test(caption)) {
+    return item.role || '';
+  }
+  if (/描述|内容|职责/.test(caption)) {
+    return item.description || '';
+  }
+  if (/开始/.test(caption)) {
+    return item.startDate || '';
+  }
+  if (/结束/.test(caption)) {
+    return item.endDate || '';
+  }
+  if (/名称|组织|实践/.test(caption)) {
+    return item.organization || '';
+  }
+  return '';
+}
+
+/**
  * 证书这一张卡。
  */
 function certificateValue(item: CertificateItem, caption: string): string {
@@ -356,28 +477,50 @@ async function writeOne(
   if (alreadyWritten(control, value)) {
     return false;
   }
-  try {
-    const result = await writeField(
-      {
-        el: control,
-        blob: caption,
-        control: classifyControl(control),
-      },
-      value,
-    );
-    if (!result.ok) {
-      misses.push({ label: caption, reason: result.reason || '没写上' });
-      return false;
-    }
-    return true;
-  } catch {
-    misses.push({ label: caption, reason: '写入异常，已跳过本格' });
-    return false;
+  const result = await commitFieldValue(control, caption, value);
+  if (!result.ok) {
+    misses.push({ label: caption, reason: result.reason || '没写上' });
   }
+  return result.ok;
 }
 
 /**
- * 把一个分区按卡片填完。卡不够就点一次添加，只填新卡。
+ * 写第 itemIndex 张卡，只用档案里同一条。已经是目标值的格子不再写第二遍。
+ */
+async function fillOneCard<CardItem>(
+  card: HTMLElement[],
+  item: CardItem,
+  itemIndex: number,
+  valueOf: (item: CardItem, caption: string) => string,
+  misses: FillMiss[],
+  onProgress: (message: string) => void,
+): Promise<number> {
+  onProgress(`正在按第 ${itemIndex + 1} 张卡填写…`);
+  const cardWrites: Array<{ element: HTMLElement; label: string; value: string }> = [];
+  for (const control of card) {
+    if (shouldFillStop()) {
+      break;
+    }
+    const caption = captionBeside(control);
+    if (!caption) {
+      continue;
+    }
+    const value = valueOf(item, caption).trim();
+    if (!value) {
+      continue;
+    }
+    const wrote = await writeOne(control, caption, value, misses);
+    if (wrote) {
+      cardWrites.push({ element: control, label: caption, value });
+    }
+    await wait(60);
+  }
+  return rescanCommittedFields(cardWrites, misses);
+}
+
+/**
+ * 把一个分区按档案条数填完。
+ * 先填已有的第 1 张，再点这一分区的添加，重新数卡，确认多了一张才填下一条。不多加、不把第 2 条写进第 1 张。
  */
 async function fillSectionCards<CardItem>(
   headingPattern: RegExp,
@@ -393,73 +536,81 @@ async function fillSectionCards<CardItem>(
   if (!bounds) {
     return 0;
   }
-  let previousCardCount = -1;
-  for (let addCount = 0; addCount <= MAX_ADD_CLICKS; addCount += 1) {
+  const sectionName = ownShortText(bounds.heading).replace(/[（(].*$/, '') || headingPattern.source;
+  let controlsPerCard = 0;
+  /**
+   * 这一轮重新数卡。标题能分开就用标题；标题读空时，按第一次扫到的控件个数把新卡切开。
+   */
+  const readCards = (): HTMLElement[][] => {
+    const listed = listSectionCards(bounds.heading, bounds.nextHeading);
+    const firstCard = listed[0];
+    if (controlsPerCard === 0 && listed.length === 1 && firstCard && firstCard.length > 0) {
+      controlsPerCard = firstCard.length;
+    }
+    if (listed.length > 1 || controlsPerCard === 0) {
+      return listed;
+    }
+    const controls = collectControls(bounds.heading, bounds.nextHeading);
+    if (controls.length < controlsPerCard * 2) {
+      return listed;
+    }
+    const chunks: HTMLElement[][] = [];
+    for (let start = 0; start + controlsPerCard <= controls.length; start += controlsPerCard) {
+      const chunk = controls.slice(start, start + controlsPerCard);
+      chunks.push(chunk);
+    }
+    return chunks.length > listed.length ? chunks : listed;
+  };
+  let filled = 0;
+  let itemIndex = 0;
+  let addClickCount = 0;
+  while (itemIndex < items.length) {
     if (shouldFillStop()) {
       break;
     }
-    const controls = collectControls(bounds.heading, bounds.nextHeading);
-    const deleteButtons = collectDeleteButtons(bounds.heading, bounds.nextHeading);
-    const cards = splitCards(controls, deleteButtons);
-    if (cards.length >= items.length) {
+    const cards = readCards();
+    const item = items[itemIndex];
+    const currentCard = cards[itemIndex];
+    if (!item) {
       break;
     }
-    if (cards.length === previousCardCount) {
+    if (currentCard) {
+      filled += await fillOneCard(currentCard, item, itemIndex, valueOf, misses, onProgress);
+      itemIndex += 1;
+      continue;
+    }
+    if (addClickCount >= MAX_ADD_CLICKS) {
       misses.push({
-        label: headingPattern.source,
-        reason: '点了添加但卡片数量没有增加',
+        label: sectionName,
+        reason: `点了添加但卡片数量没有增加到 ${itemIndex + 1} 张`,
       });
+      recordFillStep(sectionName, '添加', '没有增加', `档案第${itemIndex + 1}条，页面${cards.length}张`);
       break;
     }
-    previousCardCount = cards.length;
     const addButton = findAddButton(bounds.heading, bounds.nextHeading);
     if (!addButton) {
       misses.push({
-        label: headingPattern.source,
+        label: sectionName,
         reason: `页面上只有 ${cards.length} 张卡，档案有 ${items.length} 条，且没有添加按钮`,
       });
+      recordFillStep(sectionName, '添加', '没有添加按钮', `页面${cards.length}张，档案${items.length}条`);
       break;
     }
-    onProgress(`正在添加第 ${cards.length + 1} 张卡…`);
+    const cardCountBeforeAdd = cards.length;
+    onProgress(`正在添加第 ${cardCountBeforeAdd + 1} 张卡…`);
     addButton.click();
+    addClickCount += 1;
     await wait(ADD_WAIT_MS);
-  }
-  const controls = collectControls(bounds.heading, bounds.nextHeading);
-  const deleteButtons = collectDeleteButtons(bounds.heading, bounds.nextHeading);
-  const cards = splitCards(controls, deleteButtons);
-  let filled = 0;
-  const cardCount = Math.min(cards.length, items.length);
-  for (let cardIndex = 0; cardIndex < cardCount; cardIndex += 1) {
-    if (shouldFillStop()) {
-      return filled;
+    const cardsAfterAdd = readCards();
+    if (cardsAfterAdd.length <= cardCountBeforeAdd) {
+      misses.push({
+        label: sectionName,
+        reason: '点了添加但卡片数量没有增加',
+      });
+      recordFillStep(sectionName, '添加', '没有增加', `之前=${cardCountBeforeAdd} 现在=${cardsAfterAdd.length}`);
+      break;
     }
-    const card = cards[cardIndex];
-    if (!card) {
-      continue;
-    }
-    onProgress(`正在按第 ${cardIndex + 1} 张卡填写…`);
-    const item = items[cardIndex];
-    if (!item) {
-      continue;
-    }
-    for (const control of card) {
-      if (shouldFillStop()) {
-        return filled;
-      }
-      const caption = captionBeside(control);
-      if (!caption) {
-        continue;
-      }
-      const value = valueOf(item, caption).trim();
-      if (!value) {
-        continue;
-      }
-      const wrote = await writeOne(control, caption, value, misses);
-      if (wrote) {
-        filled += 1;
-        await wait(60);
-      }
-    }
+    recordFillStep(sectionName, '添加', '卡片已增加', `之前=${cardCountBeforeAdd} 现在=${cardsAfterAdd.length} 下一条=档案第${itemIndex + 1}条`);
   }
   return filled;
 }
@@ -495,28 +646,78 @@ async function fillBasicChoices(profile: ProfileData, misses: FillMiss[]): Promi
     if (!(captionNode instanceof HTMLElement)) {
       continue;
     }
-    let row: HTMLElement | null = captionNode.parentElement;
-    for (let depth = 0; depth < 6 && row; depth += 1) {
-      const hasChoice = Boolean(row.querySelector('input[type="radio"], .ant-select, .el-select, .ant-picker, select'))
-        || [...row.querySelectorAll('div, span')].some((node) => (node.textContent || '').replace(/\s+/g, '') === '请选择');
-      if (hasChoice && row.contains(captionNode)) {
-        break;
-      }
-      row = row.parentElement;
-    }
-    if (!row) {
+    const captionText = ownShortText(captionNode).replace(/[*＊：:]/g, '');
+    if (!captionText || captionText.length > 12) {
       continue;
     }
-    if ([...row.querySelectorAll('input, textarea, .ant-select, .ant-picker')].some((node) =>
+    const boundedRow = (() => {
+      let current: HTMLElement | null = captionNode.parentElement;
+      let best: HTMLElement | null = current;
+      for (let depth = 0; depth < 5 && current && current !== document.body; depth += 1) {
+        const rowText = (current.textContent || '').replace(/\s+/g, '');
+        const fieldNames = ['姓名', '证件', '性别', '籍贯', '现居', '国籍', '学历'].filter((word) => rowText.includes(word));
+        if (fieldNames.length > 1) {
+          break;
+        }
+        best = current;
+        current = current.parentElement;
+      }
+      return best;
+    })();
+    if (!boundedRow) {
+      continue;
+    }
+    if ([...boundedRow.querySelectorAll('input, textarea, .ant-select, .ant-picker')].some((node) =>
       node instanceof HTMLElement && alreadyWritten(node, job.value))) {
       continue;
     }
+    if (/^(男|女|是|否)$/.test(job.value)) {
+      // 性别只认「男/女」对应的真实单选框；文字点中但框没勾上，不算填成功，也不再去点请选择
+      const wordNode = [...boundedRow.querySelectorAll('span, label, div')].find((node) => {
+        const text = (node.textContent || '').replace(/\s+/g, '');
+        const box = node.getBoundingClientRect();
+        return text === job.value && box.height > 0 && box.height <= 40;
+      });
+      const radioInput = [...boundedRow.querySelectorAll('input[type="radio"]')].find((input) => {
+        if (!(input instanceof HTMLInputElement)) {
+          return false;
+        }
+        const labelText = (
+          input.closest('label')?.textContent
+          || (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`)?.textContent : '')
+          || input.value
+          || ''
+        ).replace(/\s+/g, '');
+        return labelText === job.value || labelText.includes(job.value);
+      });
+      const radioTarget = radioInput instanceof HTMLInputElement
+        ? radioInput
+        : wordNode?.closest('label')?.querySelector('input[type="radio"]')
+          || wordNode?.parentElement?.querySelector('input[type="radio"]');
+      const genderTarget = radioTarget instanceof HTMLElement
+        ? radioTarget
+        : wordNode instanceof HTMLElement
+          ? wordNode
+          : null;
+      if (genderTarget) {
+        const genderResult = await commitFieldValue(genderTarget, captionText, job.value);
+        if (genderResult.ok) {
+          filled += 1;
+        } else {
+          misses.push({ label: captionText, reason: genderResult.reason || '单选框点了但没有勾上' });
+        }
+        continue;
+      }
+      misses.push({ label: captionText, reason: '单选框点了但没有勾上' });
+      continue;
+    }
     if (job.idNumber) {
-      const numberInput = [...row.querySelectorAll('input')].find((input) =>
+      const numberInput = [...boundedRow.querySelectorAll('input')].find((input) =>
         input instanceof HTMLInputElement
         && !input.closest('.ant-select, .el-select, .ant-picker')
         && input.type !== 'hidden'
-        && input.type !== 'radio',
+        && input.type !== 'radio'
+        && (captionNode.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
       );
       if (numberInput instanceof HTMLElement) {
         const wrote = await writeOne(numberInput, '证件号码', job.value, misses);
@@ -528,10 +729,10 @@ async function fillBasicChoices(profile: ProfileData, misses: FillMiss[]): Promi
       }
       continue;
     }
-    const choice = row.querySelector(
+    const choice = boundedRow.querySelector(
       '.ant-radio-group, input[type="radio"], .ant-select, .el-select, .ant-picker, select',
     );
-    const visibleTrigger = [...row.querySelectorAll('div, span, button')].find((node) => {
+    const visibleTrigger = [...boundedRow.querySelectorAll('div, span, button')].find((node) => {
       if (!(node instanceof HTMLElement)) {
         return false;
       }
@@ -541,7 +742,7 @@ async function fillBasicChoices(profile: ProfileData, misses: FillMiss[]): Promi
     });
     const target = choice instanceof HTMLElement ? choice : visibleTrigger;
     if (!(target instanceof HTMLElement)) {
-      const already = [...row.querySelectorAll('input, textarea')].some((node) =>
+      const already = [...boundedRow.querySelectorAll('input, textarea')].some((node) =>
         node instanceof HTMLElement && alreadyWritten(node, job.value));
       if (!already) {
         misses.push({ label: ownShortText(captionNode), reason: '同一行没找到可点的控件' });
@@ -560,7 +761,8 @@ async function fillBasicChoices(profile: ProfileData, misses: FillMiss[]): Promi
 }
 
 /**
- * 确认写入后的主路径：先按卡片把教育、实习、获奖、证书和基础点选填上。
+ * 确认写入后的主路径：按卡片把教育、在校实践、实习、获奖、证书和基础点选填上。
+ * 每一区先填已有的第一张，再按档案条数点添加，点完重新数卡。
  */
 export async function fillProfileByCards(
   profile: ProfileData,
@@ -568,12 +770,18 @@ export async function fillProfileByCards(
   onProgress: (message: string) => void,
 ): Promise<number> {
   let filled = 0;
-  onProgress('正在按卡片填写个人信息…');
-  filled += await fillBasicChoices(profile, misses);
+  onProgress('正在按卡片填写教育、实践、实习、获奖和证书…');
   filled += await fillSectionCards(
     /^教育经历$|^教育背景$/,
     profile.education || [],
     (item, caption) => educationValue(item, caption),
+    misses,
+    onProgress,
+  );
+  filled += await fillSectionCards(
+    /^在校实践$|^校内实践$|^校园实践$|^在校经历$/,
+    profile.campusActivities || [],
+    (item, caption) => campusValue(item, caption),
     misses,
     onProgress,
   );
@@ -598,5 +806,7 @@ export async function fillProfileByCards(
     misses,
     onProgress,
   );
+  onProgress('正在按卡片填写个人信息…');
+  filled += await fillBasicChoices(profile, misses);
   return filled;
 }

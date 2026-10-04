@@ -192,6 +192,9 @@ const confirmWriteButton = document.getElementById(
   'confirmWriteButton',
 ) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
+const copyFillTraceButton = document.getElementById('copyFillTraceButton') as HTMLButtonElement;
+/** 最近一轮确认写入的操作记录，复制后贴回排查。 */
+let lastFillTrace = '';
 const stopButton = document.getElementById('stopButton') as HTMLButtonElement;
 const statusMessageElement = document.getElementById(
   'statusMessage',
@@ -1580,6 +1583,8 @@ async function runConfirmWrite(): Promise<void> {
       );
     }
     const misses = applyResponse.misses ?? [];
+    lastFillTrace = applyResponse.trace ?? '';
+    copyFillTraceButton.disabled = lastFillTrace.length === 0;
     renderMissTable(misses);
     showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
     showStatus(
@@ -1980,6 +1985,16 @@ function bindEvents(): void {
     void withBusy(async () => {
       showStatus('正在撤销本轮填写…', 'info');
       await runUndoFlow();
+    });
+  });
+
+  copyFillTraceButton.addEventListener('click', () => {
+    if (!lastFillTrace) {
+      showStatus('这一轮还没有操作记录。先点确认写入。', 'info');
+      return;
+    }
+    void navigator.clipboard.writeText(lastFillTrace).then(() => {
+      showStatus('操作记录已复制。贴回聊天即可。', 'success');
     });
   });
 

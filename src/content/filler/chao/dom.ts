@@ -273,14 +273,64 @@ export function isControlEmpty(el) {
 }
 
 /**
+ * 告诉 React：这次 value 和它上次记住的不一样。
+ * 不改的话，输入事件会被当成没变化，下一次渲染把证件号恢复成空。
+ */
+function markControlledValueChanged(element, nextValue) {
+  const tracker = element._valueTracker;
+  if (!tracker || typeof tracker.setValue !== 'function') {
+    return;
+  }
+  const currentText = String(element.value ?? '');
+  const nextText = String(nextValue ?? '');
+  tracker.setValue(currentText === nextText ? `${currentText} ` : currentText);
+}
+
+/**
+ * 输入框上 React 自己的 onChange。只取这一格，不往父组件上找，避免把事件对象交给只收字符串的回调。
+ */
+function reactInputOnChange(element) {
+  const propertyNames = Object.keys(element);
+  const propsName = propertyNames.find((name) => name.startsWith('__reactProps$') || name.startsWith('__reactEventHandlers$'));
+  const handler = propsName ? element[propsName]?.onChange : null;
+  return typeof handler === 'function' ? handler : null;
+}
+
+/**
+ * 把新文字交给这一格自己的 onChange。原生 input 已经发过；这里再调一次，是因为有的页面只在这个回调里把字存进表单。
+ */
+function invokeReactOnChange(element) {
+  const handler = reactInputOnChange(element);
+  if (!handler) {
+    return;
+  }
+  try {
+    handler({
+      target: element,
+      currentTarget: element,
+      type: 'change',
+      nativeEvent: { target: element },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  } catch {
+    // 组件回调抛错时，原生 input 事件已经发出，这一格仍按回读判断成败
+  }
+}
+
+/**
  * 原生方式写值：绕过 React/Vue 受控 value。
  * 必须用「当前节点自己原型上的」setter；禁止把 HTMLInputElement 的 setter 套到 div/.ant-select 上（会 Illegal invocation）。
+ * 写入前先改掉控件自己记住的旧值，否则点到别的格子时页面会把刚写的字清掉。
  */
 export function setNativeValue(el, value) {
   if (!(el instanceof HTMLElement)) {
     return;
   }
   try {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+      markControlledValueChanged(el, value);
+    }
     if (el instanceof HTMLInputElement) {
       const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
       if (inputSetter) {
@@ -300,7 +350,7 @@ export function setNativeValue(el, value) {
     } else {
       return;
     }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, data: String(value ?? ''), inputType: 'insertText' }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } catch {
     // Illegal invocation / 只读控件：当作本格写失败，绝不抛到整轮
@@ -325,8 +375,21 @@ function fillSelectOption(el, value) {
   return true;
 }
 
-/** 文本/日期/可编辑控件写入（不含点选控件）；外壳 div / select 直接失败 */
-function fillPlainField(el, value) {
+/** 0 和 1 只用浏览器插入；2 改用控件自身赋值。由逐格收尾按尝试次数切换。 */
+let plainTextWriteMethod = 0;
+
+/**
+ * 切换普通输入框的写法。0、1 为插入文字，2 为原生赋值。
+ */
+export function setPlainTextWriteMethod(methodIndex: number) {
+  plainTextWriteMethod = methodIndex >= 2 ? 2 : 0;
+}
+
+/**
+ * 文本/日期/可编辑控件写入（不含点选控件）；外壳 div / select 直接失败。
+ * 先让组件记下新值，再失焦。同一轮里立刻失焦时，组件读到的还是旧空值，点到下一格会把字清掉。
+ */
+async function fillPlainField(el, value) {
   const text = String(value || '').trim();
   if (!text || text === '至今') return false;
   try {
@@ -357,9 +420,33 @@ function fillPlainField(el, value) {
     } catch {
       /* 部分控件无 select */
     }
-    setNativeValue(el, output);
-    el.dispatchEvent(new InputEvent('input', { bubbles: true, data: output, inputType: 'insertText' }));
+    markControlledValueChanged(el, output);
+    let committed = false;
+    if (plainTextWriteMethod >= 2) {
+      setNativeValue(el, output);
+      committed = String(el.value || '').includes(output);
+    } else {
+      try {
+        // 先选中再插入：浏览器自己发出输入事件，受控表单才会把字存进状态
+        committed = document.execCommand('insertText', false, output) === true
+          && String(el.value || '').includes(output);
+      } catch {
+        committed = false;
+      }
+    }
+    if (!committed) {
+      return false;
+    }
+    // 证件号只在这一格自己的 onChange 里进表单。姓名、邮箱仍只走浏览器插入，避免假事件把已经能留下的字清掉
+    if (/^[0-9]{17}[0-9Xx]$/.test(output)) {
+      invokeReactOnChange(el);
+    }
     el.dispatchEvent(new Event('change', { bubbles: true }));
+    // 等组件把 onChange 里的 setState 写完，再失焦。立刻失焦会把表单里的值提交成空
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+    el.blur();
     // 日期被控件改写成不含年份的碎片 → 清空判失败（宁缺勿错）
     if (/^\d{4}/.test(output) && !String(el.value || '').includes(output.slice(0, 4))) {
       setNativeValue(el, '');
@@ -445,7 +532,7 @@ async function fillWidgetDate(el, value) {
 
   // 策略3：可输入控件回落纯文本（仍要求能留下年份）
   if (!el.readOnly && el.tagName.toLowerCase() === 'input') {
-    const plainOk = fillPlainField(el, date.slice(0, 7) || date);
+    const plainOk = await fillPlainField(el, date.slice(0, 7) || date);
     if (plainOk && yearText && String(el.value || '').includes(yearText)) {
       return true;
     }
@@ -593,23 +680,33 @@ function valueLooksWritten(field, intended) {
  * 禁止返回 .ant-select 内部搜索框。
  */
 function resolveAddonTextInput(el) {
-  let box = el.parentElement;
-  for (let depth = 0; depth < 6 && box && box !== document.body; depth += 1) {
-    const text = String(box.textContent || '').replace(/\s+/g, '');
-    if (/姓名/.test(text) && /证件/.test(text)) {
-      break;
-    }
-    const inputs = [...box.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])')]
+  const captionNodes = [...document.querySelectorAll('span, label, div')].filter((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const text = String(node.textContent || '').replace(/[*＊\s：:]/g, '');
+    return text.length <= 8 && /证件号码|证件号/.test(text);
+  });
+  const caption = captionNodes[0];
+  if (!(caption instanceof HTMLElement)) {
+    return null;
+  }
+  let row = caption.parentElement;
+  for (let depth = 0; depth < 5 && row && row !== document.body; depth += 1) {
+    const inputs = [...row.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])')]
       .filter((input) => input instanceof HTMLInputElement
         && !input.readOnly
         && !input.disabled
         && !input.closest('.ant-select, .el-select, .ant-picker')
-        && input.getBoundingClientRect().width > 40);
-    const numberInput = inputs.find((input) => /请输入/.test(input.placeholder || ''));
-    if (numberInput && /证件/.test(text)) {
+        && input.getBoundingClientRect().width > 40
+        && (caption.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+    const numberInput = inputs.find((input) => /请输入/.test(input.placeholder || '')) || inputs[0];
+    if (numberInput) {
       return numberInput;
     }
-    box = box.parentElement;
+    const rowText = String(row.textContent || '').replace(/\s+/g, '');
+    if (/姓名/.test(rowText) && /证件/.test(rowText)) {
+      break;
+    }
+    row = row.parentElement;
   }
   return null;
 }
@@ -666,7 +763,7 @@ async function writeFieldInner(field, intendedValue) {
     if (numberInput) {
       strategy = '证件号码纯文本（复合框右侧）';
       writeTarget = numberInput;
-      wrote = fillPlainField(numberInput, value);
+      wrote = await fillPlainField(numberInput, value);
     } else {
       strategy = '证件号码：未找到号码输入框';
       wrote = false;
@@ -705,14 +802,14 @@ async function writeFieldInner(field, intendedValue) {
         && fingerprint !== 'regionModal'
         && fingerprint !== 'radioGroup') {
         strategy = `${strategy} → 回落文本`;
-        wrote = fillPlainField(field.el, value);
+        wrote = await fillPlainField(field.el, value);
         if (wrote) failReason = '';
       }
     } else if (field.control === CONTROL.dateInput) {
       strategy = '原生日期';
-      wrote = fillPlainField(field.el, value);
+      wrote = await fillPlainField(field.el, value);
     } else {
-      wrote = fillPlainField(field.el, value);
+      wrote = await fillPlainField(field.el, value);
     }
   }
 
