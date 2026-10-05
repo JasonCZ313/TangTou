@@ -642,15 +642,57 @@ function describeClickedNode(node) {
 }
 
 /**
- * 只点自身文字正好等于这一行城市名的子节点。
- * 调用方：driveRegionModal 点城市、已选仍是 0 时再点一次、已选非 0 后点区县；
- * clickPlainCityList 在非地区窗的城市名单里也调用这里。
- * 输入：行节点、字段名（只写入操作记录）。
- * 输出：无返回值。已选数字仍由 driveRegionModal 用 selectedRegionCount 读取，本函数不把空框记成成功。
- * 不点 area-item-container，也不点 icon-container。点这两处时「已选地区」保持 0，确定不会执行。
+ * 这一行是否在「已选地区」弹层里。
+ * 城市名单（意向工作地点）不在这种弹层里，仍点城市名字。籍贯、现居住地在弹层里，要点选择控件。
+ */
+function rowInsideRegionModal(row) {
+  let current = row instanceof HTMLElement ? row : null;
+  for (let depth = 0; depth < 12 && current; depth += 1) {
+    const text = String(current.textContent || '').replace(/\s+/g, '');
+    const box = current.getBoundingClientRect();
+    if (/已选地区/.test(text) && box.height > 80) {
+      return true;
+    }
+    current = current.parentElement;
+  }
+  return false;
+}
+
+/**
+ * 点地区弹层里能让「已选地区」增加的选择控件。
+ * 调用方：clickRegionRadio 在已选地区弹层中。输入：城市行、字段名。输出：无。
+ * 不点城市名字所在的 span。只点名字时已选保持 0，确定不会执行。
+ */
+function clickRegionSelectionControl(row, labelBlob, cityText) {
+  const controls = [...row.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')]
+    .filter((node) => node instanceof HTMLElement);
+  for (const control of controls) {
+    control.click();
+    safeClick(control);
+    const label = control.closest('label');
+    if (label instanceof HTMLElement && label !== control) {
+      safeClick(label);
+    }
+  }
+  recordFillStep(
+    labelBlob,
+    '点中的节点',
+    controls.slice(0, 3).map((node) => describeClickedNode(node)).join(' ; ') || '没有选择控件',
+    cityText,
+  );
+}
+
+/**
+ * 点城市行。已选地区弹层里点选择控件；普通城市名单仍点文字等于城市名的节点。
+ * 调用方：driveRegionModal 点城市、已选仍是 0 时再点一次、已选非 0 后点区县；clickPlainCityList。
+ * 输入：行节点、字段名（只写入操作记录）。输出：无。已选数字仍由 driveRegionModal 读取，本函数不把空框记成成功。
  */
 function clickRegionRadio(row, labelBlob = '地区') {
   const cityText = compactChoiceLabel(row instanceof HTMLElement ? row.textContent : '');
+  if (row instanceof HTMLElement && rowInsideRegionModal(row)) {
+    clickRegionSelectionControl(row, labelBlob, cityText);
+    return;
+  }
   const textTargets = [];
   const pushTextTarget = (node) => {
     if (!(node instanceof HTMLElement) || !cityText || textTargets.includes(node)) return;
@@ -1303,19 +1345,36 @@ export async function driveRadioGroup(el, value) {
       return { radio, label: String(label).replace(/\s+/g, '').trim() };
     });
   })();
-  // 也匹配纯 label/span「男」「女」旁的假 radio
+  // 附近没有真实单选框时，点能勾上圆圈的标签。只点到「男」这个字、圆圈没勾上，不算成功
   if (!wider.length) {
     const scope = el.closest('[class*="form-item" i], [class*="field" i], [class*="item" i], tr, div') || el.parentElement;
     const textNodes = [...(scope?.querySelectorAll('label, span, div') || [])].filter((node) => {
       const text = ownVisibleText(node).replace(/\s+/g, '');
       return /^(男|女|是|否|有|无)$/.test(text) && textMatchesAliases(text, aliases);
     });
-    if (textNodes[0]) {
-      safeClick(textNodes[0]);
-      await sleep(80);
-      return { ok: true, reason: '点击单选文案' };
+    const wordNode = textNodes[0];
+    if (!(wordNode instanceof HTMLElement)) {
+      return { ok: false, reason: '未找到单选选项' };
     }
-    return { ok: false, reason: '未找到单选选项' };
+    const labelEl = wordNode.closest('label');
+    const radioInLabel = labelEl?.querySelector('input[type="radio"], [role="radio"]');
+    const radioTarget = radioInLabel instanceof HTMLElement
+      ? radioInLabel
+      : wordNode.parentElement?.querySelector('input[type="radio"], [role="radio"]');
+    if (radioTarget instanceof HTMLInputElement) {
+      radioTarget.click();
+      radioTarget.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (labelEl instanceof HTMLElement) {
+      safeClick(labelEl);
+    } else if (radioTarget instanceof HTMLElement) {
+      safeClick(radioTarget);
+    }
+    await sleep(80);
+    const checkedNode = radioTarget instanceof HTMLElement ? radioTarget : wordNode;
+    return radioLooksSelected(checkedNode)
+      ? { ok: true, reason: '单选已勾选' }
+      : { ok: false, reason: '单选点击后未勾上' };
   }
   const hit = wider.find((item) => textMatchesAliases(item.label, aliases))
     || wider.find((item) => aliases.some((alias) => item.label.includes(alias)));

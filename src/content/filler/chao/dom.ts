@@ -311,12 +311,14 @@ function hostReactProps(element) {
 }
 
 /**
- * 把证件号交给这一格自己的 onChange / onBlur。
- * 只改 DOM 时，后面任意一格触发重绘，表单仍按空值把号码清掉。
+ * 把证件号交给这一格自己的 onChange，让表单先记住号码。
+ * 不在这里失焦。表单还没记住时立刻 onBlur，页面会按空值把框刷回「请输入」。
+ * 调用方：fillPlainField 在插入 18 位号码之后、离开这一格之前。
+ * 输入：号码输入框。输出：无。会改组件记在这一格上的值，不改别的字段。
  */
 function commitIdentityToComponent(element) {
   const props = hostReactProps(element);
-  if (!props) {
+  if (!props || typeof props.onChange !== 'function') {
     return;
   }
   const eventStub = {
@@ -328,19 +330,10 @@ function commitIdentityToComponent(element) {
     stopPropagation() {},
     persist() {},
   };
-  if (typeof props.onChange === 'function') {
-    try {
-      props.onChange(eventStub);
-    } catch {
-      // 组件不要这种事件对象时，下面的回读会判失败，不把空值写成成功
-    }
-  }
-  if (typeof props.onBlur === 'function') {
-    try {
-      props.onBlur({ ...eventStub, type: 'blur' });
-    } catch {
-      // 同上，失焦回调抛错不当成已经写入
-    }
+  try {
+    props.onChange(eventStub);
+  } catch {
+    // 组件不要这种事件对象时，离开后的回读会判失败，不把空框写成成功
   }
 }
 
@@ -465,15 +458,18 @@ async function fillPlainField(el, value) {
     if (!committed) {
       return false;
     }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
     if (isIdentityNumber) {
       commitIdentityToComponent(el);
     }
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    // 等组件把 onChange 里的 setState 写完，再失焦。立刻失焦会把表单里的值提交成空
+    // 等组件把 onChange 里的 setState 写完，再失焦。证件号在表单记住之前失焦，会被刷回空
     await new Promise((resolve) => {
       window.setTimeout(resolve, 0);
     });
     el.blur();
+    if (isIdentityNumber && !String(el.value || '').includes(output)) {
+      return false;
+    }
     // 日期被控件改写成不含年份的碎片 → 清空判失败（宁缺勿错）
     if (/^\d{4}/.test(output) && !String(el.value || '').includes(output.slice(0, 4))) {
       setNativeValue(el, '');

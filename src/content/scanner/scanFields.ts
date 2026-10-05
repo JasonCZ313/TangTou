@@ -1255,6 +1255,10 @@ function canonicalSectionTitle(rawTitle: string): string {
   if (/获奖经历|获奖情况|荣誉奖项|所获荣誉/.test(compact)) {
     return '获奖经历';
   }
+  // 页面标题是「论文/专著」。不收成论文区的话，nearestSectionTitle 会继续往前收成获奖，名称被写成下一条获奖
+  if (/^论文\/专著$|^论文／专著$|^论文专著$|^论文专利$/.test(compact)) {
+    return '论文/专著';
+  }
   if (/^证书|^资格证书/.test(compact)) {
     return '证书';
   }

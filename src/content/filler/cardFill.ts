@@ -121,7 +121,7 @@ function findSectionBounds(pattern: RegExp): { heading: HTMLElement; nextHeading
   let nextHeading: HTMLElement | null = null;
   let passed = false;
   // 只认分区标题。字段名「证书名称」「实践名称」含有这些字，不能拿来当边界
-  const laterTitle = /^(教育经历|教育背景|在校实践|校内实践|校园实践|在校经历|实习经历|工作经历|实习经验|项目经历|获奖情况|获奖经历|荣誉奖项|证书|培训经历|技能特长|语言能力|自我评价|论文专利)$/;
+  const laterTitle = /^(教育经历|教育背景|在校实践|校内实践|校园实践|在校经历|实习经历|工作经历|实习经验|项目经历|获奖情况|获奖经历|荣誉奖项|证书|培训经历|技能特长|语言能力|自我评价|论文专利|论文\/专著|论文专著)$/;
   for (const node of nodes) {
     if (!(node instanceof HTMLElement)) {
       continue;
