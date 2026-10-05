@@ -36,7 +36,7 @@ export function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] 
       ),
     },
     {
-      sectionPattern: '校内经历|校内任职|校园',
+      sectionPattern: '在校实践|校内实践|校园实践|校内经历|校内任职|校园',
       neededRows: countNamedRows(
         profileData.campusActivities.map((item) => item.organization || ''),
       ),

@@ -228,6 +228,16 @@ const SELECTED_VALUE_SELECTOR = [
  */
 export function readControlText(el) {
   if (!el) return '';
+  // 单选的 value 是选项本身，没勾上时不能当成框里已经写了「男」
+  if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox')) {
+    if (!el.checked) return '';
+    const labelText = (
+      el.closest('label')?.textContent
+      || el.value
+      || ''
+    ).replace(/\s+/g, '').trim();
+    return labelText.slice(0, 24);
+  }
   const tag = el.tagName.toLowerCase();
   if (tag === 'select') {
     return String(el.options?.[el.selectedIndex]?.text || el.value || '').trim();
@@ -287,34 +297,50 @@ function markControlledValueChanged(element, nextValue) {
 }
 
 /**
- * 输入框上 React 自己的 onChange。只取这一格，不往父组件上找，避免把事件对象交给只收字符串的回调。
+ * 这一格自己的 React 属性。只读输入框节点，不往父组件上找。
  */
-function reactInputOnChange(element) {
+function hostReactProps(element) {
   const propertyNames = Object.keys(element);
   const propsName = propertyNames.find((name) => name.startsWith('__reactProps$') || name.startsWith('__reactEventHandlers$'));
-  const handler = propsName ? element[propsName]?.onChange : null;
-  return typeof handler === 'function' ? handler : null;
+  if (propsName && element[propsName]) {
+    return element[propsName];
+  }
+  const fiberName = propertyNames.find((name) => name.startsWith('__reactFiber$') || name.startsWith('__reactInternalInstance$'));
+  const fiber = fiberName ? element[fiberName] : null;
+  return fiber?.memoizedProps || null;
 }
 
 /**
- * 把新文字交给这一格自己的 onChange。原生 input 已经发过；这里再调一次，是因为有的页面只在这个回调里把字存进表单。
+ * 把证件号交给这一格自己的 onChange / onBlur。
+ * 只改 DOM 时，后面任意一格触发重绘，表单仍按空值把号码清掉。
  */
-function invokeReactOnChange(element) {
-  const handler = reactInputOnChange(element);
-  if (!handler) {
+function commitIdentityToComponent(element) {
+  const props = hostReactProps(element);
+  if (!props) {
     return;
   }
-  try {
-    handler({
-      target: element,
-      currentTarget: element,
-      type: 'change',
-      nativeEvent: { target: element },
-      preventDefault() {},
-      stopPropagation() {},
-    });
-  } catch {
-    // 组件回调抛错时，原生 input 事件已经发出，这一格仍按回读判断成败
+  const eventStub = {
+    target: element,
+    currentTarget: element,
+    type: 'change',
+    nativeEvent: { target: element },
+    preventDefault() {},
+    stopPropagation() {},
+    persist() {},
+  };
+  if (typeof props.onChange === 'function') {
+    try {
+      props.onChange(eventStub);
+    } catch {
+      // 组件不要这种事件对象时，下面的回读会判失败，不把空值写成成功
+    }
+  }
+  if (typeof props.onBlur === 'function') {
+    try {
+      props.onBlur({ ...eventStub, type: 'blur' });
+    } catch {
+      // 同上，失焦回调抛错不当成已经写入
+    }
   }
 }
 
@@ -421,8 +447,10 @@ async function fillPlainField(el, value) {
       /* 部分控件无 select */
     }
     markControlledValueChanged(el, output);
+    const isIdentityNumber = /^[0-9]{17}[0-9Xx]$/.test(output);
     let committed = false;
-    if (plainTextWriteMethod >= 2) {
+    // 证件号不用原生赋值。第 3 遍改 setter 时，组件会立刻把框清回空
+    if (plainTextWriteMethod >= 2 && !isIdentityNumber) {
       setNativeValue(el, output);
       committed = String(el.value || '').includes(output);
     } else {
@@ -437,9 +465,8 @@ async function fillPlainField(el, value) {
     if (!committed) {
       return false;
     }
-    // 证件号只在这一格自己的 onChange 里进表单。姓名、邮箱仍只走浏览器插入，避免假事件把已经能留下的字清掉
-    if (/^[0-9]{17}[0-9Xx]$/.test(output)) {
-      invokeReactOnChange(el);
+    if (isIdentityNumber) {
+      commitIdentityToComponent(el);
     }
     el.dispatchEvent(new Event('change', { bubbles: true }));
     // 等组件把 onChange 里的 setState 写完，再失焦。立刻失焦会把表单里的值提交成空

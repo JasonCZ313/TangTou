@@ -1249,8 +1249,8 @@ function canonicalSectionTitle(rawTitle: string): string {
   if (/^项目经历|^项目经验|^项目$/.test(compact)) {
     return '项目经历';
   }
-  if (/校内经历|校内任职|校园经历|社团经历/.test(compact)) {
-    return '校内经历';
+  if (/在校实践|校内实践|校园实践|在校经历|校内经历|校内任职|校园经历|社团经历/.test(compact)) {
+    return '在校实践';
   }
   if (/获奖经历|获奖情况|荣誉奖项|所获荣誉/.test(compact)) {
     return '获奖经历';
@@ -1613,7 +1613,7 @@ export function locateRepeatSection(patternSource: string): RepeatSectionSnapsho
     if (
       laterTitle &&
       laterTitle.length <= 12 &&
-      /教育|实习|工作|项目|校内|校园|获奖|荣誉|证书|培训|技能|语言|自我|能力/.test(laterTitle) &&
+      /教育|实习|工作|项目|校内|校园|在校实践|获奖|荣誉|证书|培训|技能|语言|自我|能力/.test(laterTitle) &&
       !sectionPattern.test(laterTitle)
     ) {
       nextHeading = node;
@@ -1980,7 +1980,7 @@ function nodeInRepeatSection(patternSource: string, target: Node): boolean {
     if (
       laterTitle &&
       laterTitle.length <= 12 &&
-      /教育|实习|工作|项目|校内|校园|获奖|荣誉|证书|培训|技能|语言|自我|能力/.test(laterTitle) &&
+      /教育|实习|工作|项目|校内|校园|在校实践|获奖|荣誉|证书|培训|技能|语言|自我|能力/.test(laterTitle) &&
       !sectionPattern.test(laterTitle)
     ) {
       nextHeading = node;

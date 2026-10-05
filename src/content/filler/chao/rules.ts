@@ -290,7 +290,7 @@ export const SECTION_HEADING_PATTERNS = [
   { type: 'internship', pattern: /^(实习经历|实习经验|实习)$/ },
   { type: 'work', pattern: /^(工作经历|工作经验|职业经历|工作)$/ },
   { type: 'project', pattern: /^(项目经历|项目经验|项目信息|项目)$/ },
-  { type: 'campus', pattern: /^(校内经历|校园经历|在校经历|学生工作|社团经历|校园实践|校内)$/ },
+  { type: 'campus', pattern: /^(在校实践|校内实践|校园实践|校内经历|校园经历|在校经历|学生工作|社团经历|校园实践|校内)$/ },
   { type: 'certificates', pattern: /^(证书|证书信息|资格证书|职业证书|资质证书|证书经历)$/ },
   { type: 'awards', pattern: /^(奖项|获奖信息|荣誉奖项|荣誉|获奖情况|获奖经历|奖项经历)$/ },
   { type: 'languages', pattern: /^(语言能力|语言|外语能力|语种能力|语言水平)$/ },
@@ -301,7 +301,7 @@ export const SECTION_HEADING_PATTERNS = [
 
 /** 分区兜底关键词：没有任何标题锚点时，用祖先文本猜分区（校内优先于项目，防串区） */
 export const SECTION_TEXT_KEYWORDS = {
-  campus: ['校内经历', '校园经历', '在校经历', '学生工作', '社团经历', '校内'],
+  campus: ['在校实践', '校内实践', '校园实践', '校内经历', '校园经历', '在校经历', '学生工作', '社团经历', '校内'],
   internship: ['实习经历', '实习'],
   work: ['工作经历', '全职', '工作经验'],
   project: ['项目经验', '项目经历', '项目'],

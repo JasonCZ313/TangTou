@@ -485,8 +485,115 @@ async function writeOne(
 }
 
 /**
- * 写第 itemIndex 张卡，只用档案里同一条。已经是目标值的格子不再写第二遍。
+ * 标题旁边的时间框。日期组件往往不是普通 input，收集控件时会漏掉，框上就一直停在「请选择」。
  */
+function controlNextToCaption(captionNode: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = captionNode;
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    const scope = current.parentElement;
+    if (!(scope instanceof HTMLElement)) {
+      break;
+    }
+    const scopeBox = scope.getBoundingClientRect();
+    if (scopeBox.height > 88) {
+      current = scope;
+      continue;
+    }
+    const trigger = [...scope.querySelectorAll('input, textarea, .ant-picker, .ant-select, .el-select')].find((node) => {
+      if (!(node instanceof HTMLElement) || node === captionNode || captionNode.contains(node)) {
+        return false;
+      }
+      if (node instanceof HTMLInputElement && (node.type === 'hidden' || node.type === 'radio' || node.type === 'checkbox')) {
+        return false;
+      }
+      const nodeBox = node.getBoundingClientRect();
+      return nodeBox.width >= 40 && nodeBox.height >= 16 && nodeBox.height <= 56
+        && (captionNode.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    });
+    if (trigger instanceof HTMLElement) {
+      return trigger;
+    }
+    const pleaseChoose = [...scope.querySelectorAll('div, span')].find((node) => {
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      const text = ownShortText(node);
+      const nodeBox = node.getBoundingClientRect();
+      return text === '请选择'
+        && nodeBox.width > 48
+        && nodeBox.height >= 16
+        && nodeBox.height <= 48;
+    });
+    if (pleaseChoose instanceof HTMLElement) {
+      return pleaseChoose;
+    }
+    current = scope;
+  }
+  return null;
+}
+
+/**
+ * 这一分区里，从左到右、从上到下的「开始时间 / 结束时间」框。第 i 个对档案第 i 条。
+ */
+function dateTriggersInSection(
+  heading: HTMLElement,
+  nextHeading: HTMLElement | null,
+  captionText: string,
+): HTMLElement[] {
+  const triggers: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  const nodes = [...document.querySelectorAll('label, span, div')];
+  for (const node of nodes) {
+    if (!(node instanceof HTMLElement) || isNavigationChrome(node)) {
+      continue;
+    }
+    if (!isInsideSection(heading, nextHeading, node)) {
+      continue;
+    }
+    const text = ownShortText(node).replace(/[*＊：:]/g, '');
+    if (text !== captionText) {
+      continue;
+    }
+    const trigger = controlNextToCaption(node);
+    if (!(trigger instanceof HTMLElement) || seen.has(trigger)) {
+      continue;
+    }
+    seen.add(trigger);
+    triggers.push(trigger);
+  }
+  return triggers;
+}
+
+/**
+ * 把这一条档案的开始、结束时间写进同序号的时间框。
+ * 文本格收集不到日期组件时，仍按标题去点「请选择」。
+ */
+async function fillDateTriggers<CardItem>(
+  heading: HTMLElement,
+  nextHeading: HTMLElement | null,
+  item: CardItem,
+  itemIndex: number,
+  valueOf: (item: CardItem, caption: string) => string,
+  misses: FillMiss[],
+): Promise<number> {
+  let filled = 0;
+  const captionList = ['开始时间', '结束时间'];
+  for (const captionText of captionList) {
+    const value = valueOf(item, captionText).trim();
+    if (!value) {
+      continue;
+    }
+    const trigger = dateTriggersInSection(heading, nextHeading, captionText)[itemIndex];
+    if (!(trigger instanceof HTMLElement)) {
+      continue;
+    }
+    const wrote = await writeOne(trigger, captionText, value, misses);
+    if (wrote) {
+      filled += 1;
+    }
+  }
+  return filled;
+}
 async function fillOneCard<CardItem>(
   card: HTMLElement[],
   item: CardItem,
@@ -576,6 +683,14 @@ async function fillSectionCards<CardItem>(
     }
     if (currentCard) {
       filled += await fillOneCard(currentCard, item, itemIndex, valueOf, misses, onProgress);
+      filled += await fillDateTriggers(
+        bounds.heading,
+        bounds.nextHeading,
+        item,
+        itemIndex,
+        valueOf,
+        misses,
+      );
       itemIndex += 1;
       continue;
     }

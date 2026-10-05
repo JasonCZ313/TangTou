@@ -7,7 +7,6 @@ import { shouldFillStop } from '../fillAbort';
 import {
   classifyControl,
   isControlEmpty,
-  isInsideTangtouUi,
   isPageFieldVisible,
   isPlaceholderText,
   readControlText,
@@ -18,6 +17,7 @@ import { dateTextMatches, isCalendarDate, optionMatchAliases } from './chao/rule
 import {
   clickMatchingOpenOption,
   collectOpenChoiceTexts,
+  clickOutsideOpenPanels,
   ensurePanelsClosed,
   listOpenPanels,
   setWidgetAttemptIndex,
@@ -86,49 +86,22 @@ function genderStaysSelected(element: HTMLElement, intended: string): boolean {
  * 这一格现在算不算已经填对。
  */
 function fieldStays(element: HTMLElement, label: string, intended: string): boolean {
-  if (/性别/.test(label) || /^(男|女)$/.test(intended)) {
-    if (genderStaysSelected(element, intended)) {
-      return true;
-    }
+  // 性别只看单选有没有勾上。选项上的「男」字和 radio 的 value 都不是已选状态
+  if (/性别/.test(label) || /^(男|女)$/.test(intended.replace(/\s+/g, ''))) {
+    return genderStaysSelected(element, intended);
   }
   return closedTextMatches(label, intended, readControlText(element));
 }
 
 /**
- * 点一块不是按钮、也不是输入框的空白，用来检查值会不会被页面清掉。
+ * 点填写区外的空白，用来关掉选项卡并确认刚写上的字。
+ * 不点下一个字段的标题，那个标题在填写区里，旁边常有删除。
  */
-function clickBlankArea(current: HTMLElement, nextLabel: HTMLElement | null): void {
+function clickBlankArea(current: HTMLElement): void {
   if (document.activeElement === current) {
     current.blur();
   }
-  if (listOpenPanels().length > 0) {
-    return;
-  }
-  const probePoints = [
-    [8, 8],
-    [window.innerWidth - 8, 8],
-    [8, 80],
-  ];
-  for (const [pointX, pointY] of probePoints) {
-    const node = document.elementFromPoint(pointX, pointY);
-    if (!(node instanceof HTMLElement) || node === current || current.contains(node)) {
-      continue;
-    }
-    if (isInsideTangtouUi(node)) {
-      continue;
-    }
-    if (listOpenPanels().some((panel) => panel instanceof HTMLElement && panel.contains(node))) {
-      continue;
-    }
-    if (node.closest('input, textarea, select, button, a, [role="combobox"], [role="listbox"]')) {
-      continue;
-    }
-    node.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: pointX, clientY: pointY }));
-    return;
-  }
-  if (nextLabel instanceof HTMLElement && !nextLabel.closest('input, textarea, select, button')) {
-    nextLabel.click();
-  }
+  clickOutsideOpenPanels(current);
 }
 
 /**
@@ -139,12 +112,12 @@ async function attemptOnce(
   element: HTMLElement,
   label: string,
   intended: string,
-  nextLabel: HTMLElement | null,
+  _nextLabel: HTMLElement | null,
   attemptIndex: number,
 ): Promise<boolean> {
   setPlainTextWriteMethod(attemptIndex);
   setWidgetAttemptIndex(attemptIndex);
-  const panelsClosed = await ensurePanelsClosed();
+  const panelsClosed = await ensurePanelsClosed(element);
   if (!panelsClosed) {
     recordFillStep(label, '写入前关窗', '弹层还在', `第${attemptIndex + 1}遍，不再点开`);
     return false;
@@ -170,7 +143,7 @@ async function attemptOnce(
     await wait(180);
   }
   if (!fieldStays(element, label, intended)) {
-    await ensurePanelsClosed();
+    await ensurePanelsClosed(element);
     return false;
   }
   const openTexts = await collectOpenChoiceTexts(element);
@@ -178,11 +151,11 @@ async function attemptOnce(
     await clickMatchingOpenOption(intended, label, element);
     await wait(180);
     if (!fieldStays(element, label, intended)) {
-      await ensurePanelsClosed();
+      await ensurePanelsClosed(element);
       return false;
     }
   }
-  const closedAfterSelect = await ensurePanelsClosed();
+  const closedAfterSelect = await ensurePanelsClosed(element);
   if (!closedAfterSelect || !fieldStays(element, label, intended)) {
     recordFillStep(
       label,
@@ -192,7 +165,7 @@ async function attemptOnce(
     );
     return false;
   }
-  clickBlankArea(element, nextLabel);
+  clickBlankArea(element);
   await wait(220);
   if (!fieldStays(element, label, intended)) {
     recordFillStep(label, '点空白后再读', '内容消失', readControlText(element) || '空');
@@ -200,7 +173,7 @@ async function attemptOnce(
   }
   const leftover = await collectOpenChoiceTexts(element);
   if (leftover.length > 0) {
-    await ensurePanelsClosed();
+    await ensurePanelsClosed(element);
     return false;
   }
   return writeResult.ok || fieldStays(element, label, intended);
@@ -220,13 +193,13 @@ export async function commitFieldValue(
     return { ok: false, reason: '档案为空' };
   }
   if (fieldStays(element, label, text)) {
-    const closed = await ensurePanelsClosed();
+    const closed = await ensurePanelsClosed(element);
     if (closed && fieldStays(element, label, text)) {
       recordFillStep(label, '开始', '已是目标值', readControlText(element));
       return { ok: true, reason: '已是目标值' };
     }
   }
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(element))) {
     recordFillStep(label, '开始前关窗', '弹层关不掉', '这一格没有再点开');
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
@@ -268,7 +241,7 @@ export async function commitUnmappedChoice(
   if (!isPageFieldVisible(element)) {
     return { ok: false, reason: '控件不可见' };
   }
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(element))) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
   element.scrollIntoView({ block: 'center' });
@@ -276,7 +249,7 @@ export async function commitUnmappedChoice(
   await wait(280);
   const optionTexts = await collectOpenChoiceTexts(element);
   if (optionTexts.length === 0) {
-    await ensurePanelsClosed();
+    await ensurePanelsClosed(element);
     return { ok: false, reason: '点开后没有看见选项' };
   }
   let picked = '';
@@ -294,10 +267,10 @@ export async function commitUnmappedChoice(
     picked = '';
   }
   if (!optionTexts.includes(picked)) {
-    await ensurePanelsClosed();
+    await ensurePanelsClosed(element);
     return { ok: false, reason: '思考模式没有从列表里选出一项' };
   }
-  await ensurePanelsClosed();
+  await ensurePanelsClosed(element);
   return commitFieldValue(element, label, picked);
 }
 

@@ -34,6 +34,10 @@ const OVERLAY_SELECTOR = [
   '[class*="dropdown" i]',
   '[class*="select-dropdown" i]',
   '[class*="select-popup" i]',
+  '[class*="selectList" i]',
+  '[class*="select-list" i]',
+  '[class*="unmodeled" i]',
+  '[class*="option-list" i]',
   '[class*="cascader" i]',
   '[class*="popper" i]',
   '[class*="popover" i]',
@@ -106,15 +110,28 @@ async function waitForOverlay(beforeSet, timeoutMs = 1000) {
 }
 
 /**
- * 点真正的下拉触发器（外层 combobox/箭头），避免只点内部只读 input 打不开层。
+ * 点真正的下拉触发器。
+ * 日期输入框仍点它自己：这一页的日历是点输入框打开的。
+ * 学历这类下拉点外层看得见的格子，只点内部 input 打不开列表。
  */
 function resolveClickTrigger(el) {
   if (!(el instanceof HTMLElement)) return el;
-  const wrap = el.closest('.ant-select, .el-select, .ant-picker, [role="combobox"]');
-  if (wrap instanceof HTMLElement && wrap.getBoundingClientRect().height < 160) {
-    const inner = wrap.querySelector('.ant-select-selector, .el-select__wrapper, .ant-picker-input, input');
+  const antWrap = el.closest('.ant-select, .el-select, .ant-picker, [role="combobox"]');
+  if (antWrap instanceof HTMLElement && antWrap.getBoundingClientRect().height < 160) {
+    const inner = antWrap.querySelector('.ant-select-selector, .el-select__wrapper, .ant-picker-input, input');
     if (inner instanceof HTMLElement) return inner;
-    return wrap;
+    return antWrap;
+  }
+  const dateWrap = el.closest('[class*="picker" i], [class*="calendar" i]');
+  if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && dateWrap instanceof HTMLElement) {
+    return el;
+  }
+  const selectWrap = el.closest('[class*="select" i]');
+  if (selectWrap instanceof HTMLElement && selectWrap !== el) {
+    const box = selectWrap.getBoundingClientRect();
+    if (box.height >= 16 && box.height < 80 && box.width >= 48 && box.width < 520) {
+      return selectWrap;
+    }
   }
   return el;
 }
@@ -366,10 +383,115 @@ function clickPanelDismiss(panel) {
 }
 
 /**
- * 关掉所有还开着的弹层。先点取消，再收起已展开的触发器，最后才按 Esc。
- * 关不掉就返回 false，调用方不许再点开下一个空。
+ * 节点自己的短文字，用来避开「提交 / 下一步」这类按钮。
+ * 不用整段 textContent，避免角落上的大空白因为子孙里有「确定」被跳过。
  */
-export async function ensurePanelsClosed() {
+function ownDirectText(node) {
+  if (!(node instanceof HTMLElement)) return '';
+  let text = '';
+  for (const child of node.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) text += child.textContent || '';
+  }
+  return text.replace(/\s+/g, '');
+}
+
+/**
+ * 当前格子所在的填写区。表单或包着「删除」的那一层都算。
+ * 空白点击必须落在这一层外面，避免点到删除。
+ */
+function fillRegionRoot(aroundElement) {
+  if (!(aroundElement instanceof HTMLElement)) return null;
+  const form = aroundElement.closest('form');
+  if (form instanceof HTMLElement && form !== document.body) return form;
+  let current = aroundElement.parentElement;
+  let regionWithDelete = null;
+  for (let depth = 0; depth < 14 && current && current !== document.body; depth += 1) {
+    const hasDelete = [...current.querySelectorAll('button, a, span, div')].some((node) => {
+      const text = ownDirectText(node);
+      return text === '删除' || text === '删除本条';
+    });
+    if (hasDelete) regionWithDelete = current;
+    current = current.parentElement;
+  }
+  return regionWithDelete;
+}
+
+/**
+ * 页面上用来试空白的点。页眉往往在填写区外面，不只试三个角。
+ */
+function blankProbePoints() {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const points = [];
+  for (const pointY of [6, 20, 36]) {
+    for (let pointX = 16; pointX < width - 16; pointX += 120) {
+      points.push([pointX, pointY]);
+    }
+  }
+  points.push([16, Math.round(height / 2)]);
+  points.push([Math.max(16, width - 16), Math.round(height / 2)]);
+  return points;
+}
+
+/**
+ * 对空白按下再点击。页面用按下判断「点到外面」，只发 click 名单不会收。
+ */
+function pressBlankTarget(node, pointX, pointY) {
+  const eventInit = {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    clientX: pointX,
+    clientY: pointY,
+  };
+  node.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+  node.dispatchEvent(new MouseEvent('mousedown', eventInit));
+  node.dispatchEvent(new PointerEvent('pointerup', eventInit));
+  node.dispatchEvent(new MouseEvent('mouseup', eventInit));
+  node.dispatchEvent(new MouseEvent('click', eventInit));
+}
+
+/**
+ * 点弹层外面、填写区外面的一块空白。
+ * 给关窗和每一格写完后的确认用。不点输入框、按钮、删除、提交。
+ * 找不到合格空白就返回 false，不改去点填写区。
+ * aroundElement 是当前正在写的格子，用来划出填写区。
+ */
+export function clickOutsideOpenPanels(aroundElement = null) {
+  const openPanels = listOpenPanels();
+  const choicePanel = findVisibleChoicePanel();
+  const blockedPanels = choicePanel instanceof HTMLElement && !openPanels.includes(choicePanel)
+    ? [...openPanels, choicePanel]
+    : openPanels;
+  const fillRoot = fillRegionRoot(aroundElement);
+  const blockedOwnText = /^(删除|删除本条|提交|投递|下一步|保存|确定|添加)$/;
+  for (const [pointX, pointY] of blankProbePoints()) {
+    const node = document.elementFromPoint(pointX, pointY);
+    if (!(node instanceof HTMLElement)) continue;
+    if (aroundElement instanceof HTMLElement && (node === aroundElement || aroundElement.contains(node))) {
+      continue;
+    }
+    if (isInsideTangtouUi(node)) continue;
+    if (blockedPanels.some((panel) => panel instanceof HTMLElement && panel.contains(node))) continue;
+    if (fillRoot instanceof HTMLElement && fillRoot.contains(node)) continue;
+    if (node.closest('input, textarea, select, button, a, [role="combobox"], [role="listbox"]')) continue;
+    const directText = ownDirectText(node);
+    if (blockedOwnText.test(directText)) continue;
+    pressBlankTarget(node, pointX, pointY);
+    recordFillStep('空白', '点空白', '已点', `${node.tagName.toLowerCase()} ${directText || '无字'}`);
+    return true;
+  }
+  recordFillStep('空白', '点空白', '没有合格空白', '不点填写区');
+  return false;
+}
+
+/**
+ * 关掉所有还开着的弹层。先点取消，再收起已展开的触发器，再按 Esc。
+ * 城市名单没有「取消」，Esc 也关不掉时，点填写区外的空白。
+ * 关不掉就返回 false，调用方不许再点开下一个空。
+ * aroundElement 是当前格子，用来避开它所在的填写区。
+ */
+export async function ensurePanelsClosed(aroundElement = null) {
   for (let round = 0; round < 5; round += 1) {
     const choicePanel = findVisibleChoicePanel();
     const panels = listOpenPanels();
@@ -393,6 +515,12 @@ export async function ensurePanelsClosed() {
     }
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
     await sleep(140);
+    if (listOpenPanels().length === 0 && !(findVisibleChoicePanel() instanceof HTMLElement)) {
+      return true;
+    }
+    // 没有「取消」的名单只认点到外面。这一步之前取消和 Esc 已经试过
+    clickOutsideOpenPanels(aroundElement);
+    await sleep(160);
   }
   return listOpenPanels().length === 0 && !(findVisibleChoicePanel() instanceof HTMLElement);
 }
@@ -408,7 +536,7 @@ async function closeOpenChoicePanels() {
  * 点开当前字段，并取全页可见的选择层（包括点之前就已经开着的）。
  */
 async function openChoicePanel(el) {
-  const closed = await ensurePanelsClosed();
+  const closed = await ensurePanelsClosed(el);
   if (!closed) return null;
   openSelectLike(el);
   await sleep(280);
@@ -684,11 +812,7 @@ function typeIntoInput(input, text) {
  */
 async function failDrive(triggerEl, reason) {
   await dismissOverlay(triggerEl, false);
-  if (listOpenPanels().length > 0 && triggerEl instanceof HTMLElement) {
-    resolveClickTrigger(triggerEl).click();
-    await sleep(120);
-  }
-  await ensurePanelsClosed();
+  await ensurePanelsClosed(triggerEl);
   return { ok: false, reason };
 }
 
@@ -1009,7 +1133,7 @@ export async function driveDatePanel(el, value) {
   const dayNumber = String(Number(parts[3]));
   const hasDay = sourceHasCalendarDay(value);
   const dateInput = resolveDateInput(el);
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(el))) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
 
@@ -1111,7 +1235,7 @@ export async function driveDatePanel(el, value) {
         resolveClickTrigger(el).click();
         await sleep(120);
       }
-      await ensurePanelsClosed();
+      await ensurePanelsClosed(el);
       if (monthMatches) {
         return { ok: true, reason: '控件只到月份，年月已对上' };
       }
@@ -1210,7 +1334,7 @@ export async function driveRadioGroup(el, value) {
     if (labelEl && labelEl !== radioWrapper) safeClick(labelEl);
     await sleep(60);
   }
-  return radioLooksSelected(hit.radio) || /男|女/.test(hit.label)
+  return radioLooksSelected(hit.radio)
     ? { ok: true, reason: '单选已勾选' }
     : { ok: false, reason: '单选点击后未勾上' };
 }
@@ -1223,7 +1347,7 @@ export async function driveRadioGroup(el, value) {
 export async function driveSuggestInput(el, value) {
   const full = String(value || '').trim();
   if (!full) return { ok: false, reason: '联想值为空' };
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(el))) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
   el.scrollIntoView({ block: 'center' });
@@ -1252,7 +1376,7 @@ export async function driveSuggestInput(el, value) {
  * 打开 → 搜索框输入 → 滚动查找 → 点击。
  */
 export async function driveSearchSelect(el, value) {
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(el))) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
   const aliases = optionMatchAliases(value).map((item) => item.toLowerCase());
@@ -1311,7 +1435,7 @@ async function clickPlainCityList(el, overlay, value, labelBlob) {
     optionTexts.slice(0, 8).join('、'),
   );
   if (!(row instanceof HTMLElement)) {
-    await ensurePanelsClosed();
+    await ensurePanelsClosed(el);
     return { ok: false, reason: '城市名单未找到选项' };
   }
   clickRegionRadio(row, labelBlob);
@@ -1323,7 +1447,7 @@ async function clickPlainCityList(el, overlay, value, labelBlob) {
     shown ? '框上已是城市' : '框上还不是城市',
     readControlText(el) || '空',
   );
-  await ensurePanelsClosed();
+  await ensurePanelsClosed(el);
   if (!shown) {
     return { ok: false, reason: '点了城市名单但框上没有城市' };
   }
@@ -1340,7 +1464,7 @@ export async function driveRegionModal(el, value, labelBlob = '地区') {
     .split(/[/／|、,，>]+/)
     .map((part) => part.trim())
     .find((part) => /区$|县$/.test(part) && part !== cityName) || '';
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(el))) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
   const before = snapshotOverlays();
@@ -1565,15 +1689,64 @@ export async function clickMatchingOpenOption(value, labelBlob = '', anchor) {
 }
 
 /**
+ * 点开后浮在触发器旁边、里面是多条短选项的那一层。
+ * 北森学历这类列表的 class 不带 dropdown，只靠选择器会把它当成没打开。
+ */
+function findFloatingOptionList(anchor, beforeNodes) {
+  if (!(anchor instanceof HTMLElement)) return null;
+  const anchorBox = anchor.getBoundingClientRect();
+  const candidates = [...document.querySelectorAll('div, ul')].filter((node) => {
+    if (!(node instanceof HTMLElement) || beforeNodes.has(node) || isInsideTangtouUi(node)) return false;
+    if (node === anchor || node.contains(anchor) || anchor.contains(node)) return false;
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (style.position !== 'fixed' && style.position !== 'absolute') return false;
+    const box = node.getBoundingClientRect();
+    if (box.width < 72 || box.height < 36 || box.height > 520 || box.width > 480) return false;
+    const nearTrigger = box.top < anchorBox.bottom + 360
+      && box.bottom > anchorBox.top - 24
+      && box.left < anchorBox.right + 120
+      && box.right > anchorBox.left - 120;
+    if (!nearTrigger) return false;
+    const shortRows = [...node.querySelectorAll('li, [role="option"], div, span')].filter((item) => {
+      if (!(item instanceof HTMLElement)) return false;
+      const text = ownVisibleText(item).replace(/\s+/g, '');
+      const itemBox = item.getBoundingClientRect();
+      return text.length >= 1 && text.length <= 16 && itemBox.height >= 12 && itemBox.height <= 48;
+    });
+    return shortRows.length >= 2;
+  });
+  candidates.sort((left, right) => {
+    const leftBox = left.getBoundingClientRect();
+    const rightBox = right.getBoundingClientRect();
+    return leftBox.height - rightBox.height;
+  });
+  return candidates[0] || null;
+}
+
+/**
  * 普通下拉：先滚动记下原文，再点列表里那一行。不把档案长词打进搜索框。
  */
 export async function driveSimpleSelect(el, value, labelBlob = '') {
-  if (!(await ensurePanelsClosed())) {
+  if (!(await ensurePanelsClosed(el))) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
   const before = snapshotOverlays();
+  const beforeFloating = new Set(
+    [...document.querySelectorAll('div, ul')].filter((node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (style.position !== 'fixed' && style.position !== 'absolute') return false;
+      const box = node.getBoundingClientRect();
+      return box.width > 20 && box.height > 20;
+    }),
+  );
   openSelectLike(el);
   let overlay = await waitForOverlay(before, 1000);
+  if (!overlay) {
+    overlay = findFloatingOptionList(resolveClickTrigger(el), beforeFloating);
+  }
   if (!overlay) {
     if (el instanceof HTMLSelectElement) {
       const aliasesNative = optionMatchAliases(value).map((item) => item.toLowerCase());

@@ -86,7 +86,7 @@ function sectionKind(label: string): string {
   if (/论文|专利|著作/.test(head)) {
     return 'publication';
   }
-  if (/校内任职|校内经历|校内|校园|社团/.test(head)) {
+  if (/在校实践|校内实践|校园实践|在校经历|校内任职|校内经历|校内|校园|社团/.test(head)) {
     return 'campus';
   }
   if (/获奖|荣誉/.test(head)) {
