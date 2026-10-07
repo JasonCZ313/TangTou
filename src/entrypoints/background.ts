@@ -1191,6 +1191,50 @@ async function forwardToActiveTab(
 }
 
 /**
+ * 在发消息的那个标签上做一次真实鼠标按下和松开，然后立刻解除调试。
+ * 调用方：内容脚本 ensurePanelsClosed，坐标已经避开填写区、提交和删除。
+ * 输入：视口坐标和发送方标签。输出：点击是否发出。不改页面上的已选文字；调试挂不上则为 ok false。
+ */
+async function handleTrustedOutsideClick(
+  message: Extract<ExtensionMessage, { type: 'TRUSTED_OUTSIDE_CLICK' }>,
+  sender: chrome.runtime.MessageSender,
+): Promise<Extract<ExtensionMessage, { type: 'TRUSTED_OUTSIDE_CLICK_RESULT' }>> {
+  const tabId = sender.tab?.id;
+  const pointX = Number(message.pointX);
+  const pointY = Number(message.pointY);
+  if (tabId == null || !Number.isFinite(pointX) || !Number.isFinite(pointY)) {
+    return { type: 'TRUSTED_OUTSIDE_CLICK_RESULT', requestId: message.requestId, ok: false };
+  }
+  const debugTarget = { tabId };
+  let debuggerAttached = false;
+  try {
+    await chrome.debugger.attach(debugTarget, '1.3');
+    debuggerAttached = true;
+    const mouseEvent = {
+      x: pointX,
+      y: pointY,
+      button: 'left' as const,
+      clickCount: 1,
+    };
+    await chrome.debugger.sendCommand(debugTarget, 'Input.dispatchMouseEvent', {
+      ...mouseEvent,
+      type: 'mousePressed',
+    });
+    await chrome.debugger.sendCommand(debugTarget, 'Input.dispatchMouseEvent', {
+      ...mouseEvent,
+      type: 'mouseReleased',
+    });
+    return { type: 'TRUSTED_OUTSIDE_CLICK_RESULT', requestId: message.requestId, ok: true };
+  } catch {
+    return { type: 'TRUSTED_OUTSIDE_CLICK_RESULT', requestId: message.requestId, ok: false };
+  } finally {
+    if (debuggerAttached) {
+      await chrome.debugger.detach(debugTarget).catch(() => undefined);
+    }
+  }
+}
+
+/**
  * 按消息 type 分发到对应处理器；未识别类型返回 ERROR。
  */
 async function dispatchMessage(
@@ -1265,6 +1309,8 @@ async function dispatchMessage(
     case 'STOP_PAGE_WORK':
       abortPageWork(message.workGeneration);
       return forwardToActiveTab(message);
+    case 'TRUSTED_OUTSIDE_CLICK':
+      return handleTrustedOutsideClick(message, sender);
     default:
       return {
         type: 'ERROR',

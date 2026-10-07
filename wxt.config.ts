@@ -22,6 +22,8 @@ export default defineConfig({
       'offscreen',
       'unlimitedStorage',
       'activeTab',
+      // 关打开的名单时发一次真实鼠标点击；点完立即解除，不长期挂着调试
+      'debugger',
     ],
     host_permissions: ['http://*/*', 'https://*/*'],
     optional_host_permissions: [

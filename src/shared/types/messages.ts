@@ -338,6 +338,22 @@ export type ExtensionMessage =
       results?: Array<{ stepId: string; ok: boolean; message: string }>;
     }
   | {
+      /**
+       * 内容脚本请后台在本标签视口坐标上做一次真实鼠标点击，用来关掉页面不认合成点击的名单。
+       * 点完后台必须解除调试。不点填写区、提交、删除，坐标由内容脚本选好。
+       */
+      type: 'TRUSTED_OUTSIDE_CLICK';
+      requestId: string;
+      pointX: number;
+      pointY: number;
+    }
+  | {
+      type: 'TRUSTED_OUTSIDE_CLICK_RESULT';
+      requestId: string;
+      /** 调试挂上并且按下、松开都发出去则为 true。层有没有收起由内容脚本再数。 */
+      ok: boolean;
+    }
+  | {
       type: 'ERROR';
       requestId: string;
       code: string;

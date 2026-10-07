@@ -417,20 +417,25 @@ function fillRegionRoot(aroundElement) {
 }
 
 /**
- * 页面上用来试空白的点。页眉往往在填写区外面，不只试三个角。
+ * 页面上用来试空白的点。不取纵坐标 6、20、36 的页眉一带，避免点到「首页」。
+ * 调用方：findSafeOutsidePoint。输入：无。输出：视口左右中部的坐标。不改页面。
  */
 function blankProbePoints() {
   const width = window.innerWidth;
   const height = window.innerHeight;
-  const points = [];
-  for (const pointY of [6, 20, 36]) {
-    for (let pointX = 16; pointX < width - 16; pointX += 120) {
-      points.push([pointX, pointY]);
-    }
-  }
-  points.push([16, Math.round(height / 2)]);
-  points.push([Math.max(16, width - 16), Math.round(height / 2)]);
-  return points;
+  return [
+    [16, Math.round(height / 2)],
+    [Math.max(16, width - 16), Math.round(height / 2)],
+  ];
+}
+
+/**
+ * 节点是否落在页眉或导航里。真实点击和写完后的确认都不使用这里的点。
+ * 调用方：findSafeOutsidePoint。输入：探针点到的节点。输出：在导航里则为 true。
+ */
+function isInsidePageNavigation(node) {
+  if (!(node instanceof Element)) return false;
+  return Boolean(node.closest('header, nav, [role="banner"], [role="navigation"], [role="link"]'));
 }
 
 /**
@@ -452,12 +457,12 @@ function pressBlankTarget(node, pointX, pointY) {
 }
 
 /**
- * 点弹层外面、填写区外面的一块空白。
- * 给关窗和每一格写完后的确认用。不点输入框、按钮、删除、提交。
- * 找不到合格空白就返回 false，不改去点填写区。
- * aroundElement 是当前正在写的格子，用来划出填写区。
+ * 找一个能当作「点到外面」的视口坐标。
+ * 不点填写区、打开的名单、输入框、按钮、链接、删除、提交。找不到就返回 null，调用方不许改去点表单。
+ * 调用方：clickOutsideOpenPanels 做写完后的合成确认。关名单的真实点击不使用这里的页眉坐标。
+ * 输入：当前格子。输出：坐标和点到的节点；没有合格点则为 null。不改页面。
  */
-export function clickOutsideOpenPanels(aroundElement = null) {
+function findSafeOutsidePoint(aroundElement) {
   const openPanels = listOpenPanels();
   const choicePanel = findVisibleChoicePanel();
   const blockedPanels = choicePanel instanceof HTMLElement && !openPanels.includes(choicePanel)
@@ -472,24 +477,132 @@ export function clickOutsideOpenPanels(aroundElement = null) {
       continue;
     }
     if (isInsideTangtouUi(node)) continue;
+    if (isInsidePageNavigation(node)) continue;
+    if (pointY <= 36) continue;
     if (blockedPanels.some((panel) => panel instanceof HTMLElement && panel.contains(node))) continue;
     if (fillRoot instanceof HTMLElement && fillRoot.contains(node)) continue;
     if (node.closest('input, textarea, select, button, a, [role="combobox"], [role="listbox"]')) continue;
     const directText = ownDirectText(node);
     if (blockedOwnText.test(directText)) continue;
-    pressBlankTarget(node, pointX, pointY);
-    recordFillStep('空白', '点空白', '已点', `${node.tagName.toLowerCase()} ${directText || '无字'}`);
-    return true;
+    return { pointX, pointY, node };
   }
-  recordFillStep('空白', '点空白', '没有合格空白', '不点填写区');
-  return false;
+  return null;
 }
 
 /**
- * 关掉所有还开着的弹层。先点取消，再收起已展开的触发器，再按 Esc。
- * 城市名单没有「取消」，Esc 也关不掉时，点填写区外的空白。
- * 关不掉就返回 false，调用方不许再点开下一个空。
- * aroundElement 是当前格子，用来避开它所在的填写区。
+ * 点弹层外面、填写区外面的一块空白。
+ * 只给写完之后的确认用，关打开的名单不再走这里。不点输入框、按钮、删除、提交。
+ * 找不到合格空白就返回 false，不改去点填写区。
+ * aroundElement 是当前正在写的格子，用来划出填写区。
+ */
+export function clickOutsideOpenPanels(aroundElement = null) {
+  const outsidePoint = findSafeOutsidePoint(aroundElement);
+  if (!outsidePoint) {
+    recordFillStep('空白', '点空白', '没有合格空白', '不点填写区');
+    return false;
+  }
+  pressBlankTarget(outsidePoint.node, outsidePoint.pointX, outsidePoint.pointY);
+  const directText = ownDirectText(outsidePoint.node);
+  recordFillStep(
+    '空白',
+    '点空白',
+    '已点',
+    `${outsidePoint.node.tagName.toLowerCase()} ${directText || '无字'}`,
+  );
+  return true;
+}
+
+/**
+ * 请后台在视口坐标上做一次真实鼠标点击，用来关掉不认合成点击的名单。
+ * 调用方：ensurePanelsClosed 在取消没有收掉名单之后。输入：视口横纵坐标。
+ * 输出：调试挂上并且点击已发出则为 true。不点触发器，不改已选文字。层是否收起由调用方再数。
+ */
+async function requestTrustedOutsideClick(pointX, pointY) {
+  const response = await chrome.runtime.sendMessage({
+    type: 'TRUSTED_OUTSIDE_CLICK',
+    requestId: `trusted-outside-click-${Date.now()}`,
+    pointX,
+    pointY,
+  });
+  return Boolean(response && response.ok === true);
+}
+
+/**
+ * 这一轮关窗之后，打开的层是否已经少了，并且已选地区那种选择层也不在了。
+ * 调用方：ensurePanelsClosed 在点了取消之后。输入：点之前的层数。输出：可以进入下一轮则为 true。
+ */
+function openPanelsReduced(beforeCount) {
+  return listOpenPanels().length < beforeCount && !(findVisibleChoicePanel() instanceof HTMLElement);
+}
+
+/**
+ * 选择层是否都已经不在。
+ * 调用方：ensurePanelsClosed 每做完一步关窗都读一次。输入：无。输出：没有打开的层则为 true。
+ */
+function choicePanelsAreClosed() {
+  return listOpenPanels().length === 0 && !(findVisibleChoicePanel() instanceof HTMLElement);
+}
+
+/**
+ * 这个小块是否盖住「提交」或「提交简历」。
+ * 调用方：placeTrustedClickPad。输入：小块的矩形。输出：盖住则为 true。
+ */
+function padCoversSubmitControl(padBox) {
+  const submitNodes = [...document.querySelectorAll('button, a, span, div')].filter((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const text = ownDirectText(node);
+    return text === '提交' || text === '提交简历' || text === '投递';
+  });
+  return submitNodes.some((node) => {
+    const submitBox = node.getBoundingClientRect();
+    const separated = padBox.right < submitBox.left
+      || padBox.left > submitBox.right
+      || padBox.bottom < submitBox.top
+      || padBox.top > submitBox.bottom;
+    return !separated && submitBox.width > 0 && submitBox.height > 0;
+  });
+}
+
+/**
+ * 放一个空的固定小块，给真实点击当落点。不是链接，不放进填写区，不盖住提交。
+ * 调用方：ensurePanelsClosed。输入：无。输出：小块；放不下则为 null。会在 document.body 上新增节点。
+ */
+function placeTrustedClickPad() {
+  const pad = document.createElement('div');
+  pad.setAttribute('data-tangtou-outside-click', 'true');
+  pad.style.position = 'fixed';
+  pad.style.width = '12px';
+  pad.style.height = '12px';
+  pad.style.zIndex = '2147483646';
+  pad.style.pointerEvents = 'auto';
+  pad.style.margin = '0';
+  pad.style.padding = '0';
+  pad.style.border = '0';
+  pad.style.background = 'transparent';
+  document.body.appendChild(pad);
+  const cornerStyles = [
+    { left: '8px', bottom: '8px' },
+    { left: '8px', bottom: '72px' },
+    { right: '8px', bottom: '72px' },
+  ];
+  for (const cornerStyle of cornerStyles) {
+    pad.style.left = cornerStyle.left || 'auto';
+    pad.style.right = cornerStyle.right || 'auto';
+    pad.style.bottom = cornerStyle.bottom || 'auto';
+    pad.style.top = 'auto';
+    const padBox = pad.getBoundingClientRect();
+    if (padBox.width < 1 || padBox.height < 1) continue;
+    if (padCoversSubmitControl(padBox)) continue;
+    return pad;
+  }
+  pad.remove();
+  return null;
+}
+
+/**
+ * 关掉所有还开着的弹层。先点取消。取消没有收掉时，不去点页眉，也不去点已经填好的框。
+ * 在页面上放一个空的固定小块，后台对它的中心发一次真实点击，点完解除调试并删掉小块。
+ * 调试没挂上或点完层还在就返回 false。调用方不许再点开下一个空。
  */
 export async function ensurePanelsClosed(aroundElement = null) {
   for (let round = 0; round < 5; round += 1) {
@@ -500,29 +613,38 @@ export async function ensurePanelsClosed(aroundElement = null) {
     const beforeCount = Math.max(panels.length, choicePanel instanceof HTMLElement ? 1 : 0);
     if (scope instanceof HTMLElement && clickPanelDismiss(scope)) {
       await sleep(180);
-      if (listOpenPanels().length < beforeCount && !(findVisibleChoicePanel() instanceof HTMLElement)) {
+      if (openPanelsReduced(beforeCount)) {
         continue;
       }
     }
-    const expanded = [...document.querySelectorAll('[aria-expanded="true"]')].find((node) =>
-      node instanceof HTMLElement && isPageFieldVisible(node) && !(scope instanceof HTMLElement && scope.contains(node)),
+    if (choicePanelsAreClosed()) return true;
+    const clickPad = placeTrustedClickPad();
+    if (!(clickPad instanceof HTMLElement)) {
+      recordFillStep('空白', '点空白', '没有合格空白', '不点填写区');
+      return false;
+    }
+    const padBox = clickPad.getBoundingClientRect();
+    const pointX = Math.round(padBox.left + padBox.width / 2);
+    const pointY = Math.round(padBox.top + padBox.height / 2);
+    let trustedClickSent = false;
+    try {
+      trustedClickSent = await requestTrustedOutsideClick(pointX, pointY);
+    } catch {
+      trustedClickSent = false;
+    } finally {
+      clickPad.remove();
+    }
+    recordFillStep(
+      '空白',
+      '点空白',
+      trustedClickSent ? '已点真实点击' : '调试未挂上',
+      `${pointX},${pointY}`,
     );
-    if (expanded instanceof HTMLElement) {
-      expanded.click();
-      safeClick(expanded);
-      await sleep(160);
-      continue;
-    }
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-    await sleep(140);
-    if (listOpenPanels().length === 0 && !(findVisibleChoicePanel() instanceof HTMLElement)) {
-      return true;
-    }
-    // 没有「取消」的名单只认点到外面。这一步之前取消和 Esc 已经试过
-    clickOutsideOpenPanels(aroundElement);
+    if (!trustedClickSent) return false;
     await sleep(160);
+    return choicePanelsAreClosed();
   }
-  return listOpenPanels().length === 0 && !(findVisibleChoicePanel() instanceof HTMLElement);
+  return choicePanelsAreClosed();
 }
 
 /**
@@ -573,7 +695,12 @@ function findRegionChoiceRow(panel, label) {
   });
   const exact = nodes.filter((node) => compactChoiceLabel(node.textContent) === wanted);
   const pool = exact.length ? exact : nodes;
-  pool.sort((left, right) => {
+  const rightColumn = regionRightColumn(panel);
+  const leftOnly = rightColumn instanceof HTMLElement
+    ? pool.filter((node) => !rightColumn.contains(node))
+    : pool;
+  const ranked = leftOnly.length ? leftOnly : pool;
+  ranked.sort((left, right) => {
     const leftLength = compactChoiceLabel(left.textContent).length;
     const rightLength = compactChoiceLabel(right.textContent).length;
     if (leftLength !== rightLength) return leftLength - rightLength;
@@ -581,7 +708,7 @@ function findRegionChoiceRow(panel, label) {
     const rightBox = right.getBoundingClientRect();
     return leftBox.width * leftBox.height - rightBox.width * rightBox.height;
   });
-  const textNode = pool[0];
+  const textNode = ranked[0];
   if (!(textNode instanceof HTMLElement)) return null;
   let row = textNode;
   for (let depth = 0; depth < 4 && row.parentElement && row.parentElement !== panel; depth += 1) {
@@ -659,25 +786,156 @@ function rowInsideRegionModal(row) {
 }
 
 /**
- * 点地区弹层里能让「已选地区」增加的选择控件。
- * 调用方：clickRegionRadio 在已选地区弹层中。输入：城市行、字段名。输出：无。
- * 不点城市名字所在的 span。只点名字时已选保持 0，确定不会执行。
+ * 地区窗左边栏：含「全部省市」或「全国」，不含「已选地区」。
+ * 右边栏是点完之后的核对区，不能在那里点城市。
+ */
+function regionSideColumn(panel, markerTest, stopTest) {
+  if (!(panel instanceof HTMLElement)) return null;
+  const markers = [...panel.querySelectorAll('div, span, label, p')].filter((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    return markerTest(ownDirectText(node));
+  });
+  for (const marker of markers) {
+    let current = marker;
+    while (current.parentElement instanceof HTMLElement && current.parentElement !== panel) {
+      const parent = current.parentElement;
+      const parentText = String(parent.textContent || '').replace(/\s+/g, '');
+      const currentText = String(current.textContent || '').replace(/\s+/g, '');
+      if (stopTest(parentText) && !stopTest(currentText)) {
+        return current;
+      }
+      current = parent;
+    }
+  }
+  return null;
+}
+
+/**
+ * 左边栏。只在这里找城市名字和它前面的小圆圈。
+ */
+function regionLeftColumn(panel) {
+  return regionSideColumn(
+    panel,
+    (text) => text === '全部省市' || text === '全国',
+    (text) => /已选地区/.test(text),
+  );
+}
+
+/**
+ * 右边核对区。已选地区、清空已选都在这里。
+ */
+function regionRightColumn(panel) {
+  return regionSideColumn(
+    panel,
+    (text) => /^已选地区/.test(text) || text === '清空已选' || text === '请在左侧选择地区',
+    (text) => /全部省市/.test(text),
+  );
+}
+
+/**
+ * 右边是否已经出现这座城市。已选数字大于 0 且这里有城市名，才点确定。
+ */
+function regionRightShowsCity(panel, cityName) {
+  const rightColumn = regionRightColumn(panel);
+  if (!(rightColumn instanceof HTMLElement)) return false;
+  const wanted = compactChoiceLabel(cityName);
+  if (!wanted) return false;
+  return compactChoiceLabel(rightColumn.textContent).includes(wanted);
+}
+
+/**
+ * 左边栏里，自身文字正好是城市名的那个节点。
+ */
+function cityTextElement(scope, cityText) {
+  if (!(scope instanceof HTMLElement)) return null;
+  const wanted = compactChoiceLabel(cityText);
+  if (!wanted) return null;
+  const rightColumn = regionRightColumn(scope.closest('[class]') || scope.parentElement || scope);
+  const nodes = [scope, ...scope.querySelectorAll('span, div, label, a, li')];
+  const hits = nodes.filter((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    if (rightColumn instanceof HTMLElement && rightColumn.contains(node)) return false;
+    let directText = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) directText += child.textContent || '';
+    }
+    return compactChoiceLabel(directText) === wanted;
+  });
+  hits.sort((left, right) => left.getBoundingClientRect().width - right.getBoundingClientRect().width);
+  return hits[0] || null;
+}
+
+/**
+ * 城市名左边的小圆圈。不返回文字节点本身。
+ * 圆圈几乎没有字，宽高接近，并且右边缘贴着文字左边。
+ */
+function circleBeforeCityText(textElement) {
+  if (!(textElement instanceof HTMLElement)) return null;
+  const textBox = textElement.getBoundingClientRect();
+  const candidates = [];
+  const consider = (node) => {
+    if (!(node instanceof HTMLElement) || node === textElement || textElement.contains(node)) return;
+    if (candidates.includes(node)) return;
+    const box = node.getBoundingClientRect();
+    if (box.width < 8 || box.height < 8 || box.width > 28 || box.height > 28) return;
+    if (box.right > textBox.left + 6) return;
+    const verticalCenter = box.top + box.height / 2;
+    const textCenter = textBox.top + textBox.height / 2;
+    if (Math.abs(verticalCenter - textCenter) > 16) return;
+    if (ownDirectText(node).length > 1) return;
+    candidates.push(node);
+  };
+  let sibling = textElement.previousElementSibling;
+  while (sibling instanceof HTMLElement) {
+    consider(sibling);
+    sibling.querySelectorAll('span, i, div, label, svg').forEach((node) => consider(node));
+    sibling = sibling.previousElementSibling;
+  }
+  const parent = textElement.parentElement;
+  if (parent instanceof HTMLElement) {
+    for (const child of parent.children) {
+      if (child === textElement) break;
+      if (!(child instanceof HTMLElement)) continue;
+      consider(child);
+      child.querySelectorAll('span, i, div, svg').forEach((node) => consider(node));
+    }
+  }
+  candidates.sort((left, right) => {
+    const leftGap = textBox.left - left.getBoundingClientRect().right;
+    const rightGap = textBox.left - right.getBoundingClientRect().right;
+    return leftGap - rightGap;
+  });
+  return candidates[0] || null;
+}
+
+/**
+ * 点地区弹层左边、城市名前面的小圆圈。
+ * 调用方：clickRegionRadio 在已选地区弹层中。输入：城市行、字段名、城市名。输出：无。
+ * 不点文字，不点右边核对区。只点名字时已选保持 0，确定不会执行。
  */
 function clickRegionSelectionControl(row, labelBlob, cityText) {
-  const controls = [...row.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')]
-    .filter((node) => node instanceof HTMLElement);
-  for (const control of controls) {
-    control.click();
-    safeClick(control);
-    const label = control.closest('label');
-    if (label instanceof HTMLElement && label !== control) {
-      safeClick(label);
+  let dialog = row instanceof HTMLElement ? row : null;
+  let current = dialog;
+  for (let depth = 0; depth < 12 && current; depth += 1) {
+    const text = String(current.textContent || '').replace(/\s+/g, '');
+    const box = current.getBoundingClientRect();
+    if (/已选地区/.test(text) && /全部省市|全国/.test(text) && box.height > 80) {
+      dialog = current;
+      break;
     }
+    current = current.parentElement;
+  }
+  const leftColumn = regionLeftColumn(dialog) || row;
+  const textElement = cityTextElement(leftColumn, cityText) || cityTextElement(row, cityText);
+  const circle = circleBeforeCityText(textElement);
+  if (circle instanceof HTMLElement) {
+    circle.click();
+    safeClick(circle);
   }
   recordFillStep(
     labelBlob,
     '点中的节点',
-    controls.slice(0, 3).map((node) => describeClickedNode(node)).join(' ; ') || '没有选择控件',
+    circle instanceof HTMLElement ? describeClickedNode(circle) : '没有小圆圈',
     cityText,
   );
 }
@@ -799,17 +1057,11 @@ function findExactChoiceRow(panel, label) {
 }
 
 /**
- * 框上显示的已选文字。打开的列表不算。
+ * 框上显示的已选文字。与 readControlText 同一份结果，避免城市名单回读成功、逐格收尾却仍看成空。
+ * 调用方：triggerShowsValue。输入：当前格子。输出：压掉空白后的显示文字。
  */
 function readTriggerDisplay(el) {
-  if (!(el instanceof HTMLElement)) return '';
-  const wrap = el.closest('.ant-select, .el-select') || el;
-  const selectedItem = wrap.querySelector?.('.ant-select-selection-item, .el-select__selected-item');
-  const selectedText = String(selectedItem?.textContent || '').replace(/\s+/g, '').trim();
-  if (selectedText && !/请选择|请输入/.test(selectedText)) return selectedText;
-  const own = ownVisibleText(wrap).replace(/\s+/g, '');
-  if (own && own.length <= 20 && !/请选择|请输入|搜索/.test(own)) return own;
-  return '';
+  return String(readControlText(el) || '').replace(/\s+/g, '').trim();
 }
 
 /**
@@ -1581,7 +1833,7 @@ export async function driveRegionModal(el, value, labelBlob = '地区') {
     await sleep(180);
     overlay = findVisibleChoicePanel() || overlay;
   }
-  if (selectedRegionCount(overlay) === 0) {
+  if (selectedRegionCount(overlay) === 0 || !regionRightShowsCity(overlay, cityName)) {
     recordFillStep(labelBlob || '地区', '点城市', '已选仍是0', cityName || value);
     await closeOpenChoicePanels();
     recordFillStep(labelBlob || '地区', '关闭', listOpenPanels().length === 0 ? '已关掉' : '还开着', `弹层数=${listOpenPanels().length}`);

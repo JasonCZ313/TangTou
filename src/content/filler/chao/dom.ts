@@ -223,8 +223,89 @@ const SELECTED_VALUE_SELECTOR = [
 ].join(', ');
 
 /**
+ * 节点自己的短文字，不含打开的名单整段。
+ * 调用方：readSelectedChipText。输入：页面节点。输出：压掉空白后的短文字；过长则返回空，避免把下拉原文当成已选值。
+ */
+function ownShortText(node) {
+  if (!(node instanceof HTMLElement)) return '';
+  let directText = '';
+  for (const child of node.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) directText += child.textContent || '';
+  }
+  const compactDirect = directText.replace(/\s+/g, '');
+  if (compactDirect) return compactDirect.length <= 12 ? compactDirect : '';
+  const nestedText = String(node.textContent || '').replace(/\s+/g, '');
+  return nestedText.length <= 12 ? nestedText : '';
+}
+
+/**
+ * 这个节点是否落在已经浮起的选项层里。
+ * 触发器自己的外框即使是绝对定位，也包着当前格子，不算选项层。
+ * 调用方：readSelectedChipText。输入：候选标签、当前格子。输出：在选项层里为 true。
+ */
+function isInsideFloatingChoiceList(chipNode, fieldElement) {
+  let ancestor = chipNode.parentElement;
+  while (ancestor && ancestor !== document.body) {
+    const style = window.getComputedStyle(ancestor);
+    const box = ancestor.getBoundingClientRect();
+    const floated = (style.position === 'fixed' || style.position === 'absolute')
+      && box.height > 40
+      && box.width > 48;
+    if (floated && fieldElement instanceof HTMLElement && !ancestor.contains(fieldElement)) {
+      return true;
+    }
+    ancestor = ancestor.parentElement;
+  }
+  return false;
+}
+
+/**
+ * 读触发器同一行上的已选短标签，例如「① 北京」。
+ * 打开的「上海、北京」名单在格子下方或浮层里，不读。字段名、占位、关闭叉也不读。
+ * 调用方：readControlText 在 ant/element 已选节点和输入框 value 都空时。
+ * 输入：当前格子。输出：同一行上各枚标签的短文字连在一起；没有则空。
+ */
+function readSelectedChipText(fieldElement) {
+  if (!(fieldElement instanceof HTMLElement)) return '';
+  const fieldBox = fieldElement.getBoundingClientRect();
+  if (fieldBox.height < 1 || fieldBox.width < 1) return '';
+  let searchRoot = fieldElement.parentElement;
+  for (let depth = 0; depth < 6 && searchRoot?.parentElement && searchRoot.parentElement !== document.body; depth += 1) {
+    const parentBox = searchRoot.parentElement.getBoundingClientRect();
+    if (parentBox.height > 96) break;
+    searchRoot = searchRoot.parentElement;
+  }
+  if (!(searchRoot instanceof HTMLElement)) return '';
+  const chipNodes = [...searchRoot.querySelectorAll('span, div, a, li')].filter((node) => {
+    if (!(node instanceof HTMLElement) || node === fieldElement || fieldElement.contains(node)) return false;
+    if (isInsideTangtouUi(node)) return false;
+    if (node.closest('[role="listbox"], [role="option"], [role="menu"]')) return false;
+    if (isInsideFloatingChoiceList(node, fieldElement)) return false;
+    const chipBox = node.getBoundingClientRect();
+    if (chipBox.width < 1 || chipBox.height < 1) return false;
+    // 只认落在格子框内的标签。挂在格子下面的选项顶边不在框内，不能当成已经选中
+    const sameRow = chipBox.top < fieldBox.bottom - 2 && chipBox.bottom > fieldBox.top + 2;
+    if (!sameRow) return false;
+    const chipText = ownShortText(node);
+    if (!chipText || isPlaceholderText(chipText)) return false;
+    if (/^[×xX✕✖]$/.test(chipText)) return false;
+    if (/^[①②③④⑤⑥⑦⑧⑨⑩0-9]$/.test(chipText)) return false;
+    if (/搜索|取消|确定|请选择|最多可选|清空/.test(chipText)) return false;
+    return true;
+  });
+  const leafChips = chipNodes.filter((node) => !chipNodes.some((other) => other !== node && node.contains(other)));
+  const chipTexts = [];
+  for (const chipNode of leafChips) {
+    const chipText = ownShortText(chipNode);
+    if (chipText && !chipTexts.includes(chipText)) chipTexts.push(chipText);
+  }
+  return chipTexts.join('').slice(0, 24);
+}
+
+/**
  * 读控件当前「显示文本」——全工程唯一读值入口。
  * select 取选中项文案；组件只认自身文本或「已选值节点」，其余取 value。
+ * 多选城市把已选值画成标签、输入框 value 仍为空时，改读触发器同一行上的短标签。
  */
 export function readControlText(el) {
   if (!el) return '';
@@ -260,11 +341,12 @@ export function readControlText(el) {
     return '';
   }
   if (ownText && !isPlaceholderText(ownText)) return ownText.slice(0, 60);
-  // 组件把选中值渲染在专门的节点里时才回读；读不到就当作空
+  // 组件把选中值渲染在专门的节点里时才回读；读不到再看同一行上的短标签
   const scope = el.closest('[class*="select" i], [class*="picker" i], [class*="dropdown" i]');
   const selectedNode = scope?.querySelector(SELECTED_VALUE_SELECTOR);
   const selectedText = String(selectedNode?.textContent || '').replace(/\s+/g, ' ').trim();
-  return selectedText && !isPlaceholderText(selectedText) ? selectedText.slice(0, 60) : '';
+  if (selectedText && !isPlaceholderText(selectedText)) return selectedText.slice(0, 60);
+  return readSelectedChipText(el);
 }
 
 /**
