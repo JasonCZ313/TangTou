@@ -77,4 +77,4 @@
 
 ## 12. 联系
 
-通过项目仓库 Issue / 远程地址联系维护者（见 README「仓库信息」）。
+通过 GitHub 仓库 Issue 联系维护者：[https://github.com/JasonCZ313/TangTou/issues](https://github.com/JasonCZ313/TangTou/issues)。更多仓库信息见 README「仓库信息」。

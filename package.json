@@ -3,6 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "description": "躺投：本机简历档案智能填写浏览器扩展",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JasonCZ313/TangTou.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JasonCZ313/TangTou/issues"
+  },
+  "homepage": "https://github.com/JasonCZ313/TangTou#readme",
   "type": "module",
   "scripts": {
     "dev": "wxt",
