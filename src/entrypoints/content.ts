@@ -14,6 +14,17 @@ import {
 import { collectPageEvidence } from '../content/probe/collectEvidence';
 import { executeApprovedPlaybookSteps } from '../content/probe/executePlaybook';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
+import {
+  clearRegionFieldScanUi,
+  runRegionFieldScan,
+  scheduleRegionFieldScan,
+} from '../content/region/regionFieldScan';
+import {
+  cancelRegionSelectFromHost,
+  queryRegionSelect,
+  setRegionSelectLifecycleHandlers,
+  startRegionSelect,
+} from '../content/region/regionSelect';
 import type { ExtensionMessage } from '../shared/types/messages';
 
 /**
@@ -33,8 +44,57 @@ export default defineContentScript({
   matches: ['http://*/*', 'https://*/*'],
   runAt: 'document_idle',
   main() {
+    setRegionSelectLifecycleHandlers({
+      onBoxed: () => {
+        scheduleRegionFieldScan();
+      },
+      onEnd: () => {
+        clearRegionFieldScanUi();
+      },
+    });
+
     chrome.runtime.onMessage.addListener(
       (message: ExtensionMessage, _sender, sendResponse) => {
+        if (message.type === 'START_REGION_SELECT') {
+          const started = startRegionSelect();
+          sendResponse({
+            type: 'START_REGION_SELECT_RESULT',
+            requestId: message.requestId,
+            alreadyActive: started.alreadyActive,
+          } satisfies ExtensionMessage);
+          return true;
+        }
+
+        if (message.type === 'QUERY_REGION_SELECT') {
+          sendResponse({
+            type: 'REGION_SELECT_STATE',
+            requestId: message.requestId,
+            active: queryRegionSelect().active,
+          } satisfies ExtensionMessage);
+          return true;
+        }
+
+        if (message.type === 'END_REGION_SELECT') {
+          const hadSession = queryRegionSelect().active;
+          cancelRegionSelectFromHost();
+          sendResponse({
+            type: 'END_REGION_SELECT_RESULT',
+            requestId: message.requestId,
+            ended: hadSession,
+          } satisfies ExtensionMessage);
+          return true;
+        }
+
+        if (message.type === 'CANCEL_REGION_SELECT_HOST') {
+          cancelRegionSelectFromHost();
+          return false;
+        }
+
+        if (message.type === 'SCAN_REGION_FIELDS') {
+          void runRegionFieldScan(message.requestId);
+          return false;
+        }
+
         if (message.type === 'STOP_PAGE_WORK') {
           requestFillStop(message.workGeneration);
           hidePageOverlay();
@@ -247,12 +307,14 @@ export default defineContentScript({
 
         if (message.type === 'APPLY_FILL_PLAN') {
           beginFillWork(message.workGeneration);
+          const fillScope = message.fillScope === 'region' ? 'region' : 'page';
           void applyFillPlan(
             message.plan,
             message.filePayloads ?? [],
             message.profileId,
             message.sectionAdds ?? [],
             message.profileData,
+            fillScope,
           )
             .then((result) => {
               sendResponse({
@@ -305,7 +367,8 @@ export default defineContentScript({
         }
 
         if (message.type === 'UNDO_LAST_FILL') {
-          const result = undoLastFill();
+          const undoScope = message.fillScope === 'region' ? 'region' : 'page';
+          const result = undoLastFill(undoScope);
           hidePageOverlay();
           sendResponse({
             type: 'UNDO_FILL_RESULT',

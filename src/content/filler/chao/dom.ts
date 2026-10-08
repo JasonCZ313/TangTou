@@ -181,16 +181,20 @@ export function isOptionControl(field) {
 
 /**
  * 占位文案判定。
- * 组件化下拉的触发器里往往渲染着「年」「请选择」「例：XXXX」这类提示文字，它不代表已经填过值。
- * 若不排除，会出现「扫描当它是空、回读说它已有值」的矛盾（年/月下拉填不进、示例文案被跳过都由此而来）。
+ * 组件化下拉的触发器里往往渲染着「年」「请选择」「例：XXXX」「YYYY-MM」这类提示文字，它不代表已经填过值。
+ * 若不排除，会出现「扫描当它是空、回读说它已有值」的矛盾（年月掩码填不进、示例文案被跳过都由此而来）。
  *
- * 判据用「开头匹配」而不是 includes，避免把真正填好的内容误判成占位：
+ * 判据用「开头匹配 / 整段掩码」而不是 includes，避免把真正填好的内容误判成占位：
  *  1) 裸年/月/日；
  *  2) 纯符号（下划线、横杠等）；
  *  3) 中文提示词（请选择/请输入/…）；
  *  4) 示例词（例/例如/示例/格式/待填/选填…）；
  *  5) 含冒号的示例（例：XXXX、格式：YYYY-MM）；
- *  6) 英文提示词（select/choose/please/search…）。
+ *  6) 日期格式掩码整段（YYYY-MM、YYYY-MM-DD、YYYY/MM 等，可重复拼接）；
+ *  7) 英文提示词（select/choose/please/search…）。
+ *
+ * 调用方：isControlEmpty、readControlText、回读比对。输入：任意展示/value 文案。输出：true=仍是占位。
+ * 不改页面 DOM。
  */
 export function isPlaceholderText(rawText) {
   const text = String(rawText || '')
@@ -202,6 +206,9 @@ export function isPlaceholderText(rawText) {
   if (/^(请选择|请填写|请输入|请勾选|请选|选择|暂无|暂无选项|未选择|未填写|尚未填写|无$)/.test(text)) return true;
   if (/^(例|例如|示例|如|比如|待填|待填写|选填|格式|参考|输入|填写)/.test(text)) return true;
   if (/[:：]/.test(text) && /(例|如|格式|参考|x{2,}|X{2,})/.test(text)) return true;
+  // 纯格式掩码（含 RangePicker 左右各一段拼在一起：YYYY-MMYYYY-MM）
+  if (/^(Y{2,4}[-/.年]?M{1,2}([-/.月]?D{1,2})?)+$/i.test(text)) return true;
+  if (/^(年{2,4}[-/.]?月{1,2}([-/.]?日{1,2})?)+$/.test(text)) return true;
   if (/^(select|choose|please|search|enter|type|pick)/i.test(text)) return true;
   return false;
 }
@@ -351,17 +358,34 @@ export function readControlText(el) {
 
 /**
  * 控件是否为空——全工程唯一判空入口。
- * 关键：组件触发器的 textContent 若只是占位文案，仍然算空。
+ * 与 readControlText 同一套「有效值」规则：读不到有效值即空（占位/格式掩码不算已填）。
+ * 调用方：扫描过滤、写入跳过、补行收获空格、未映射下拉。输入：页面控件。输出：true=仍空可写。
+ * 不改页面；select 仍按「未选有效项」判空，避免 placeholder option 干扰。
  */
 export function isControlEmpty(el) {
   if (!el || !(el instanceof HTMLElement)) return false;
   const tag = el.tagName.toLowerCase();
-  if (tag === 'select') return !(el.value && el.selectedIndex > 0);
-  if (el.isContentEditable) return !String(el.textContent || '').trim();
-  const ownValue = String(el.value || '').trim();
-  if (ownValue) return false;
-  const ownText = String(el.textContent || '').replace(/\s+/g, '').trim();
-  return isPlaceholderText(ownText);
+  if (tag === 'select') {
+    const selectedIndex = el.selectedIndex;
+    if (!(el.value && selectedIndex > 0)) return true;
+    const selectedLabel = String(el.options?.[selectedIndex]?.text || el.value || '').trim();
+    return isPlaceholderText(selectedLabel);
+  }
+  if (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox')) {
+    return !el.checked;
+  }
+  if (el.isContentEditable) {
+    return isPlaceholderText(String(el.textContent || '').replace(/\s+/g, ''));
+  }
+  // 有 placeholder 属性且 value 等于它时，按占位处理（再交给 readControlText）
+  if (
+    (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+    && el.placeholder
+    && String(el.value || '').trim() === String(el.placeholder).trim()
+  ) {
+    return true;
+  }
+  return !String(readControlText(el) || '').trim();
 }
 
 /**

@@ -7,6 +7,7 @@
  */
 import { getSettings } from '../storage/settingsStore';
 import {
+  enableBuiltinLayaChoicePackage,
   getLayaModelStatus,
   isLayaModelReady,
   readCachedLayaPackageMeta,
@@ -43,6 +44,15 @@ export const localEngine: DecisionEngine = {
       return false;
     }
     const modelUrl = settings.layaModelUrl?.trim() ?? '';
+    // 没填地址、又还没有包：直接启用扩展里带着的轻量包，不要求用户点按钮
+    if (!modelUrl && settings.decisionPreferLocal) {
+      try {
+        await enableBuiltinLayaChoicePackage();
+      } catch {
+        return false;
+      }
+      return isLayaModelReady();
+    }
     // 不打网络：无缓存/过期允许试；近期失败则 false
     return isLayaServerReadyFromCache(modelUrl);
   },

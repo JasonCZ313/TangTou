@@ -55,6 +55,11 @@ export type ExtensionMessage =
       fields: FieldDescriptor[];
       /** 与扫描同代；已停止则立刻返回 USER_STOPPED，且不得换新 AbortController */
       workGeneration?: number;
+      /**
+       * 选区填入 P3：只对照档案中的这一段（键见 profileSectionScope）。
+       * 未传则仍用完整档案正文。
+       */
+      profileSectionKey?: string;
     }
   | {
       type: 'FILL_PLAN_RESULT';
@@ -82,6 +87,10 @@ export type ExtensionMessage =
       profileData?: ProfileData;
       /** 用户新点确认写入时的工作代次 */
       workGeneration?: number;
+      /** P4：page=整页映射；region=框内对照预览写入（独立撤销栈） */
+      fillScope?: 'page' | 'region';
+      /** P4 框内写入时只附带该档案段正文 */
+      profileSectionKey?: string;
     }
   | {
       type: 'APPLY_FILL_RESULT';
@@ -93,7 +102,12 @@ export type ExtensionMessage =
       /** 本轮每一步操作记录，侧边栏复制后贴回排查 */
       trace?: string;
     }
-  | { type: 'UNDO_LAST_FILL'; requestId: string }
+  | {
+      type: 'UNDO_LAST_FILL';
+      requestId: string;
+      /** P4a：默认 page；region 只撤框内上一轮 */
+      fillScope?: 'page' | 'region';
+    }
   | {
       type: 'UNDO_FILL_RESULT';
       requestId: string;
@@ -110,6 +124,8 @@ export type ExtensionMessage =
       profileId?: string;
       /** 后台转发给内容脚本时带上的补行请求 */
       sectionAdds?: SectionAddRequest[];
+      /** P4 框内写入：只补当前档案段对应分区行 */
+      profileSectionKey?: string;
     }
   | {
       type: 'ENSURE_SECTION_ROWS_RESULT';
@@ -352,6 +368,68 @@ export type ExtensionMessage =
       requestId: string;
       /** 调试挂上并且按下、松开都发出去则为 true。层有没有收起由内容脚本再数。 */
       ok: boolean;
+    }
+  | {
+      /**
+       * 侧栏「选区填入」：让当前页进入框选。
+       * 不扫描、不写入。已有遮罩时页面保持原矩形。
+       */
+      type: 'START_REGION_SELECT';
+      requestId: string;
+    }
+  | {
+      type: 'START_REGION_SELECT_RESULT';
+      requestId: string;
+      /** true 表示这次没有新开一层，原来的矩形还在 */
+      alreadyActive: boolean;
+    }
+  | {
+      /** 侧栏问当前页是不是还在框选。不改变页面。 */
+      type: 'QUERY_REGION_SELECT';
+      requestId: string;
+    }
+  | {
+      type: 'REGION_SELECT_STATE';
+      requestId: string;
+      active: boolean;
+    }
+  | {
+      /**
+       * Background 发现承载该标签的浏览器窗口失去焦点时下发。
+       * 用于切到别的窗口时卸掉选区遮罩；不经过侧栏，也无回执。
+       */
+      type: 'CANCEL_REGION_SELECT_HOST';
+    }
+  | {
+      /** 侧栏或内容脚本请求对当前合格矩形做框内空白识别（P2）。 */
+      type: 'SCAN_REGION_FIELDS';
+      requestId: string;
+    }
+  | {
+      type: 'REGION_SCAN_PROGRESS';
+      requestId: string;
+      percent: number;
+      foundCount?: number;
+      message: string;
+    }
+  | {
+      type: 'REGION_SCAN_RESULT';
+      requestId: string;
+      /** P2 起侧栏展示标签；P3 对照需要完整描述 */
+      fields: FieldDescriptor[];
+      durationMs: number;
+      notice?: string;
+    }
+  | { type: 'REGION_SCAN_CLEARED' }
+  | {
+      /** P4：框内写入结束或用户主动结束选区（卸遮罩，不清页面值） */
+      type: 'END_REGION_SELECT';
+      requestId: string;
+    }
+  | {
+      type: 'END_REGION_SELECT_RESULT';
+      requestId: string;
+      ended: boolean;
     }
   | {
       type: 'ERROR';

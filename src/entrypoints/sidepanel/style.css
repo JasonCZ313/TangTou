@@ -24,6 +24,60 @@ body {
   width: 100%;
 }
 
+.region-field-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.region-field-list li {
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+.region-field-empty {
+  color: var(--tt-muted, #6b7280);
+  list-style: none;
+  margin-left: -20px;
+}
+
+.region-field-meta {
+  margin: 4px 0 0;
+}
+
+.region-map-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.region-section-select {
+  width: 100%;
+}
+
+.region-map-button {
+  width: 100%;
+}
+
+.region-confirm-write-button {
+  width: 100%;
+}
+
+.region-undo-button {
+  width: 100%;
+}
+
+.region-mapping-wrap {
+  margin-top: 10px;
+  max-height: 220px;
+}
+
+.region-mapping-table .value-preview {
+  word-break: break-word;
+}
+
 .section-heading-row {
   display: flex;
   align-items: center;
@@ -210,16 +264,26 @@ body {
   color: #b45309;
 }
 
-/* 纵向：确认 / 扫描 / 撤销 */
+/* 纵向：进度/状态 → 确认 / 扫描 / 撤销 */
 .sidepanel-actions {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 4px;
+  margin-bottom: 4px;
 }
 
 .sidepanel-actions .btn {
   width: 100%;
+}
+
+/* 进度条、状态条紧贴「确认写入」上方，收紧上下边距 */
+.sidepanel-actions .scan-progress {
+  margin: 0;
+}
+
+.sidepanel-actions .status-message {
+  margin: 0;
 }
 
 .tip-inline {
@@ -322,6 +386,12 @@ body {
 
 .create-profile-form {
   padding-top: 4px;
+}
+
+/* 接口和本机判断排在建档下面，用虚线跟档案区隔开 */
+#apiSettingsForm {
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px dashed var(--tt-border);
 }
 

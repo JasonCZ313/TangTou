@@ -36,9 +36,18 @@ export async function sendToActiveTab(
   if (activeTab?.id === undefined) {
     throw new Error('NO_ACTIVE_TAB');
   }
+  return sendToTab(activeTab.id, message);
+}
 
+/**
+ * 向指定标签页转发消息（框内撤销等需回到写入发生的那一页）。
+ */
+export async function sendToTab(
+  tabId: number,
+  message: ExtensionMessage,
+): Promise<ExtensionMessage> {
   const response = (await chrome.tabs.sendMessage(
-    activeTab.id,
+    tabId,
     message,
   )) as ExtensionMessage | undefined;
 

@@ -44,6 +44,9 @@ export async function ensureSectionRows(
 
   for (const request of sectionAdds) {
     if (request.neededRows <= 0) {
+      if (request.sectionPattern === '工作经历') {
+        clickNoWorkExperienceControl();
+      }
       continue;
     }
     for (let round = 0; round < MAX_ADD_CLICKS_PER_SECTION; round += 1) {
@@ -88,6 +91,47 @@ export async function ensureSectionRows(
   }
 
   return { clicks, notices };
+}
+
+/**
+ * 工作经历一条都没有时，勾上页面上的「没有工作经历」或「无工作经历」。
+ * 调用方：ensureSectionRows 在工作经历所需行数为 0 时。输入：无。
+ * 输出：勾上或已经勾着则为 true；页面没有这个控件则为 false。不编造公司名，不加行。
+ */
+function clickNoWorkExperienceControl(): boolean {
+  const candidates = [...document.querySelectorAll('label, span, div, button, a')];
+  for (const node of candidates) {
+    if (!(node instanceof HTMLElement)) {
+      continue;
+    }
+    let directText = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        directText += child.textContent || '';
+      }
+    }
+    const compactText = directText.replace(/\s+/g, '');
+    if (compactText !== '没有工作经历' && compactText !== '无工作经历') {
+      continue;
+    }
+    const box = node.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) {
+      continue;
+    }
+    const checkbox = node instanceof HTMLInputElement && node.type === 'checkbox'
+      ? node
+      : node.querySelector('input[type="checkbox"]')
+        ?? node.closest('label')?.querySelector('input[type="checkbox"]');
+    if (checkbox instanceof HTMLInputElement) {
+      if (!checkbox.checked) {
+        checkbox.click();
+      }
+      return true;
+    }
+    node.click();
+    return true;
+  }
+  return false;
 }
 
 /**

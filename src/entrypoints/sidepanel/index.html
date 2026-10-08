@@ -38,6 +38,31 @@
       <details id="settingsDetails" class="sidepanel-section settings-details">
         <summary class="settings-summary">设置与新建/编辑档案</summary>
         <div class="settings-body">
+          <!-- 档案在上，接口和本机判断在下，展开后先建档再滚到设置 -->
+          <form id="createProfileForm" class="settings-form create-profile-form" novalidate>
+            <label class="field">
+              <span class="field-label">新建档案名称</span>
+              <input
+                id="newProfileNameInput"
+                type="text"
+                placeholder="例如：校招主投"
+                maxlength="40"
+                required
+              />
+            </label>
+            <button type="submit" class="btn btn-secondary" id="createProfileButton">
+              创建档案
+            </button>
+            <p id="createProfileFeedback" class="inline-feedback" hidden></p>
+            <p id="profileLimitTip" class="hint-text" hidden>
+              已达上限 5 份档案，请先在完整编辑页删除后再建。
+            </p>
+          </form>
+
+          <button type="button" id="openFullEditorButton" class="btn btn-ghost full-editor-btn">
+            编辑完整简历档案（新标签页）
+          </button>
+
           <form id="apiSettingsForm" class="settings-form" autocomplete="off" novalidate>
             <label class="field">
               <span class="field-label">API Base URL</span>
@@ -60,37 +85,6 @@
             <label class="field">
               <span class="field-label">模型</span>
               <input id="modelInput" type="text" placeholder="gpt-4o-mini" />
-            </label>
-            <label class="field">
-              <span class="field-label">本机 Laya / Server URL（可选）</span>
-              <input
-                id="layaModelUrlInput"
-                type="url"
-                placeholder="静态包根，或 Server 如 http://127.0.0.1:8765；可留空用内置包"
-              />
-            </label>
-            <div class="settings-form-actions" id="layaModelActions">
-              <button type="button" class="btn btn-secondary" id="layaEnableBuiltinButton">
-                启用内置轻量包
-              </button>
-              <button type="button" class="btn btn-secondary" id="layaDownloadButton">
-                下载本机包
-              </button>
-              <button type="button" class="btn btn-secondary" id="layaTestServerButton">
-                测试 Laya Server
-              </button>
-              <button type="button" class="btn btn-secondary" id="layaClearCacheButton">
-                清除缓存
-              </button>
-            </div>
-            <p id="layaModelStatusText" class="hint" aria-live="polite">本机判断：尚未检查</p>
-            <label class="checkbox-row" for="layaEnabledCheckbox">
-              <input type="checkbox" id="layaEnabledCheckbox" checked />
-              <span>启用本机 Laya 判断（未就绪时自动用你的 API）</span>
-            </label>
-            <label class="checkbox-row" for="decisionPreferLocalCheckbox">
-              <input type="checkbox" id="decisionPreferLocalCheckbox" checked />
-              <span>本机就绪时优先用 Laya</span>
             </label>
             <label class="field">
               <span class="field-label">预览最低置信度（0～1）</span>
@@ -117,30 +111,6 @@
             <!-- 保存/测连的结果贴在按钮下方，避免被挤到侧栏最底部看不见 -->
             <p id="apiSettingsFeedback" class="inline-feedback" hidden></p>
           </form>
-
-          <form id="createProfileForm" class="settings-form create-profile-form" novalidate>
-            <label class="field">
-              <span class="field-label">新建档案名称</span>
-              <input
-                id="newProfileNameInput"
-                type="text"
-                placeholder="例如：校招主投"
-                maxlength="40"
-                required
-              />
-            </label>
-            <button type="submit" class="btn btn-secondary" id="createProfileButton">
-              创建档案
-            </button>
-            <p id="createProfileFeedback" class="inline-feedback" hidden></p>
-            <p id="profileLimitTip" class="hint-text" hidden>
-              已达上限 5 份档案，请先在完整编辑页删除后再建。
-            </p>
-          </form>
-
-          <button type="button" id="openFullEditorButton" class="btn btn-ghost full-editor-btn">
-            编辑完整简历档案（新标签页）
-          </button>
         </div>
       </details>
 
@@ -154,6 +124,90 @@
           <input type="checkbox" id="setDefaultCheckbox" />
           <span>设为默认档案</span>
         </label>
+      </section>
+
+      <!-- 扫描和写入放在选用档案下面、映射表上面，不用滚到侧栏底部再点 -->
+      <section class="sidepanel-actions" aria-label="助手操作">
+        <!-- 进度与状态提示贴在「确认写入」正上方，扫完/对照完不用滚到底部找 -->
+        <div id="scanProgress" class="scan-progress" hidden>
+          <p id="scanProgressLabel" class="scan-progress-label">正在准备扫描</p>
+          <div
+            class="scan-progress-track"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+            aria-labelledby="scanProgressLabel"
+          >
+            <div id="scanProgressFill" class="scan-progress-fill"></div>
+          </div>
+        </div>
+        <p
+          id="statusMessage"
+          class="status-message"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></p>
+        <button type="button" id="confirmWriteButton" class="btn btn-primary action-confirm">
+          确认写入
+        </button>
+        <button type="button" id="scanPageButton" class="btn btn-secondary action-scan">
+          扫描本页
+        </button>
+        <button type="button" id="probePageButton" class="btn btn-secondary action-probe">
+          智能探活
+        </button>
+        <button type="button" id="stopButton" class="btn btn-ghost action-stop" hidden>
+          停止
+        </button>
+        <button type="button" id="undoButton" class="btn btn-ghost action-undo">
+          撤销本轮
+        </button>
+        <!-- 选区填入：只进入页面框选，不扫描、不写入 -->
+        <button type="button" id="regionSelectButton" class="btn btn-secondary action-region">
+          选区填入
+        </button>
+      </section>
+
+      <section
+        id="regionFieldSection"
+        class="sidepanel-section region-field-section"
+        aria-labelledby="regionFieldHeading"
+        hidden
+      >
+        <h2 id="regionFieldHeading" class="section-label">框内空白字段</h2>
+        <p id="regionFieldMeta" class="hint-text region-field-meta"></p>
+        <ul id="regionFieldList" class="region-field-list"></ul>
+        <div class="region-map-controls">
+          <label class="field-label" for="regionSectionSelect">档案段</label>
+          <select id="regionSectionSelect" class="profile-select region-section-select" disabled>
+            <option value="">请先选择档案</option>
+          </select>
+          <button type="button" id="regionMapButton" class="btn btn-secondary region-map-button" disabled>
+            对照这一段
+          </button>
+          <button type="button" id="regionConfirmWriteButton" class="btn btn-primary region-confirm-write-button" disabled>
+            确认写入框内
+          </button>
+          <button type="button" id="regionUndoButton" class="btn btn-ghost region-undo-button" disabled>
+            撤销框内
+          </button>
+        </div>
+        <div id="regionMappingWrap" class="table-scroll region-mapping-wrap" hidden>
+          <table class="mapping-table region-mapping-table" aria-label="框内字段对照预览">
+            <thead>
+              <tr>
+                <th scope="col">字段</th>
+                <th scope="col">填写值</th>
+                <th scope="col">来源</th>
+                <th scope="col">置信度</th>
+              </tr>
+            </thead>
+            <tbody id="regionMappingTableBody"></tbody>
+          </table>
+        </div>
+        <p class="hint-text">先对照再点「确认写入框内」。上方「确认写入」仍只写整页映射；「撤销本轮」与「撤销框内」互不影响。</p>
       </section>
 
       <section class="sidepanel-section mapping-section" aria-labelledby="mappingHeading">
@@ -171,7 +225,7 @@
             <tbody id="mappingTableBody">
               <tr class="empty-row">
                 <td colspan="4">
-                  选好档案后，点下方「扫描本页」。扫完在此核对映射，再点「确认写入」。
+                  选好档案后，点上方「扫描本页」。扫完在此核对映射，再点「确认写入」。
                 </td>
               </tr>
             </tbody>
@@ -231,44 +285,6 @@
         </div>
       </section>
 
-      <section class="sidepanel-actions" aria-label="助手操作">
-        <button type="button" id="confirmWriteButton" class="btn btn-primary action-confirm">
-          确认写入
-        </button>
-        <button type="button" id="scanPageButton" class="btn btn-secondary action-scan">
-          扫描本页
-        </button>
-        <button type="button" id="probePageButton" class="btn btn-secondary action-probe">
-          智能探活
-        </button>
-        <button type="button" id="stopButton" class="btn btn-ghost action-stop" hidden>
-          停止
-        </button>
-        <button type="button" id="undoButton" class="btn btn-ghost action-undo">
-          撤销本轮
-        </button>
-      </section>
-
-      <div id="scanProgress" class="scan-progress" hidden>
-        <p id="scanProgressLabel" class="scan-progress-label">正在准备扫描</p>
-        <div
-          class="scan-progress-track"
-          role="progressbar"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          aria-valuenow="0"
-          aria-labelledby="scanProgressLabel"
-        >
-          <div id="scanProgressFill" class="scan-progress-fill"></div>
-        </div>
-      </div>
-
-      <p
-        id="statusMessage"
-        class="status-message"
-        role="status"
-        aria-live="polite"
-      ></p>
       <p id="tokenUsageLine" class="usage-line" aria-live="polite"></p>
       <div class="feedback-spot">
         <div id="feedbackComposer" class="feedback-composer" hidden>

@@ -8,7 +8,11 @@ import {
 import { getActiveSiteAdapter } from '../adapters/registry';
 import { adapterAllowsAddLabel } from '../adapters/types';
 import { shouldFillStop } from '../fillAbort';
-import { fieldLabelBlob } from '../filler/chao/dom';
+import {
+  fieldLabelBlob,
+  isControlEmpty,
+  isInsideTangtouUi,
+} from '../filler/chao/dom';
 
 /** 扫描时跳过的 input type，避免误填密码或触发按钮类控件 */
 const SKIPPED_INPUT_TYPES = new Set([
@@ -1243,8 +1247,11 @@ function canonicalSectionTitle(rawTitle: string): string {
   if (/^教育背景|^教育经历|^教育$/.test(compact)) {
     return '教育背景';
   }
-  if (/实习经历|工作经历|工作\/实习|实习\/工作/.test(compact) || compact === '实习' || compact === '工作') {
+  if (/^实习经历|^实习经验|^实习$/.test(compact)) {
     return '实习经历';
+  }
+  if (/^工作经历|^工作经验|^职业经历|^工作$/.test(compact)) {
+    return '工作经历';
   }
   if (/^项目经历|^项目经验|^项目$/.test(compact)) {
     return '项目经历';
@@ -1252,8 +1259,12 @@ function canonicalSectionTitle(rawTitle: string): string {
   if (/在校实践|校内实践|校园实践|在校经历|校内经历|校内任职|校园经历|社团经历/.test(compact)) {
     return '在校实践';
   }
-  if (/获奖经历|获奖情况|荣誉奖项|所获荣誉/.test(compact)) {
+  // 页面短标题「获奖」也要收成获奖经历，否则扫描/打行号会漏掉这一区
+  if (/^获奖$|^奖项$|获奖经历|获奖情况|荣誉奖项|所获荣誉/.test(compact)) {
     return '获奖经历';
+  }
+  if (/^语言能力|^外语能力|^语种能力|^语言水平/.test(compact)) {
+    return '语言能力';
   }
   // 页面标题是「论文/专著」。不收成论文区的话，nearestSectionTitle 会继续往前收成获奖，名称被写成下一条获奖
   if (/^论文\/专著$|^论文／专著$|^论文专著$|^论文专利$/.test(compact)) {
@@ -1457,8 +1468,22 @@ function assignStructuredLabels(fields: FieldDescriptor[]): void {
       const roleName = forcedRole ?? roleNames[index] ?? `第${index + 1}个`;
       rememberFieldLabel(item.field, item.element, `${rowPrefix}${roleName}月`);
       });
-      for (const item of rowItems) {
+      // 「起止时间」成对控件：按从左到右标成开始时间 / 结束时间，供绑定层对上档案起止
+      const rangeDateItems = rowItems.filter((item) => {
         if (yearItems.includes(item) || monthItems.includes(item)) {
+          return false;
+        }
+        const roleHint = resolveFieldRoleLabel(item.element, item.field.label);
+        const dateCue = `${roleHint}${item.element.getAttribute('placeholder') ?? ''}${item.field.label ?? ''}`;
+        return /起止时间|起止日期/.test(dateCue)
+          || (/起止/.test(dateCue) && /时间|日期|YYYY|年月/.test(dateCue));
+      });
+      rangeDateItems.forEach((item, index) => {
+        const roleName = index === 0 ? '开始时间' : '结束时间';
+        rememberFieldLabel(item.field, item.element, `${rowPrefix}${roleName}`);
+      });
+      for (const item of rowItems) {
+        if (yearItems.includes(item) || monthItems.includes(item) || rangeDateItems.includes(item)) {
           continue;
         }
         let roleLabel = resolveFieldRoleLabel(item.element, item.field.label);
@@ -1652,22 +1677,41 @@ export function locateRepeatSection(patternSource: string): RepeatSectionSnapsho
     const buttonText = ownText(node).replace(/\s+/g, '');
     return buttonText === '删除本条' || buttonText === '删除';
   });
-  const startYearLabels = Array.from(document.querySelectorAll('[data-raf-label]')).filter((node) => {
-    const label = node.getAttribute('data-raf-label') ?? '';
-    return /开始年/.test(label) && sectionPattern.test(label) && isInsideSection(node);
-  });
+  /**
+   * 主键输入框：占位、已打标的 data-raf-label、或页面左侧/包裹 label 任一带行锚点即可。
+   * 新点出来的卡往往还没打上行号，不能只靠 data-raf-label，否则会误判「行数未增加」。
+   */
   const nameFieldsInSection = Array.from(document.querySelectorAll('input, textarea')).filter((node) => {
     if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isInsideSection(node)) {
       return false;
     }
+    if (node instanceof HTMLInputElement && node.type === 'hidden') {
+      return false;
+    }
     const placeholderText = node instanceof HTMLInputElement ? node.placeholder : '';
-    const labelText = node.getAttribute('data-raf-label') ?? '';
-    return textHasRowNameAnchor(`${placeholderText}${labelText}`);
+    const rafLabelText = node.getAttribute('data-raf-label') ?? '';
+    const pageLabelText = resolveFieldLabel(node);
+    return textHasRowNameAnchor(`${placeholderText}${rafLabelText}${pageLabelText}`);
   });
-  let rows = nameFieldsInSection.length;
-  if (rows === 0 && deleteButtons.length > 0) {
-    rows = deleteButtons.length;
-  }
+  /**
+   * 左侧短标题里出现几次主键词，就算几张卡。
+   * 新卡还没挂 data-raf-label 时，标题「项目名称 / 单位名称 / 语种」已经能数出来。
+   */
+  const nameCaptionCount = Array.from(document.querySelectorAll('label, span, div, p')).filter((node) => {
+    if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isInsideSection(node)) {
+      return false;
+    }
+    if (isNavigationChrome(node)) {
+      return false;
+    }
+    const captionText = ownText(node).replace(/[*＊：:\s]/g, '');
+    if (!captionText || captionText.length > 12) {
+      return false;
+    }
+    return textHasRowNameAnchor(captionText);
+  }).length;
+  // 取各口径里更大的那个：有删除就认删除，有主键框/主键标题就认它们；不再要求新框已打标
+  let rows = Math.max(nameFieldsInSection.length, deleteButtons.length, nameCaptionCount);
   if (rows === 0) {
     const yearWidgets = Array.from(document.querySelectorAll('select, .ant-select, .el-select')).filter(
       (node) => {
@@ -1704,24 +1748,9 @@ export function locateRepeatSection(patternSource: string): RepeatSectionSnapsho
 }
 
 /**
- * 这个格子还是空的：没选年/月，或仍是占位符。
- */
-function controlLooksEmpty(element: HTMLElement): boolean {
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-    const currentText = element.value.trim();
-    const placeholderText = (element.placeholder || '').trim();
-    return currentText.length === 0 || currentText === placeholderText;
-  }
-  const pickerHost = element.closest('.ant-select, .el-select') ?? element;
-  const shownText = (
-    pickerHost.querySelector('.ant-select-selection-item, .ant-select-selection-placeholder')?.textContent ?? ''
-  ).replace(/\s+/g, '');
-  return shownText.length === 0 || /^(请选择|年|月)/.test(shownText);
-}
-
-/**
  * 把这一块里还空着的格子重新编号，供下一轮按第 2 行、第 3 行去填。
  * 第一次扫描时页面上还没有的行，也会在添加之后从这里进入填写。
+ * 判空统一走 isControlEmpty，不再自建一套（避免 YYYY-MM 掩码漏收）。
  */
 export function harvestEmptyLabeledFields(patternSource: string): FieldDescriptor[] {
   let sectionPattern: RegExp;
@@ -1752,7 +1781,7 @@ export function harvestEmptyLabeledFields(patternSource: string): FieldDescripto
       selectorHint: 'input',
     };
     sectionFields.push(descriptor);
-    if (controlLooksEmpty(node)) {
+    if (isControlEmpty(node)) {
       emptyFields.push(descriptor);
     }
   }
@@ -1762,7 +1791,7 @@ export function harvestEmptyLabeledFields(patternSource: string): FieldDescripto
   const snapshot = locateRepeatSection(patternSource);
   if (snapshot) {
     for (const node of snapshot.root.querySelectorAll('input, textarea, select')) {
-      if (!(node instanceof HTMLElement) || !isElementVisible(node) || !controlLooksEmpty(node)) {
+      if (!(node instanceof HTMLElement) || !isElementVisible(node) || !isControlEmpty(node)) {
         continue;
       }
       if (node.getAttribute('data-raf-id')) {
@@ -1794,13 +1823,7 @@ export function labelNextEmptyCard(patternSource: string, neededRows: number): F
     const labelText = element.getAttribute('data-raf-label') ?? '';
     return textHasRowNameAnchor(`${placeholderText}${labelText}`);
   });
-  const emptyIndex = nameFields.findIndex((element) => {
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      return false;
-    }
-    const currentText = element.value.trim();
-    return currentText.length === 0 || currentText === (element.placeholder || '').trim();
-  });
+  const emptyIndex = nameFields.findIndex((element) => isControlEmpty(element));
   if (emptyIndex < 0 || emptyIndex >= neededRows) {
     return [];
   }
@@ -1932,8 +1955,29 @@ function labelOneCardByNameIndex(
     rememberFieldLabel(descriptor, element, `${rowPrefix}${roleName}月`);
     labeled.push(descriptor);
   });
+  const labeledRangeHosts = new Set<HTMLElement>();
+  for (const element of band) {
+    const rangeHost = element.closest('.ant-picker-range, .el-range-editor');
+    if (!(rangeHost instanceof HTMLElement) || labeledRangeHosts.has(rangeHost)) {
+      continue;
+    }
+    labeledRangeHosts.add(rangeHost);
+    const rangeInputs = [...rangeHost.querySelectorAll('input')].filter((node): node is HTMLInputElement => {
+      return node instanceof HTMLInputElement && node.type !== 'hidden';
+    });
+    rangeInputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
+    rangeInputs.forEach((rangeInput, index) => {
+      const roleName = index === 0 ? '开始时间' : '结束时间';
+      const descriptor = ensureFieldDescriptor(rangeInput);
+      rememberFieldLabel(descriptor, rangeInput, `${rowPrefix}${roleName}`);
+      labeled.push(descriptor);
+    });
+  }
   for (const element of band) {
     if (yearFields.includes(element) || monthFields.includes(element)) {
+      continue;
+    }
+    if (element.closest('.ant-picker-range, .el-range-editor')) {
       continue;
     }
     const previousLabel = (element.getAttribute('data-raf-label') ?? '').replace(/^.*第\d+行/, '');
@@ -2226,4 +2270,91 @@ export async function scanFieldsSettled(
     }
     window.scrollTo(windowX, windowY);
   }
+}
+
+/** 选区填入 P2：矩形在视口内的位置，与 regionSelect 一致。 */
+export interface RegionViewportBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 判断控件中心点是否落在选区矩形内（含边界）。
+ * 用中心点避免只压住边框的相邻字段误入清单。
+ */
+function elementCenterInsideRegionBox(
+  element: Element,
+  regionBox: RegionViewportBox,
+): boolean {
+  const clientRect = element.getBoundingClientRect();
+  if (clientRect.width < 1 || clientRect.height < 1) {
+    return false;
+  }
+  const centerX = clientRect.left + clientRect.width / 2;
+  const centerY = clientRect.top + clientRect.height / 2;
+  return (
+    centerX >= regionBox.left &&
+    centerX <= regionBox.left + regionBox.width &&
+    centerY >= regionBox.top &&
+    centerY <= regionBox.top + regionBox.height
+  );
+}
+
+/** P2 框内扫描结果：空白字段清单与耗时（毫秒）。 */
+export interface RegionBlankFieldScanResult {
+  fields: FieldDescriptor[];
+  durationMs: number;
+}
+
+/**
+ * 在不动整页滚动扫描的前提下，识别矩形内的空白控件并生成字段描述。
+ * 先等 DOM 安静（上限约 1.5s），再过滤扩展 UI、已填控件与框外控件。
+ */
+export async function scanBlankFieldsInRegionBox(
+  regionBox: RegionViewportBox,
+): Promise<RegionBlankFieldScanResult> {
+  const startedAt = Date.now();
+  await waitForFormSettle(document);
+  const blankFields: FieldDescriptor[] = [];
+  const seenElements = new WeakSet<Element>();
+
+  for (const candidate of collectFormControls(document)) {
+    if (seenElements.has(candidate)) {
+      continue;
+    }
+    if (isInsideTangtouUi(candidate)) {
+      continue;
+    }
+    if (!shouldIncludeElement(candidate)) {
+      continue;
+    }
+    if (!elementCenterInsideRegionBox(candidate, regionBox)) {
+      continue;
+    }
+    if (!isControlEmpty(candidate)) {
+      continue;
+    }
+    seenElements.add(candidate);
+    blankFields.push(describeField(candidate));
+  }
+
+  blankFields.sort((fieldA, fieldB) => {
+    const elementA = fieldElementById.get(fieldA.fieldId);
+    const elementB = fieldElementById.get(fieldB.fieldId);
+    const rectA = elementA?.getBoundingClientRect();
+    const rectB = elementB?.getBoundingClientRect();
+    const topA = rectA?.top ?? 0;
+    const topB = rectB?.top ?? 0;
+    if (Math.abs(topA - topB) > 4) {
+      return topA - topB;
+    }
+    return (rectA?.left ?? 0) - (rectB?.left ?? 0);
+  });
+
+  return {
+    fields: blankFields,
+    durationMs: Date.now() - startedAt,
+  };
 }

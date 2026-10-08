@@ -98,7 +98,7 @@ const TOC_SECTIONS: Array<{ id: string; label: string }> = [
   { id: 'section-basic', label: '基本信息' },
   { id: 'section-jobIntent', label: '求职意向' },
   { id: 'section-education', label: '教育经历' },
-  { id: 'section-experience', label: '实习工作' },
+  { id: 'section-experience', label: '实习经历 / 工作经历' },
   { id: 'section-projects', label: '项目经历' },
   { id: 'section-campus', label: '校园社团' },
   { id: 'section-skills', label: '技能计算机' },

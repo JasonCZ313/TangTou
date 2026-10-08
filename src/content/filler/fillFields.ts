@@ -31,12 +31,25 @@ import {
   readControlText,
 } from './chao/dom';
 import { commitFieldValue, commitUnmappedChoice, rescanCommittedFields } from './fieldCommit';
+import { rangeSideOfControl } from './chao/widgetDrivers';
 import { beginFillTrace, fillTraceText, recordFillStep } from './fillTrace';
 import { ensurePanelsClosed } from './chao/widgetDrivers';
 
-/** 撤销快照：写入前控件原值，方便 undoLastFill 还原 */
-let lastUndoSnapshots: Array<{ element: Element; previousValue: string; isFile: boolean }> =
-  [];
+/** 单条撤销快照：控件节点与写入前的值 */
+interface FillUndoSnapshot {
+  element: Element;
+  previousValue: string;
+  isFile: boolean;
+}
+
+/** 整页确认写入的撤销栈（P4a：与框内写入分开） */
+let lastPageUndoSnapshots: FillUndoSnapshot[] = [];
+
+/** 框内确认写入的撤销栈（P4a：只还原框内那一轮） */
+let lastRegionUndoSnapshots: FillUndoSnapshot[] = [];
+
+/** 写入撤销作用域：整页映射 vs 选区框内 */
+export type FillUndoScope = 'page' | 'region';
 
 /** 格间短等待，给站点联动渲染时间 */
 function settle(ms: number): Promise<void> {
@@ -193,9 +206,11 @@ function resolveWriteValue(
   if (!profileData || !labelText) {
     return { value: planValue, reason: '计划值' };
   }
+  const rangeSide = rangeSideOfControl(element);
   const bound = bindLabeledField(
     descriptorFromElement(fieldId, element, labelText),
     profileData,
+    rangeSide === 'end' || rangeSide === 'start' ? rangeSide : undefined,
   );
   if (bound?.kind === 'skip') {
     // 标签仍垃圾/角色未知时：计划里已有值就接着写，不能因「请输入」把学校单位清掉
@@ -335,13 +350,20 @@ function restoreElementValue(element: Element, previousValue: string): boolean {
  */
 function captureUndoSnapshotsForElements(
   elements: Element[],
+  fillScope: FillUndoScope,
   append = false,
 ): void {
+  const targetStack =
+    fillScope === 'region' ? lastRegionUndoSnapshots : lastPageUndoSnapshots;
   if (!append) {
-    lastUndoSnapshots = [];
+    if (fillScope === 'region') {
+      lastRegionUndoSnapshots = [];
+    } else {
+      lastPageUndoSnapshots = [];
+    }
   }
   const seen = new WeakSet<Element>();
-  for (const snapshot of lastUndoSnapshots) {
+  for (const snapshot of targetStack) {
     seen.add(snapshot.element);
   }
   for (const node of elements) {
@@ -350,11 +372,16 @@ function captureUndoSnapshotsForElements(
     }
     seen.add(node);
     const isFile = node instanceof HTMLInputElement && node.type === 'file';
-    lastUndoSnapshots.push({
+    const snapshot: FillUndoSnapshot = {
       element: node,
       previousValue: readElementValue(node),
       isFile,
-    });
+    };
+    if (fillScope === 'region') {
+      lastRegionUndoSnapshots.push(snapshot);
+    } else {
+      lastPageUndoSnapshots.push(snapshot);
+    }
   }
 }
 
@@ -420,7 +447,10 @@ function fileInputHint(inputElement: HTMLInputElement): string {
  * 按文案把档案附件落到页面 file 控件。
  * 写入前把目标 file 框追加进撤销快照，撤销时只能清空（清除本轮上传）。
  */
-function applyFilePayloads(filePayloads: FileUploadPayload[]): {
+function applyFilePayloads(
+  filePayloads: FileUploadPayload[],
+  fillScope: FillUndoScope,
+): {
   filled: number;
   misses: FillMiss[];
 } {
@@ -474,7 +504,7 @@ function applyFilePayloads(filePayloads: FileUploadPayload[]): {
       continue;
     }
     // 写入前入快照，撤销=清空本轮上传
-    captureUndoSnapshotsForElements([matched], true);
+    captureUndoSnapshotsForElements([matched], fillScope, true);
     if (assignFilePayload(matched, payload)) {
       filled += 1;
     } else {
@@ -496,6 +526,7 @@ export async function applyFillPlan(
   _profileId?: string,
   _sectionAdds: SectionAddRequest[] = [],
   profileData?: ProfileData,
+  fillScope: FillUndoScope = 'page',
 ): Promise<{
   filled: number;
   skipped: number;
@@ -532,14 +563,11 @@ export async function applyFillPlan(
     labelOf,
   );
 
-  const preparedElements: Element[] = [];
-  for (const item of orderedItems) {
-    const element = await prepareFieldForWrite(item.fieldId);
-    if (element) {
-      preparedElements.push(element);
-    }
+  if (fillScope === 'region') {
+    lastRegionUndoSnapshots = [];
+  } else {
+    lastPageUndoSnapshots = [];
   }
-  captureUndoSnapshotsForElements(preparedElements);
 
   let filled = 0;
   const misses: FillMiss[] = [];
@@ -581,6 +609,8 @@ export async function applyFillPlan(
       });
       continue;
     }
+
+    captureUndoSnapshotsForElements([element], fillScope, true);
 
     const resolved = resolveWriteValue(
       item.fieldId,
@@ -658,8 +688,8 @@ export async function applyFillPlan(
     }
   }
 
-  // 计划没覆盖到的格子（例如性别）仍按卡片补。弹层还开着就不要补，避免把名单文字粘进字段名。
-  if (profileData && panelsClosedForFollowUp) {
+  // 计划没覆盖到的格子（例如性别）仍按卡片补。框内写入只跟预览计划，不做卡片补写（避免撤销栈错位）。
+  if (profileData && panelsClosedForFollowUp && fillScope !== 'region') {
     const cardFilled = await fillProfileByCards(profileData, misses, (message) => {
       updatePageOverlay({
         percent: 93,
@@ -672,7 +702,7 @@ export async function applyFillPlan(
     recordFillStep('卡片补写', '开始前关窗', '弹层关不掉', '这一遍没有再点');
   }
 
-  if (!shouldFillStop()) {
+  if (!shouldFillStop() && fillScope !== 'region') {
     updatePageOverlay({
       percent: 95,
       message: '正在点击确定和保存…',
@@ -688,7 +718,7 @@ export async function applyFillPlan(
       showCancel: true,
     });
   }
-  const fileResult = applyFilePayloads(filePayloads);
+  const fileResult = applyFilePayloads(filePayloads, fillScope);
   updatePageOverlay({
     percent: 100,
     message: shouldFillStop()
@@ -711,10 +741,17 @@ export async function applyFillPlan(
 /**
  * 撤销上一轮：普通控件还原快照；file 只能清空（清除本轮上传）。
  */
-export function undoLastFill(): { restored: number; clearedFiles: number } {
+/**
+ * 按作用域撤销上一轮写入：整页与框内互不影响（P4a）。
+ */
+export function undoLastFill(
+  fillScope: FillUndoScope = 'page',
+): { restored: number; clearedFiles: number } {
+  const snapshots =
+    fillScope === 'region' ? lastRegionUndoSnapshots : lastPageUndoSnapshots;
   let restored = 0;
   let clearedFiles = 0;
-  for (const snapshot of lastUndoSnapshots) {
+  for (const snapshot of snapshots) {
     if (!document.contains(snapshot.element)) {
       continue;
     }
@@ -727,6 +764,10 @@ export function undoLastFill(): { restored: number; clearedFiles: number } {
       }
     }
   }
-  lastUndoSnapshots = [];
+  if (fillScope === 'region') {
+    lastRegionUndoSnapshots = [];
+  } else {
+    lastPageUndoSnapshots = [];
+  }
   return { restored, clearedFiles };
 }

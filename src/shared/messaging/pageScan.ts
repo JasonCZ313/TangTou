@@ -144,6 +144,7 @@ export async function requestFillPlanWithWait(
   onWaitSeconds: (elapsedSeconds: number) => void,
   shouldAbort?: () => boolean,
   workGeneration?: number,
+  profileSectionKey?: string,
 ): Promise<Extract<ExtensionMessage, { type: 'FILL_PLAN_RESULT' }>> {
   const startedAt = Date.now();
   const timer = window.setInterval(() => {
@@ -163,6 +164,7 @@ export async function requestFillPlanWithWait(
       profileId,
       fields,
       workGeneration,
+      profileSectionKey,
     } satisfies ExtensionMessage);
     if (shouldAbort?.()) {
       throw new Error('USER_STOPPED');

@@ -7,6 +7,7 @@ import { optionMatchAliases, normalizeDate, dateTextMatches, sourceHasCalendarDa
 import { chaoDebug } from './debug';
 import {
   isInsideTangtouUi,
+  fieldLabelBlob,
   isPageFieldVisible,
   readControlText,
   setNativeValue,
@@ -1348,20 +1349,28 @@ function clickYearCell(panel, yearText) {
 
 /**
  * 在月面板点月份。
+ * preferRight：区间面板左右各有一套月份时，结束月点右半边，避免点到开始月那一栏。
  */
-function clickMonthCell(panel, monthNumber) {
+function clickMonthCell(panel, monthNumber, preferRight = false) {
   const wanted = `${Number(monthNumber)}月`;
   const padded = `${String(monthNumber).padStart(2, '0')}月`;
   const cells = [...panel.querySelectorAll('td, [class*="cell" i], button, a, span, div')].filter(
     (node) => node instanceof HTMLElement && isPageFieldVisible(node),
   );
-  const hit = cells.find((node) => {
+  const hits = cells.filter((node) => {
     const text = ownVisibleText(node).replace(/\s+/g, '');
     if (text !== wanted && text !== padded) return false;
     const className = String(node.className || '');
     if (/prev|next|disabled|outside/i.test(className)) return false;
     return true;
   });
+  let hit = hits[0];
+  if (preferRight && hits.length > 1 && panel instanceof HTMLElement) {
+    const panelBox = panel.getBoundingClientRect();
+    const midline = panelBox.left + panelBox.width / 2;
+    const rightHit = hits.find((node) => node.getBoundingClientRect().left >= midline);
+    if (rightHit) hit = rightHit;
+  }
   return hit ? safeClick(hit) : false;
 }
 
@@ -1416,12 +1425,180 @@ function clickDayCell(panel, dayNumber) {
 }
 
 /**
+ * 同一块起止控件里左右两个输入框。不是区间则返回空。
+ * 调用方：driveDatePanel、rangeSideOfControl。不改页面。
+ */
+function findRangeDatePair(el) {
+  if (!(el instanceof HTMLElement)) return null;
+  const host = el.closest('.ant-picker-range, .el-range-editor, .el-date-editor--daterange')
+    || el.closest('.ant-picker, .el-date-editor');
+  if (!(host instanceof HTMLElement)) return null;
+  const inputs = [...host.querySelectorAll('input')].filter((node) => {
+    if (!(node instanceof HTMLInputElement) || node.type === 'hidden') return false;
+    return isPageFieldVisible(node);
+  });
+  if (inputs.length < 2) return null;
+  inputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
+  return { host, left: inputs[0], right: inputs[1] };
+}
+
+/**
+ * 这个格子在起止区间的左侧还是右侧。
+ * 调用方：确认写入再绑、卡片补写。输入：页面控件。输出：'start' | 'end' | ''。不改页面。
+ */
+export function rangeSideOfControl(el) {
+  const pair = findRangeDatePair(el);
+  if (!pair) return '';
+  const target = el instanceof HTMLInputElement ? el : resolveDateInput(el);
+  if (target && (target === pair.right || pair.right.contains(target))) return 'end';
+  return 'start';
+}
+
+/** 区间两侧已经交给日期态机的档案日期。宿主是起止控件根节点。 */
+const rangeEndpointByHost = new WeakMap();
+
+/**
+ * 在已经打开的面板上点到目标年、月。失败不清输入框，由调用方决定清哪一侧。
+ * 调用方：区间起止。输入：面板、打开前快照、档案日期、是否点右栏月份。输出：是否点到月。
+ */
+async function chooseYearMonth(panel, before, rawDate, preferRight) {
+  const date = normalizeDate(rawDate);
+  const parts = date.match(/^(\d{4})-(\d{2})-/);
+  if (!parts || !panel) return { ok: false, reason: '日期无有效年份', panel };
+  const yearText = parts[1];
+  const monthNumber = String(Number(parts[2]));
+  let mode = detectDatePanelMode(panel);
+  const headerYear = readHeaderYear(panel);
+  if (headerYear !== yearText) {
+    if (mode !== 'year') {
+      clickDateHeaderPart(panel, 'year');
+      await sleep(180);
+      panel = findFreshOverlay(before) || panel;
+      mode = detectDatePanelMode(panel);
+    }
+    if (mode !== 'year') {
+      clickDateHeaderPart(panel, 'year');
+      await sleep(180);
+      panel = findFreshOverlay(before) || panel;
+      mode = detectDatePanelMode(panel);
+    }
+    const targetYear = Number(yearText);
+    if (mode === 'year') {
+      let decade = readDecadeRange(panel);
+      let guard = 0;
+      while (decade && (targetYear < decade.start || targetYear > decade.end) && guard < 30) {
+        const beforeRange = `${decade.start}-${decade.end}`;
+        clickDecadeNav(panel, targetYear < decade.start ? -1 : 1);
+        await sleep(120);
+        panel = findFreshOverlay(before) || panel;
+        decade = readDecadeRange(panel);
+        const afterRange = decade ? `${decade.start}-${decade.end}` : '';
+        if (afterRange === beforeRange) break;
+        guard += 1;
+      }
+      if (!clickYearCell(panel, yearText)) {
+        return { ok: false, reason: '年面板未点到目标年', panel };
+      }
+      await sleep(180);
+      panel = findFreshOverlay(before) || panel;
+    } else {
+      return { ok: false, reason: '无法进入年选择面板', panel };
+    }
+  }
+  mode = detectDatePanelMode(panel);
+  if (mode !== 'month') {
+    clickDateHeaderPart(panel, 'month');
+    await sleep(150);
+    panel = findFreshOverlay(before) || panel;
+    mode = detectDatePanelMode(panel);
+  }
+  if (mode !== 'month') {
+    return { ok: false, reason: '未出现月面板', panel };
+  }
+  if (!clickMonthCell(panel, monthNumber, preferRight)) {
+    return { ok: false, reason: '月面板未点到目标月', panel };
+  }
+  await sleep(180);
+  panel = findFreshOverlay(before) || panel;
+  return { ok: true, reason: '', panel };
+}
+
+/**
+ * 起止区间：先点开始月，再点结束月。两侧日期没到齐时先记下，不清空。
+ * 调用方：driveDatePanel。会改两个输入框的显示值。
+ */
+async function driveRangeMonthPair(el, value, pair) {
+  const side = rangeSideOfControl(el) === 'end' ? 'end' : 'start';
+  const stored = rangeEndpointByHost.get(pair.host) || {};
+  stored[side] = value;
+  stored.pendingWrites = (stored.pendingWrites || 0) + 1;
+  rangeEndpointByHost.set(pair.host, stored);
+  if (!stored.start || !stored.end) {
+    // 同一轮里另一侧还没送到。前两次只记下，第三次仍没有就只点这一侧，不清另一格
+    if (stored.pendingWrites < 3) {
+      return { ok: false, reason: '区间起止等另一侧日期' };
+    }
+    if (!(await ensurePanelsClosed(el))) {
+      return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
+    }
+    const singleBefore = snapshotOverlays();
+    openSelectLike(el);
+    await sleep(220);
+    const singlePanel = await waitForOverlay(singleBefore, 1000);
+    if (!singlePanel) {
+      return { ok: false, reason: '点击触发器后未见日期面板' };
+    }
+    const singlePick = await chooseYearMonth(singlePanel, singleBefore, value, side === 'end');
+    const singleInput = side === 'end' ? pair.right : pair.left;
+    const singleMatched = dateTextMatches(value, readControlText(singleInput));
+    if (singleMatched) {
+      await dismissOverlay(el);
+      return { ok: true, reason: '区间只有一侧日期，已写入该侧' };
+    }
+    clearDateInput(singleInput);
+    return { ok: false, reason: singlePick.reason || '这一侧月份没有点上' };
+  }
+  if (!(await ensurePanelsClosed(el))) {
+    return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
+  }
+  const before = snapshotOverlays();
+  openSelectLike(pair.left);
+  await sleep(220);
+  let panel = await waitForOverlay(before, 1000);
+  if (!panel) {
+    return { ok: false, reason: '点击触发器后未见日期面板' };
+  }
+  const startPick = await chooseYearMonth(panel, before, stored.start, false);
+  panel = startPick.panel;
+  if (!startPick.ok) {
+    return { ok: false, reason: startPick.reason || '开始月没有点上' };
+  }
+  const endPick = await chooseYearMonth(panel, before, stored.end, true);
+  const leftText = readControlText(pair.left);
+  const rightText = readControlText(pair.right);
+  const leftMatched = dateTextMatches(stored.start, leftText);
+  const rightMatched = dateTextMatches(stored.end, rightText);
+  if (leftMatched && rightMatched) {
+    await dismissOverlay(el);
+    return { ok: true, reason: '区间起止已写入' };
+  }
+  if (!leftMatched) clearDateInput(pair.left);
+  if (!rightMatched) clearDateInput(pair.right);
+  return { ok: false, reason: endPick.ok ? '区间起止没有同时对上' : (endPick.reason || '结束月没有点上') };
+}
+
+/**
  * 日期态机：年面板导航 → 年 → 月 →（可选）日。禁止在日视图里盲找年份。
+ * 左右两个 YYYY-MM 的起止区间改走 driveRangeMonthPair，单日单框仍走下面的原路径。
  */
 export async function driveDatePanel(el, value) {
   const date = normalizeDate(value);
   const parts = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!parts) return { ok: false, reason: '日期无有效年份' };
+  const rangePair = findRangeDatePair(el);
+  if (rangePair) {
+    return driveRangeMonthPair(el, value, rangePair);
+  }
   const yearText = parts[1];
   const monthNumber = String(Number(parts[2]));
   const dayNumber = String(Number(parts[3]));
@@ -1431,7 +1608,14 @@ export async function driveDatePanel(el, value) {
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
 
-  // 能打字的框先写入完整日期，不打开日格去猜月份
+  // 能打字的框先写入完整日期，不打开日格去猜月份。
+  // 学校、专业、公司、职位、描述即使能打字，也不是日期框，写进去会盖掉已填文字。
+  const dateTargetLabel = `${dateInput?.getAttribute?.('data-raf-label') || ''}${fieldLabelBlob(dateInput || el)}`;
+  const dateTargetIsTextField = /学校|专业|公司|职位|描述/.test(dateTargetLabel)
+    && !/时间|日期|起止/.test(dateTargetLabel);
+  if (dateTargetIsTextField) {
+    return { ok: false, reason: '日期不能写入学校、专业、公司、职位或描述' };
+  }
   if (dateInput && !dateInput.readOnly && !dateInput.disabled) {
     const typed = hasDay ? date : date.slice(0, 7);
     setNativeValue(dateInput, typed);

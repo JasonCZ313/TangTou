@@ -61,6 +61,11 @@ import {
   mergePlaybookIntoFillPlan,
   selectExecutablePlaybookSteps,
 } from '../../shared/playbook/mergeToPlan';
+import {
+  augmentFieldsForProfileSection,
+  listProfileSectionOptions,
+  type ProfileSectionKey,
+} from '../../shared/region/profileSectionScope';
 
 /** 状态区视觉类型 */
 type StatusKind = 'info' | 'success' | 'warning' | 'error';
@@ -82,6 +87,22 @@ let userRequestedStop = false;
 /** 本轮用户操作的工作代次；停止作废该代，续扫/对照共用同一代 */
 let sidepanelWorkGeneration = 0;
 
+/** P3：最近一次框内识别的完整字段描述（对照用，不写页） */
+let regionScannedFields: FieldDescriptor[] = [];
+
+/** P3：框内对照预览（与整页 FillSession 分离，确认写入不读这里） */
+interface RegionMappingPreview {
+  profileId: string;
+  sectionKey: ProfileSectionKey;
+  fields: FieldDescriptor[];
+  plan: FillPlan;
+}
+
+let regionMappingPreview: RegionMappingPreview | null = null;
+
+/** P4：框内是否写过一轮（用于启用「撤销框内」） */
+let regionFillApplied = false;
+
 const settingsDetails = document.getElementById(
   'settingsDetails',
 ) as HTMLDetailsElement;
@@ -93,36 +114,12 @@ const apiBaseUrlInput = document.getElementById(
 ) as HTMLInputElement;
 const apiKeyInput = document.getElementById('apiKeyInput') as HTMLInputElement;
 const modelInput = document.getElementById('modelInput') as HTMLInputElement;
-const layaModelUrlInput = document.getElementById(
-  'layaModelUrlInput',
-) as HTMLInputElement;
-const layaEnabledCheckbox = document.getElementById(
-  'layaEnabledCheckbox',
-) as HTMLInputElement;
-const decisionPreferLocalCheckbox = document.getElementById(
-  'decisionPreferLocalCheckbox',
-) as HTMLInputElement;
 const enableProbeClicksCheckbox = document.getElementById(
   'enableProbeClicksCheckbox',
 ) as HTMLInputElement;
 const decisionMinConfidenceInput = document.getElementById(
   'decisionMinConfidenceInput',
 ) as HTMLInputElement;
-const layaEnableBuiltinButton = document.getElementById(
-  'layaEnableBuiltinButton',
-) as HTMLButtonElement;
-const layaDownloadButton = document.getElementById(
-  'layaDownloadButton',
-) as HTMLButtonElement;
-const layaTestServerButton = document.getElementById(
-  'layaTestServerButton',
-) as HTMLButtonElement;
-const layaClearCacheButton = document.getElementById(
-  'layaClearCacheButton',
-) as HTMLButtonElement;
-const layaModelStatusText = document.getElementById(
-  'layaModelStatusText',
-) as HTMLParagraphElement;
 const testApiButton = document.getElementById(
   'testApiButton',
 ) as HTMLButtonElement;
@@ -192,6 +189,36 @@ const confirmWriteButton = document.getElementById(
   'confirmWriteButton',
 ) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
+const regionSelectButton = document.getElementById(
+  'regionSelectButton',
+) as HTMLButtonElement;
+const regionFieldSection = document.getElementById(
+  'regionFieldSection',
+) as HTMLElement;
+const regionFieldMeta = document.getElementById(
+  'regionFieldMeta',
+) as HTMLParagraphElement;
+const regionFieldList = document.getElementById(
+  'regionFieldList',
+) as HTMLUListElement;
+const regionSectionSelect = document.getElementById(
+  'regionSectionSelect',
+) as HTMLSelectElement;
+const regionMapButton = document.getElementById(
+  'regionMapButton',
+) as HTMLButtonElement;
+const regionConfirmWriteButton = document.getElementById(
+  'regionConfirmWriteButton',
+) as HTMLButtonElement;
+const regionUndoButton = document.getElementById(
+  'regionUndoButton',
+) as HTMLButtonElement;
+const regionMappingWrap = document.getElementById(
+  'regionMappingWrap',
+) as HTMLDivElement;
+const regionMappingTableBody = document.getElementById(
+  'regionMappingTableBody',
+) as HTMLTableSectionElement;
 const copyFillTraceButton = document.getElementById('copyFillTraceButton') as HTMLButtonElement;
 /** 最近一轮确认写入的操作记录，复制后贴回排查。 */
 let lastFillTrace = '';
@@ -216,20 +243,348 @@ const tokenUsageLine = document.getElementById(
 ) as HTMLParagraphElement;
 
 const EMPTY_MAPPING_HINT =
-  '选好档案后，点下方「扫描本页」。扫完核对映射表，再点「确认写入」。';
+  '选好档案后，点上方「扫描本页」。扫完核对映射表，再点「确认写入」。';
+
+/**
+ * 渲染 P2 框内空白字段清单（只展示字段名，不写入）。
+ */
+function renderRegionFieldList(
+  fields: FieldDescriptor[],
+  metaText: string,
+): void {
+  regionFieldList.replaceChildren();
+  if (fields.length === 0) {
+    regionFieldSection.hidden = false;
+    regionFieldMeta.textContent = metaText || '框内没有识别到空白字段。';
+    const emptyItem = document.createElement('li');
+    emptyItem.className = 'region-field-empty';
+    emptyItem.textContent = '（无）';
+    regionFieldList.appendChild(emptyItem);
+    return;
+  }
+  regionFieldSection.hidden = false;
+  regionFieldMeta.textContent = metaText;
+  for (const field of fields) {
+    const listItem = document.createElement('li');
+    listItem.textContent = field.label;
+    listItem.dataset.fieldId = field.fieldId;
+    regionFieldList.appendChild(listItem);
+  }
+}
+
+/** 清空 P3 框内对照预览表（不碰整页映射表）。 */
+function clearRegionMappingPreview(): void {
+  regionMappingPreview = null;
+  regionMappingWrap.hidden = true;
+  regionMappingTableBody.replaceChildren();
+}
+
+/**
+ * 按当前档案刷新「档案段」下拉；无档案或无框内字段时禁用。
+ */
+function populateRegionSectionSelect(): void {
+  regionSectionSelect.replaceChildren();
+  const selectedProfileId = profileSelect.value;
+  const profile = cachedProfiles.find(
+    (profileItem) => profileItem.id === selectedProfileId,
+  );
+  if (!profile || regionScannedFields.length === 0) {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = profile ? '先框出空白字段' : '请先选择档案';
+    regionSectionSelect.appendChild(placeholder);
+    regionSectionSelect.value = '';
+    return;
+  }
+  for (const optionMeta of listProfileSectionOptions(profile)) {
+    const option = document.createElement('option');
+    option.value = optionMeta.key;
+    option.textContent = optionMeta.label;
+    regionSectionSelect.appendChild(option);
+  }
+  regionSectionSelect.value = regionSectionSelect.options[0]?.value ?? '';
+}
+
+/** 同步框内对照按钮与段下拉的可用状态。 */
+function syncRegionMapControls(): void {
+  const selectedProfileId = profileSelect.value;
+  const hasScan = regionScannedFields.length > 0;
+  const sectionReady = Boolean(regionSectionSelect.value);
+  regionSectionSelect.disabled =
+    isBusy || !selectedProfileId || !hasScan;
+  const previewItems = regionMappingPreview?.plan.items.length ?? 0;
+  regionMapButton.disabled =
+    isBusy || !selectedProfileId || !hasScan || !sectionReady;
+  regionConfirmWriteButton.disabled =
+    isBusy || previewItems === 0;
+  regionUndoButton.disabled = isBusy || !regionFillApplied;
+}
+
+/**
+ * 渲染框内对照预览表（只读，P3 不写页）。
+ */
+function renderRegionMappingPreview(): void {
+  regionMappingTableBody.replaceChildren();
+  if (!regionMappingPreview) {
+    regionMappingWrap.hidden = true;
+    return;
+  }
+  const { plan, fields } = regionMappingPreview;
+  const skippedNotes =
+    plan.skippedNotes ??
+    plan.skippedFieldIds.map((fieldId) => ({
+      fieldId,
+      reason: '没有把握对上档案',
+    }));
+  if (plan.items.length === 0 && skippedNotes.length === 0) {
+    regionMappingWrap.hidden = false;
+    const emptyRow = document.createElement('tr');
+    emptyRow.className = 'empty-row';
+    const emptyCell = document.createElement('td');
+    emptyCell.colSpan = 4;
+    emptyCell.textContent = '这一段没有可对上的项。可换档案段或补全档案后再对照。';
+    emptyRow.appendChild(emptyCell);
+    regionMappingTableBody.appendChild(emptyRow);
+    return;
+  }
+  regionMappingWrap.hidden = false;
+  for (const mappingItem of plan.items) {
+    const tableRow = document.createElement('tr');
+    const labelCell = document.createElement('td');
+    labelCell.textContent = resolveFieldLabel(mappingItem.fieldId, fields);
+    const valueCell = document.createElement('td');
+    valueCell.className = 'value-preview';
+    valueCell.textContent = mappingItem.value;
+    const sourceCell = document.createElement('td');
+    sourceCell.textContent = resolveFillSourceLabel(
+      mappingItem.source,
+      mappingItem.reason,
+    );
+    if (mappingItem.reason) {
+      sourceCell.title = mappingItem.reason;
+    }
+    const confidenceCell = document.createElement('td');
+    confidenceCell.textContent = formatConfidencePercent(mappingItem.confidence);
+    tableRow.append(labelCell, valueCell, sourceCell, confidenceCell);
+    regionMappingTableBody.appendChild(tableRow);
+  }
+  for (const skippedNote of skippedNotes) {
+    const tableRow = document.createElement('tr');
+    tableRow.className = 'skipped-row';
+    const labelCell = document.createElement('td');
+    labelCell.textContent = resolveFieldLabel(skippedNote.fieldId, fields);
+    const valueCell = document.createElement('td');
+    valueCell.textContent = '（跳过）';
+    const sourceCell = document.createElement('td');
+    sourceCell.colSpan = 2;
+    sourceCell.textContent = skippedNote.reason;
+    tableRow.append(labelCell, valueCell, sourceCell);
+    regionMappingTableBody.appendChild(tableRow);
+  }
+}
+
+/**
+ * P3：用当前档案段对框内字段做对照，结果只进框内预览表。
+ */
+async function runRegionMapFlow(): Promise<void> {
+  const profileId = profileSelect.value;
+  const sectionKey = regionSectionSelect.value as ProfileSectionKey;
+  if (!profileId) {
+    showError('请先选择档案');
+    return;
+  }
+  if (!sectionKey) {
+    showError('请选择档案段');
+    return;
+  }
+  if (regionScannedFields.length === 0) {
+    showError('请先框出空白字段');
+    return;
+  }
+  showStatus('正在对照框内字段与档案…', 'info');
+  const fieldsForSection = augmentFieldsForProfileSection(
+    regionScannedFields,
+    sectionKey,
+  );
+  const planResponse = await requestFillPlanWithWait(
+    createRequestId(),
+    profileId,
+    fieldsForSection,
+    () => undefined,
+    undefined,
+    undefined,
+    sectionKey,
+  );
+  regionMappingPreview = {
+    profileId,
+    sectionKey,
+    fields: regionScannedFields,
+    plan: planResponse.plan,
+  };
+  renderRegionMappingPreview();
+  const fillableCount = planResponse.plan.items.length;
+  showPlanCompletionStatus(
+    regionScannedFields.length,
+    fillableCount,
+    planResponse.notice,
+  );
+}
+
+/**
+ * P4：按框内对照预览写入页面，并结束选区遮罩。
+ */
+async function runRegionConfirmWrite(): Promise<void> {
+  if (!regionMappingPreview) {
+    showError('请先对照框内字段');
+    return;
+  }
+  const writableItems = regionMappingPreview.plan.items.filter(
+    (item) => item.value.trim().length > 0 || item.attachmentId,
+  );
+  if (writableItems.length === 0) {
+    showError('框内预览没有可写入的项');
+    return;
+  }
+  const profileId = regionMappingPreview.profileId;
+  const sectionKey = regionMappingPreview.sectionKey;
+  stopButton.hidden = false;
+  showScanProgress(6, '正在补行并写入框内字段…');
+  try {
+    const ensureResponse = await requestBackground({
+      type: 'ENSURE_SECTION_ROWS',
+      requestId: createRequestId(),
+      profileId,
+      profileSectionKey: sectionKey,
+    });
+    if (ensureResponse.type === 'ERROR') {
+      throw new Error(describeUserFacingError(ensureResponse.message));
+    }
+    const applyResponse = await requestBackground({
+      type: 'APPLY_FILL_PLAN',
+      requestId: createRequestId(),
+      plan: {
+        items: writableItems,
+        skippedFieldIds: regionMappingPreview.plan.skippedFieldIds,
+        skippedNotes: regionMappingPreview.plan.skippedNotes,
+      },
+      profileId,
+      fillScope: 'region',
+      profileSectionKey: sectionKey,
+    });
+    if (applyResponse.type !== 'APPLY_FILL_RESULT') {
+      throw new Error(
+        applyResponse.type === 'ERROR'
+          ? describeUserFacingError(applyResponse.message)
+          : '框内写入失败',
+      );
+    }
+    regionFillApplied = true;
+    await requestBackground({
+      type: 'END_REGION_SELECT',
+      requestId: createRequestId(),
+    });
+    clearRegionFieldList();
+    showScanProgress(100, `框内写入完成，成功 ${applyResponse.filled} 项。`);
+    showStatus(
+      `框内已写入 ${applyResponse.filled} 项。可用「撤销框内」单独还原。`,
+      applyResponse.misses?.length ? 'warning' : 'success',
+    );
+  } finally {
+    stopButton.hidden = true;
+    syncRegionMapControls();
+  }
+}
+
+/** P4a：只撤销框内上一轮，不动整页写入。 */
+async function runRegionUndoFlow(): Promise<void> {
+  const undoResponse = await requestBackground({
+    type: 'UNDO_LAST_FILL',
+    requestId: createRequestId(),
+    fillScope: 'region',
+  });
+  if (undoResponse.type !== 'UNDO_FILL_RESULT') {
+    throw new Error('撤销框内失败');
+  }
+  const restored = undoResponse.restored ?? 0;
+  const clearedFiles = undoResponse.clearedFiles ?? 0;
+  if (restored === 0 && clearedFiles === 0) {
+    showStatus('没有可撤销的框内写入。', 'info');
+    return;
+  }
+  regionFillApplied = false;
+  syncRegionMapControls();
+  showStatus(`已撤销框内 ${restored} 项。`, 'success');
+}
+
+/** 选区结束或取消时隐藏框内字段区。 */
+function clearRegionFieldList(): void {
+  regionFieldSection.hidden = true;
+  regionFieldMeta.textContent = '';
+  regionFieldList.replaceChildren();
+  regionScannedFields = [];
+  clearRegionMappingPreview();
+  populateRegionSectionSelect();
+  syncRegionMapControls();
+}
+
+/**
+ * 监听内容脚本发来的框内识别进度与结果。
+ */
+function installRegionScanMessageListener(): void {
+  chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
+    if (!message || typeof message !== 'object' || !('type' in message)) {
+      return;
+    }
+    if (message.type === 'REGION_SCAN_CLEARED') {
+      clearRegionFieldList();
+      if (statusMessageElement.textContent?.includes('先结束选区')) {
+        showStatus('选区已取消，可继续扫描本页。', 'info');
+      }
+      return;
+    }
+    if (message.type === 'REGION_SCAN_PROGRESS') {
+      showStatus(message.message, 'info');
+      return;
+    }
+    if (message.type === 'REGION_SCAN_RESULT') {
+      const notice = message.notice ? ` ${message.notice}` : '';
+      regionScannedFields = message.fields;
+      regionMappingPreview = null;
+      renderRegionFieldList(
+        message.fields,
+        `共 ${message.fields.length} 项，耗时 ${message.durationMs}ms。${notice}`.trim(),
+      );
+      populateRegionSectionSelect();
+      clearRegionMappingPreview();
+      syncRegionMapControls();
+      showStatus(
+        message.fields.length > 0
+          ? `框内识别完成：${message.fields.length} 个空白字段。`
+          : message.notice ?? '框内没有空白字段。',
+        message.fields.length > 0 ? 'success' : 'info',
+      );
+    }
+  });
+}
 
 /** 已经扫过，但没有可以填的项 */
 const EMPTY_MAPPING_AFTER_SCAN =
   '这次没有可填的项。把档案写全，或换一页，再扫一次。';
 
 function showStatus(message: string, kind: StatusKind = 'info'): void {
-  statusMessageElement.textContent = message;
+  const trimmedMessage = message.trim();
+  statusMessageElement.textContent = trimmedMessage;
   statusMessageElement.classList.remove(
     'is-info',
     'is-success',
     'is-warning',
     'is-error',
   );
+  // 无文案时隐藏，避免空状态块占在「确认写入」上方
+  statusMessageElement.hidden = trimmedMessage.length === 0;
+  if (trimmedMessage.length === 0) {
+    return;
+  }
   statusMessageElement.classList.add(`is-${kind}`);
 }
 
@@ -480,6 +835,7 @@ function syncBusyUi(): void {
   confirmWriteButton.disabled =
     isBusy || !hasProfiles || !selectedProfileId || !sessionHasMappingRows();
   undoButton.disabled = isBusy;
+  regionSelectButton.disabled = isBusy;
   profileSelect.disabled = isBusy;
   setDefaultCheckbox.disabled = isBusy || !selectedProfileId;
   createProfileButton.disabled = isBusy || atLimit;
@@ -487,6 +843,7 @@ function syncBusyUi(): void {
   testApiButton.disabled = isBusy;
   openFullEditorButton.disabled = isBusy;
   syncActionButtonHierarchy();
+  syncRegionMapControls();
 }
 
 /**
@@ -751,149 +1108,9 @@ function fillSettingsForm(settings: {
   apiBaseUrlInput.value = settings.apiBaseUrl;
   apiKeyInput.value = settings.apiKey;
   modelInput.value = settings.model;
-  layaModelUrlInput.value = settings.layaModelUrl;
-  layaEnabledCheckbox.checked = settings.layaEnabled;
-  decisionPreferLocalCheckbox.checked = settings.decisionPreferLocal;
   decisionMinConfidenceInput.value = String(settings.decisionMinConfidence);
   if (typeof settings.enableProbeClicks === 'boolean') {
     enableProbeClicksCheckbox.checked = settings.enableProbeClicks;
-  }
-  void refreshLayaModelStatus();
-}
-
-/**
- * 渲染本机 Laya 状态文案。
- */
-function renderLayaModelStatusFromMessage(response: {
-  type: string;
-  message?: string;
-  format?: string;
-  version?: string;
-  builtin?: boolean;
-}): void {
-  if (response.type !== 'LAYA_MODEL_STATUS_RESULT') {
-    return;
-  }
-  const formatPart = response.format
-    ? ` · ${response.format}${response.version ? `@${response.version}` : ''}`
-    : '';
-  const builtinPart = response.builtin ? ' · 内置' : '';
-  layaModelStatusText.textContent = `本机判断：${response.message ?? ''}${formatPart}${builtinPart}`;
-}
-
-/**
- * 查询 Background 中的本机模型状态。
- */
-async function refreshLayaModelStatus(): Promise<void> {
-  try {
-    const response = await sendRuntimeMessage({
-      type: 'LAYA_MODEL_STATUS',
-      requestId: createRequestId(),
-    });
-    if (response.type === 'ERROR') {
-      layaModelStatusText.textContent = `本机判断：${response.message}`;
-      return;
-    }
-    renderLayaModelStatusFromMessage(response);
-  } catch (error: unknown) {
-    layaModelStatusText.textContent = `本机判断：${describeUserFacingError(error)}`;
-  }
-}
-
-/**
- * P7：测试输入框中的 Laya Server 是否可达（写入 Background 健康缓存）。
- */
-async function testLayaServerConnection(): Promise<void> {
-  try {
-    layaTestServerButton.disabled = true;
-    layaModelStatusText.textContent = 'Laya Server：正在探测…';
-    const response = await sendRuntimeMessage({
-      type: 'TEST_LAYA_SERVER',
-      requestId: createRequestId(),
-      serverUrl: layaModelUrlInput.value.trim(),
-    });
-    if (response.type === 'ERROR') {
-      showStatus(response.message, 'error');
-      return;
-    }
-    if (response.type !== 'TEST_LAYA_SERVER_RESULT') {
-      showStatus('测试 Server 返回异常', 'error');
-      return;
-    }
-    layaModelStatusText.textContent = response.ok
-      ? `Laya Server：${response.message}`
-      : `Laya Server 未连通：${response.message}`;
-    showStatus(response.message, response.ok ? 'success' : 'error');
-  } catch (error: unknown) {
-    showStatus(describeUserFacingError(error), 'error');
-  } finally {
-    layaTestServerButton.disabled = false;
-  }
-}
-
-/**
- * 侧栏：启用内置包 / 下载 / 清除。
- */
-async function runLayaModelAction(
-  action: 'enable' | 'download' | 'clear',
-): Promise<void> {
-  try {
-    layaEnableBuiltinButton.disabled = true;
-    layaDownloadButton.disabled = true;
-    layaTestServerButton.disabled = true;
-    layaClearCacheButton.disabled = true;
-    if (action === 'download') {
-      layaModelStatusText.textContent = '本机判断：正在下载…';
-    }
-    const response =
-      action === 'enable'
-        ? await sendRuntimeMessage({
-            type: 'LAYA_MODEL_ENABLE_BUILTIN',
-            requestId: createRequestId(),
-          })
-        : action === 'download'
-          ? await sendRuntimeMessage({
-              type: 'LAYA_MODEL_DOWNLOAD',
-              requestId: createRequestId(),
-              modelUrl: layaModelUrlInput.value.trim(),
-            })
-          : await sendRuntimeMessage({
-              type: 'LAYA_MODEL_CLEAR',
-              requestId: createRequestId(),
-            });
-    if (response.type === 'ERROR') {
-      showInlineFeedback(
-        apiSettingsForm,
-        apiSettingsFeedback,
-        'bad',
-        response.message,
-      );
-      await refreshLayaModelStatus();
-      return;
-    }
-    renderLayaModelStatusFromMessage(response);
-    showInlineFeedback(
-      apiSettingsForm,
-      apiSettingsFeedback,
-      'ok',
-      action === 'enable'
-        ? '已启用内置轻量判断包'
-        : action === 'download'
-          ? '本机包已就绪'
-          : '已清除本机判断缓存',
-    );
-  } catch (error: unknown) {
-    showInlineFeedback(
-      apiSettingsForm,
-      apiSettingsFeedback,
-      'bad',
-      describeUserFacingError(error),
-    );
-  } finally {
-    layaEnableBuiltinButton.disabled = false;
-    layaDownloadButton.disabled = false;
-    layaTestServerButton.disabled = false;
-    layaClearCacheButton.disabled = false;
   }
 }
 
@@ -929,6 +1146,7 @@ function renderProfileOptions(
       : profiles[0].id;
   profileSelect.value = selectedId;
   setDefaultCheckbox.checked = selectedId === preferredProfileId;
+  populateRegionSectionSelect();
   syncBusyUi();
 }
 
@@ -1135,6 +1353,26 @@ function renderMappingTable(): void {
   syncBusyUi();
 }
 
+/**
+ * 选区遮罩还在时，挡住扫描、确认写入和智能探活。
+ * 给这三个按钮的点击用。不换工作代次，不显示侧栏「停止」。
+ * 挡住时返回 true，并在状态条写「先结束选区」。
+ */
+async function blockIfRegionSelectActive(): Promise<boolean> {
+  const response = await requestBackground({
+    type: 'QUERY_REGION_SELECT',
+    requestId: createRequestId(),
+  });
+  if (response.type !== 'REGION_SELECT_STATE') {
+    throw new Error('选区状态没有返回');
+  }
+  if (!response.active) {
+    return false;
+  }
+  showError('先结束选区');
+  return true;
+}
+
 async function requestBackground(
   message: ExtensionMessage,
 ): Promise<ExtensionMessage> {
@@ -1241,24 +1479,19 @@ async function maybeFocusSettingsFromPopup(): Promise<void> {
 }
 
 /**
- * 读取设置表单当前值。模型留空时沿用默认名，避免存进空字符串。
+ * 读取侧栏还能改的设置。模型留空时沿用默认名。
+ * 本机判断的地址和开关不在侧栏上，保存时沿用已经存好的值。
  */
 function readSettingsDraft(): {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
-  layaModelUrl: string;
-  layaEnabled: boolean;
-  decisionPreferLocal: boolean;
   decisionMinConfidence: number;
 } {
   return {
     apiBaseUrl: apiBaseUrlInput.value.trim(),
     apiKey: apiKeyInput.value.trim(),
     model: modelInput.value.trim() || 'gpt-4o-mini',
-    layaModelUrl: layaModelUrlInput.value.trim(),
-    layaEnabled: layaEnabledCheckbox.checked,
-    decisionPreferLocal: decisionPreferLocalCheckbox.checked,
     decisionMinConfidence: Number(decisionMinConfidenceInput.value),
   };
 }
@@ -1333,6 +1566,7 @@ async function handleSaveSettings(event: SubmitEvent): Promise<void> {
   if (!validateSettingsDraftForSave(draft)) {
     return;
   }
+  const storedSettings = await getSettings();
   showInlineFeedback(
     apiSettingsForm,
     apiSettingsFeedback,
@@ -1340,7 +1574,13 @@ async function handleSaveSettings(event: SubmitEvent): Promise<void> {
     '正在把设置收进本机…',
   );
   try {
-    await saveSettings(draft);
+    await saveSettings({
+      ...storedSettings,
+      apiBaseUrl: draft.apiBaseUrl,
+      apiKey: draft.apiKey,
+      model: draft.model,
+      decisionMinConfidence: draft.decisionMinConfidence,
+    });
   } catch {
     showInlineFeedback(
       apiSettingsForm,
@@ -1601,6 +1841,7 @@ async function runUndoFlow(): Promise<void> {
   const undoResponse = await requestBackground({
     type: 'UNDO_LAST_FILL',
     requestId: createRequestId(),
+    fillScope: 'page',
   });
   if (undoResponse.type !== 'UNDO_FILL_RESULT') {
     throw new Error('撤销失败');
@@ -1835,6 +2076,7 @@ async function startRequestedPopupScan(): Promise<void> {
 }
 
 function bindEvents(): void {
+  installRegionScanMessageListener();
   // 倒计时期间改内容、再点或手动收起，都取消自动折叠
   settingsDetails.addEventListener('input', () => {
     cancelSettingsAutoCollapse();
@@ -1850,7 +2092,39 @@ function bindEvents(): void {
 
   profileSelect.addEventListener('change', () => {
     syncDefaultCheckboxFromSelection();
+    if (
+      regionMappingPreview &&
+      regionMappingPreview.profileId !== profileSelect.value
+    ) {
+      clearRegionMappingPreview();
+    }
+    populateRegionSectionSelect();
     syncBusyUi();
+  });
+
+  regionMapButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runRegionMapFlow();
+    });
+  });
+
+  regionConfirmWriteButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runRegionConfirmWrite();
+    });
+  });
+
+  regionUndoButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runRegionUndoFlow();
+    });
+  });
+
+  regionSectionSelect.addEventListener('change', () => {
+    if (regionMappingPreview) {
+      clearRegionMappingPreview();
+    }
+    syncRegionMapControls();
   });
 
   setDefaultCheckbox.addEventListener('change', () => {
@@ -1885,27 +2159,6 @@ function bindEvents(): void {
     });
   });
 
-  layaEnableBuiltinButton.addEventListener('click', () => {
-    void withBusy(async () => {
-      await runLayaModelAction('enable');
-    });
-  });
-  layaDownloadButton.addEventListener('click', () => {
-    void withBusy(async () => {
-      await runLayaModelAction('download');
-    });
-  });
-  layaTestServerButton.addEventListener('click', () => {
-    void withBusy(async () => {
-      await testLayaServerConnection();
-    });
-  });
-  layaClearCacheButton.addEventListener('click', () => {
-    void withBusy(async () => {
-      await runLayaModelAction('clear');
-    });
-  });
-
   createProfileForm.addEventListener('submit', (event) => {
     event.preventDefault();
     void withBusy(async () => {
@@ -1921,9 +2174,12 @@ function bindEvents(): void {
     fillDoneDialog.close();
   });
 
-  // 「扫描本页」：只对照出预览，不写入
+  // 「扫描本页」：只对照出预览，不写入。框选还在时不开始。
   scanPageButton.addEventListener('click', () => {
     void withBusy(async () => {
+      if (await blockIfRegionSelectActive()) {
+        return;
+      }
       const selectedProfileId = profileSelect.value;
       if (!selectedProfileId) {
         showError('请先选择档案');
@@ -1933,9 +2189,12 @@ function bindEvents(): void {
     });
   });
 
-  // 「智能探活」：先生成方案步骤；合并/执行需另点按钮
+  // 「智能探活」：先生成方案步骤；合并/执行需另点按钮。框选还在时不开始。
   probePageButton.addEventListener('click', () => {
     void withBusy(async () => {
+      if (await blockIfRegionSelectActive()) {
+        return;
+      }
       const selectedProfileId = profileSelect.value;
       if (!selectedProfileId) {
         showError('请先选择档案');
@@ -1973,9 +2232,12 @@ function bindEvents(): void {
     });
   });
 
-  // 「确认写入」：按映射表（含用户改值）写入页面
+  // 「确认写入」：按映射表（含用户改值）写入页面。框选还在时不开始。
   confirmWriteButton.addEventListener('click', () => {
     void withBusy(async () => {
+      if (await blockIfRegionSelectActive()) {
+        return;
+      }
       showStatus('正在按预览计划写入…', 'info');
       await runConfirmWrite();
     });
@@ -1985,6 +2247,25 @@ function bindEvents(): void {
     void withBusy(async () => {
       showStatus('正在撤销本轮填写…', 'info');
       await runUndoFlow();
+    });
+  });
+
+  // 「选区填入」：当前页进入框选。不要求先选档案，不扫描、不写入。
+  regionSelectButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      const response = await requestBackground({
+        type: 'START_REGION_SELECT',
+        requestId: createRequestId(),
+      });
+      if (response.type !== 'START_REGION_SELECT_RESULT') {
+        throw new Error('选区没有开始');
+      }
+      showStatus(
+        response.alreadyActive
+          ? '选区还在。右键或 Esc 取消。'
+          : '在页面上拖出一块区域。右键或 Esc 取消。',
+        'info',
+      );
     });
   });
 
@@ -2041,6 +2322,10 @@ function bindEvents(): void {
   // N5：选项页/其它入口改探测开关时，侧栏勾选实时同步
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') {
+      return;
+    }
+    if (changes.profiles || changes.settings) {
+      void loadState().catch(() => undefined);
       return;
     }
     const settingsChange = changes.settings;

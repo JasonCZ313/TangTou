@@ -3,7 +3,42 @@
  * 只点「添加」，不往格子里写任何档案正文。
  */
 import type { SectionAddRequest } from '../types/fill';
-import type { ProfileData } from '../types/profile';
+import type { ExperienceItem, ProfileData } from '../types/profile';
+
+/**
+ * 这条经历算不算实习。
+ * 调用方：编辑页分组、补行条数、按行填表、卡片补写。
+ * 输入：一条经历。输出：雇佣类型为空或为实习时为 true。不改档案。
+ */
+export function isInternshipExperience(item: ExperienceItem): boolean {
+  const employmentType = (item.employmentType ?? '').trim();
+  return employmentType.length === 0 || employmentType === 'internship';
+}
+
+/**
+ * 档案里要写入实习经历分区的条目。只计写了公司或职位的。
+ * 调用方：buildSectionAdds、sectionBinder、fillProfileByCards。
+ * 输入：整份档案。输出：实习条目，保持原顺序。不改档案。
+ */
+export function namedInternshipExperiences(profileData: ProfileData): ExperienceItem[] {
+  return profileData.experience.filter((item) => {
+    const hasName = (item.company || item.title || '').trim().length > 0;
+    return hasName && isInternshipExperience(item);
+  });
+}
+
+/**
+ * 档案里要写入工作经历分区的条目。只计写了公司或职位的。
+ * 空雇佣类型不算工作，算实习。
+ * 调用方：buildSectionAdds、sectionBinder、fillProfileByCards。
+ * 输入：整份档案。输出：工作条目，保持原顺序。不改档案。
+ */
+export function namedWorkExperiences(profileData: ProfileData): ExperienceItem[] {
+  return profileData.experience.filter((item) => {
+    const hasName = (item.company || item.title || '').trim().length > 0;
+    return hasName && !isInternshipExperience(item);
+  });
+}
 
 /**
  * 只统计档案里真正写了内容的条目，空壳教育/项目不再拿去点「添加」。
@@ -24,9 +59,17 @@ export function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] 
       ),
     },
     {
-      sectionPattern: '实习经历|工作经历',
+      sectionPattern: '实习经历',
+      neededRows: namedInternshipExperiences(profileData).length,
+    },
+    {
+      sectionPattern: '工作经历',
+      neededRows: namedWorkExperiences(profileData).length,
+    },
+    {
+      sectionPattern: '语言能力',
       neededRows: countNamedRows(
-        profileData.experience.map((item) => item.company || item.title || ''),
+        profileData.languages.map((item) => item.language || ''),
       ),
     },
     {
@@ -74,5 +117,10 @@ export function buildSectionAdds(profileData: ProfileData): SectionAddRequest[] 
       ),
     },
   ];
-  return requests.filter((request) => request.neededRows > 0);
+  return requests.filter((request) => {
+    if (request.sectionPattern === '工作经历') {
+      return true;
+    }
+    return request.neededRows > 0;
+  });
 }

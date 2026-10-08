@@ -9,12 +9,15 @@ import type {
   CertificateItem,
   EducationItem,
   ExperienceItem,
+  LanguageItem,
   ProfileData,
+  ProjectItem,
 } from '../../shared/types/profile';
 import {
   AWARD_LEVEL_OPTIONS,
   DEGREE_LEVEL_OPTIONS,
   GENDER_OPTIONS,
+  LANGUAGE_PROFICIENCY_OPTIONS,
   STUDY_MODE_OPTIONS,
   labelOfCatalog,
 } from '../../shared/catalogs/enums';
@@ -23,8 +26,10 @@ import {
   readControlText,
 } from './chao/dom';
 import { commitFieldValue, rescanCommittedFields } from './fieldCommit';
+import { driveDatePanel, rangeSideOfControl } from './chao/widgetDrivers';
 import { dateTextMatches, isCalendarDate } from './chao/rules';
 import { cityNameOnly } from '../../shared/fill/sectionBinder';
+import { namedInternshipExperiences, namedWorkExperiences } from '../../shared/fill/sectionAdds';
 import { recordFillStep } from './fillTrace';
 
 /** 点「添加」后等新卡挂上 */
@@ -120,8 +125,9 @@ function findSectionBounds(pattern: RegExp): { heading: HTMLElement; nextHeading
   }
   let nextHeading: HTMLElement | null = null;
   let passed = false;
-  // 只认分区标题。字段名「证书名称」「实践名称」含有这些字，不能拿来当边界
-  const laterTitle = /^(教育经历|教育背景|在校实践|校内实践|校园实践|在校经历|实习经历|工作经历|实习经验|项目经历|获奖情况|获奖经历|荣誉奖项|证书|培训经历|技能特长|语言能力|自我评价|论文专利|论文\/专著|论文专著)$/;
+  // 只认分区标题。字段名「证书名称」「实践名称」含有这些字，不能拿来当边界。
+  // 「作品」「获奖」必须在边界名单里，否则会被划进上一块，添加和填卡会串区。
+  const laterTitle = /^(教育经历|教育背景|在校实践|校内实践|校园实践|在校经历|实习经历|工作经历|实习经验|项目经历|项目经验|作品|获奖情况|获奖经历|荣誉奖项|获奖|奖项|荣誉|证书|培训经历|技能特长|语言能力|自我评价|论文专利|论文\/专著|论文专著)$/;
   for (const node of nodes) {
     if (!(node instanceof HTMLElement)) {
       continue;
@@ -340,7 +346,7 @@ function findAddButton(heading: HTMLElement, nextHeading: HTMLElement | null): H
 /**
  * 教育这一张卡上，标题对应档案里的哪一项。
  */
-function educationValue(item: EducationItem, caption: string): string {
+function educationValue(item: EducationItem, caption: string, control?: HTMLElement): string {
   if (/学历类型|办学类型|学习形式/.test(caption)) {
     return labelOfCatalog(STUDY_MODE_OPTIONS, item.educationType || item.studyMode || '');
   }
@@ -362,7 +368,13 @@ function educationValue(item: EducationItem, caption: string): string {
   if (/专业/.test(caption)) {
     return item.major || '';
   }
-  if (/开始/.test(caption)) {
+  if (/起止/.test(caption) && !/开始|结束/.test(caption)) {
+    if (control && rangeSideOfControl(control) === 'end') {
+      return item.endDate || '';
+    }
+    return item.startDate || '';
+  }
+  if (/开始/.test(caption) && !/结束/.test(caption)) {
     return item.startDate || '';
   }
   if (/结束/.test(caption)) {
@@ -374,14 +386,20 @@ function educationValue(item: EducationItem, caption: string): string {
 /**
  * 实习/工作这一张卡。
  */
-function experienceValue(item: ExperienceItem, caption: string): string {
+function experienceValue(item: ExperienceItem, caption: string, control?: HTMLElement): string {
   if (/单位|公司/.test(caption)) {
     return item.company || '';
   }
   if (/职位|岗位/.test(caption)) {
     return item.title || '';
   }
-  if (/开始/.test(caption)) {
+  if (/起止/.test(caption) && !/开始|结束/.test(caption)) {
+    if (control && rangeSideOfControl(control) === 'end') {
+      return item.endDate || '';
+    }
+    return item.startDate || '';
+  }
+  if (/开始/.test(caption) && !/结束/.test(caption)) {
     return item.startDate || '';
   }
   if (/结束/.test(caption)) {
@@ -413,6 +431,67 @@ function awardValue(item: AwardItem, caption: string): string {
 }
 
 /**
+ * 项目经历这一张卡。名称、角色、职责、内容、起止各写各的。
+ * 调用方：fillProfileByCards → fillSectionCards。输入：一条项目、左边标题、可选控件。输出：该格应写的文案；对不上则空串。不改档案。
+ */
+function projectValue(item: ProjectItem, caption: string, control?: HTMLElement): string {
+  if (/角色|职务|职位/.test(caption) && !/职责/.test(caption)) {
+    return item.role || '';
+  }
+  if (/职责/.test(caption)) {
+    return item.duty || '';
+  }
+  if (/内容|描述|价值|成果/.test(caption)) {
+    return item.content || item.description || item.value || '';
+  }
+  if (/链接|地址|主页/.test(caption)) {
+    return item.link || '';
+  }
+  if (/技术|栈/.test(caption)) {
+    return item.techStack || '';
+  }
+  if (/起止/.test(caption) && !/开始|结束/.test(caption)) {
+    if (control && rangeSideOfControl(control) === 'end') {
+      return item.endDate || '';
+    }
+    return item.startDate || '';
+  }
+  if (/开始/.test(caption) && !/结束/.test(caption)) {
+    return item.startDate || '';
+  }
+  if (/结束/.test(caption)) {
+    return item.endDate || '';
+  }
+  if (/名称|项目/.test(caption)) {
+    return item.name || '';
+  }
+  return '';
+}
+
+/**
+ * 语言能力这一张卡。语种、熟练度、证书、分数各写各的。
+ * 调用方：fillProfileByCards → fillSectionCards。输入：一条语言、左边标题。输出：该格应写的文案；对不上则空串。不改档案。
+ */
+function languageValue(item: LanguageItem, caption: string): string {
+  if (/熟练|水平|等级|程度/.test(caption)) {
+    return labelOfCatalog(LANGUAGE_PROFICIENCY_OPTIONS, item.proficiency || '') || item.proficiency || '';
+  }
+  if (/证书/.test(caption)) {
+    return item.certificate || '';
+  }
+  if (/分数|成绩|得分/.test(caption)) {
+    return item.score || '';
+  }
+  if (/时间|日期/.test(caption)) {
+    return item.obtainedDate || '';
+  }
+  if (/语种|语言|外语/.test(caption)) {
+    return item.language || '';
+  }
+  return '';
+}
+
+/**
  * 在校实践这一张卡。名称、角色、描述各写各的，不把描述写进名称。
  */
 function campusValue(item: CampusActivityItem, caption: string): string {
@@ -435,16 +514,17 @@ function campusValue(item: CampusActivityItem, caption: string): string {
 }
 
 /**
- * 证书这一张卡。
+ * 证书这一张卡：有什么档案字段就填什么，空的不编造。
+ * 调用方：fillSectionCards。输入：一条证书、左边标题。输出：该格应写的文案。
  */
 function certificateValue(item: CertificateItem, caption: string): string {
   if (/描述/.test(caption)) {
     return item.description || '';
   }
-  if (/时间|日期/.test(caption)) {
+  if (/获得时间|发证时间|颁发时间|取得时间|时间|日期/.test(caption)) {
     return item.date || '';
   }
-  if (/名称|证书/.test(caption)) {
+  if (/证书名称|名称/.test(caption) || (/^证书$/.test(caption.replace(/[*＊：:\s]/g, '')))) {
     return item.name || '';
   }
   return '';
@@ -565,19 +645,151 @@ function dateTriggersInSection(
 }
 
 /**
- * 把这一条档案的开始、结束时间写进同序号的时间框。
+ * 这个输入框是起止时间自己的日期格，不是学校、专业、公司、职位或描述。
+ * 调用方：rangeInputsBeside。输入：页面输入框。输出：是日期格为 true。不改页面。
+ */
+function isRangeDateInput(input: HTMLInputElement): boolean {
+  const caption = captionBeside(input);
+  if (/学校|专业|公司|职位|描述/.test(caption) && !/时间|日期|起止/.test(caption)) {
+    return false;
+  }
+  const placeholderText = (input.placeholder || '').replace(/\s+/g, '');
+  if (/^Y{2,4}[-/.年]?M{1,2}/i.test(placeholderText)) {
+    return true;
+  }
+  return Boolean(input.closest('.ant-picker-range, .ant-picker, .el-date-editor, .el-range-editor'));
+}
+
+/**
+ * 这一层里有没有学校、专业、公司、职位、描述的输入框。
+ * 调用方：rangeInputsBeside。有的话就不再往更外层拿框。不改页面。
+ */
+function scopeHasForeignTextInput(scope: HTMLElement): boolean {
+  return [...scope.querySelectorAll('input, textarea')].some((node) => {
+    if (!(node instanceof HTMLElement)) {
+      return false;
+    }
+    const caption = captionBeside(node);
+    return /学校|专业|公司|职位|描述/.test(caption) && !/时间|日期|起止/.test(caption);
+  });
+}
+
+/**
+ * 起止标题旁边左右两个日期框。
+ * 只认日期控件内部或占位是年月掩码的输入框。整张卡片里的学校、专业、公司、职位不算。
+ * 调用方：fillRangeDatePair。输入：起止时间标题。输出：从左到右最多两个日期框。不改页面。
+ */
+function rangeInputsBeside(captionNode: HTMLElement): HTMLInputElement[] {
+  let current: HTMLElement | null = captionNode;
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    const scope = current.parentElement;
+    if (!(scope instanceof HTMLElement)) {
+      break;
+    }
+    const dateInputs = [...scope.querySelectorAll('input')].filter((node): node is HTMLInputElement => {
+      if (!(node instanceof HTMLInputElement) || node.type === 'hidden') {
+        return false;
+      }
+      const box = node.getBoundingClientRect();
+      return box.width >= 40 && box.height >= 16 && isRangeDateInput(node);
+    });
+    if (dateInputs.length >= 2) {
+      dateInputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
+      return dateInputs.slice(0, 2);
+    }
+    // 再往上就会把学校、公司所在的整张卡片算进来，停在这里
+    if (scopeHasForeignTextInput(scope)) {
+      break;
+    }
+    current = scope;
+  }
+  return [];
+}
+
+/**
+ * 把这一条的开始、结束写进「起止时间」左右两格。档案哪一侧空就跳过，不编造。
+ * 调用方：fillDateTriggers。会改这两个日期框。
+ */
+async function fillRangeDatePair<CardItem>(
+  heading: HTMLElement,
+  nextHeading: HTMLElement | null,
+  item: CardItem,
+  itemIndex: number,
+  valueOf: (item: CardItem, caption: string, control?: HTMLElement) => string,
+  misses: FillMiss[],
+): Promise<number> {
+  const captionNodes = [...document.querySelectorAll('label, span, div')].filter((node): node is HTMLElement => {
+    if (!(node instanceof HTMLElement) || isNavigationChrome(node)) {
+      return false;
+    }
+    if (!isInsideSection(heading, nextHeading, node)) {
+      return false;
+    }
+    return ownShortText(node).replace(/[*＊：:]/g, '') === '起止时间';
+  });
+  const captionNode = captionNodes[itemIndex];
+  if (!(captionNode instanceof HTMLElement)) {
+    return 0;
+  }
+  const inputs = rangeInputsBeside(captionNode);
+  const leftInput = inputs[0];
+  const rightInput = inputs[1];
+  if (!(leftInput instanceof HTMLInputElement) || !(rightInput instanceof HTMLInputElement)) {
+    misses.push({ label: '起止时间', reason: '没有找到起止时间自己的两个日期框' });
+    return 0;
+  }
+  const startValue = valueOf(item, '开始时间', leftInput).trim();
+  const endValue = rightInput ? valueOf(item, '结束时间', rightInput).trim() : '';
+  if (!startValue && !endValue) {
+    return 0;
+  }
+  let filled = 0;
+  if (startValue) {
+    let startResult = await driveDatePanel(leftInput, startValue);
+    if (!endValue) {
+      for (let attempt = 0; !startResult.ok && attempt < 2; attempt += 1) {
+        startResult = await driveDatePanel(leftInput, startValue);
+      }
+    }
+    if (!endValue && !startResult.ok) {
+      misses.push({ label: '起止时间', reason: startResult.reason || '开始月没写上' });
+    }
+    if (startResult.ok) {
+      filled += 1;
+    }
+  }
+  if (endValue && rightInput) {
+    const endResult = await driveDatePanel(rightInput, endValue);
+    if (endResult.ok) {
+      filled += 1;
+      if (startValue) {
+        filled += 1;
+      }
+    } else {
+      misses.push({ label: '起止时间', reason: endResult.reason || '结束月没写上' });
+    }
+  }
+  return filled;
+}
+
+/**
+ * 把这一条档案的开始、结束、获得时间写进同序号的时间框。
  * 文本格收集不到日期组件时，仍按标题去点「请选择」。
+ * 调用方：fillSectionCards 填完一张卡正文后。档案该格为空则跳过，不编造。
  */
 async function fillDateTriggers<CardItem>(
   heading: HTMLElement,
   nextHeading: HTMLElement | null,
   item: CardItem,
   itemIndex: number,
-  valueOf: (item: CardItem, caption: string) => string,
+  valueOf: (item: CardItem, caption: string, control?: HTMLElement) => string,
   misses: FillMiss[],
 ): Promise<number> {
   let filled = 0;
-  const captionList = ['开始时间', '结束时间'];
+  const rangeFilled = await fillRangeDatePair(heading, nextHeading, item, itemIndex, valueOf, misses);
+  filled += rangeFilled;
+  // 开始/结束/获得仍按标题点；起止区间已在 fillRangeDatePair 里成对写
+  const captionList = ['开始时间', '结束时间', '获得时间'];
   for (const captionText of captionList) {
     const value = valueOf(item, captionText).trim();
     if (!value) {
@@ -598,7 +810,7 @@ async function fillOneCard<CardItem>(
   card: HTMLElement[],
   item: CardItem,
   itemIndex: number,
-  valueOf: (item: CardItem, caption: string) => string,
+  valueOf: (item: CardItem, caption: string, control?: HTMLElement) => string,
   misses: FillMiss[],
   onProgress: (message: string) => void,
 ): Promise<number> {
@@ -612,7 +824,11 @@ async function fillOneCard<CardItem>(
     if (!caption) {
       continue;
     }
-    const value = valueOf(item, caption).trim();
+    // 起止两格由 fillDateTriggers 成对点月，这里再逐格写会把开始月误报成没写上
+    if (/起止时间|起止日期/.test(caption) && !/开始|结束/.test(caption)) {
+      continue;
+    }
+    const value = valueOf(item, caption, control).trim();
     if (!value) {
       continue;
     }
@@ -632,7 +848,7 @@ async function fillOneCard<CardItem>(
 async function fillSectionCards<CardItem>(
   headingPattern: RegExp,
   items: CardItem[],
-  valueOf: (item: CardItem, caption: string) => string,
+  valueOf: (item: CardItem, caption: string, control?: HTMLElement) => string,
   misses: FillMiss[],
   onProgress: (message: string) => void,
 ): Promise<number> {
@@ -876,7 +1092,8 @@ async function fillBasicChoices(profile: ProfileData, misses: FillMiss[]): Promi
 }
 
 /**
- * 确认写入后的主路径：按卡片把教育、在校实践、实习、获奖、证书和基础点选填上。
+ * 确认写入后的主路径：按卡片把教育、在校实践、实习、工作、项目、获奖、证书、语言和基础点选填上。
+ * 「作品」没有对应档案段，故意不填，避免和项目经历写成一样。
  * 每一区先填已有的第一张，再按档案条数点添加，点完重新数卡。
  */
 export async function fillProfileByCards(
@@ -885,7 +1102,7 @@ export async function fillProfileByCards(
   onProgress: (message: string) => void,
 ): Promise<number> {
   let filled = 0;
-  onProgress('正在按卡片填写教育、实践、实习、获奖和证书…');
+  onProgress('正在按卡片填写教育、实践、实习、项目、获奖、证书和语言…');
   filled += await fillSectionCards(
     /^教育经历$|^教育背景$/,
     profile.education || [],
@@ -901,23 +1118,46 @@ export async function fillProfileByCards(
     onProgress,
   );
   filled += await fillSectionCards(
-    /^实习经历$|^工作经历$|^实习经验$/,
-    profile.experience || [],
+    /^实习经历$|^实习经验$/,
+    namedInternshipExperiences(profile),
     (item, caption) => experienceValue(item, caption),
     misses,
     onProgress,
   );
   filled += await fillSectionCards(
-    /^获奖情况$|^获奖经历$|^荣誉奖项$/,
-    profile.awards || [],
+    /^工作经历$/,
+    namedWorkExperiences(profile),
+    (item, caption) => experienceValue(item, caption),
+    misses,
+    onProgress,
+  );
+  // 页面标题是「项目经历 / 项目经验」；没有单独「作品」档案，作品区跳过
+  filled += await fillSectionCards(
+    /^项目经历$|^项目经验$/,
+    (profile.projects || []).filter((item) => (item.name || '').trim().length > 0),
+    (item, caption, control) => projectValue(item, caption, control),
+    misses,
+    onProgress,
+  );
+  // 页面短标题「获奖」与长标题并列，对不上就不进区、不点添加
+  filled += await fillSectionCards(
+    /^获奖情况$|^获奖经历$|^荣誉奖项$|^获奖$|^奖项$|^所获荣誉$/,
+    (profile.awards || []).filter((item) => (item.name || '').trim().length > 0),
     (item, caption) => awardValue(item, caption),
     misses,
     onProgress,
   );
   filled += await fillSectionCards(
-    /^证书$/,
+    /^证书$|^资格证书$|^证书信息$|^专业证书$/,
     profile.certificates || [],
     (item, caption) => certificateValue(item, caption),
+    misses,
+    onProgress,
+  );
+  filled += await fillSectionCards(
+    /^语言能力$|^外语能力$|^语种能力$|^语言水平$/,
+    (profile.languages || []).filter((item) => (item.language || '').trim().length > 0),
+    (item, caption) => languageValue(item, caption),
     misses,
     onProgress,
   );

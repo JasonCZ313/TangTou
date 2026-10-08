@@ -21,6 +21,7 @@ import {
 } from '../../shared/catalogs/enums';
 import { deleteAttachmentsForItem } from '../../shared/storage/attachmentStore';
 import { isDualAcademicDegree } from '../../shared/storage/normalize';
+import { isInternshipExperience } from '../../shared/fill/sectionAdds';
 import type { AttachmentKind } from '../../shared/types/attachment';
 import type {
   AwardItem,
@@ -207,12 +208,13 @@ export function createEmptyEducationItem(): EducationItem {
   };
 }
 
-export function createEmptyExperienceItem(): ExperienceItem {
+export function createEmptyExperienceItem(employmentType: string): ExperienceItem {
   return {
     id: crypto.randomUUID(),
     editingLocked: false,
     attachmentNote: '',
     cloudLink: '',
+    employmentType,
     company: '',
     title: '',
     startDate: '',
@@ -516,11 +518,28 @@ function renderExperienceRows(
   attachmentContext?: ListAttachmentContext,
 ): void {
   host.replaceChildren();
-  items.forEach((item, itemIndex) => {
+  const experienceGroups = [
+    {
+      headingText: '实习经历',
+      titlePrefix: '实习',
+      groupItems: items.filter((item) => isInternshipExperience(item)),
+    },
+    {
+      headingText: '工作经历',
+      titlePrefix: '工作',
+      groupItems: items.filter((item) => !isInternshipExperience(item)),
+    },
+  ];
+  for (const experienceGroup of experienceGroups) {
+    const groupHeading = document.createElement('h4');
+    groupHeading.textContent = experienceGroup.headingText;
+    host.appendChild(groupHeading);
+    experienceGroup.groupItems.forEach((item, groupIndex) => {
+    const itemIndex = items.indexOf(item);
     const itemId = ensureItemId(item);
     const locked = Boolean(item.editingLocked);
     const card = createLockableListItemCard({
-      titleText: `工作/实习 ${itemIndex + 1}`,
+      titleText: `${experienceGroup.titlePrefix} ${groupIndex + 1}`,
       locked,
       onSaveItem: () => {
         item.editingLocked = true;
@@ -642,7 +661,8 @@ function renderExperienceRows(
       '.pdf,.jpg,.jpeg,.png,image/*,application/pdf',
     );
     host.appendChild(card);
-  });
+    });
+  }
 }
 
 function renderProjectRows(
@@ -1195,8 +1215,11 @@ export function appendListItem(
     case 'education':
       draft.education.push(createEmptyEducationItem());
       break;
-    case 'experience':
-      draft.experience.push(createEmptyExperienceItem());
+    case 'internship':
+      draft.experience.push(createEmptyExperienceItem('internship'));
+      break;
+    case 'work':
+      draft.experience.push(createEmptyExperienceItem('full_time'));
       break;
     case 'projects':
       draft.projects.push(createEmptyProjectItem());

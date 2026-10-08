@@ -34,7 +34,7 @@ import { tryOffscreenOcr } from '../shared/resume/offscreenOcrBridge';
 import { hitsToSourcedItems } from '../shared/decision/toFillPlan';
 import { buildSitePlaybook } from '../shared/decision/playbookEngine';
 import type { EvidencePack } from '../shared/playbook/types';
-import { sendToActiveTab } from '../shared/messaging/send';
+import { sendToActiveTab, sendToTab } from '../shared/messaging/send';
 import { describeUserFacingError } from '../shared/messaging/userFacingError';
 import {
   abortPageWork,
@@ -46,6 +46,11 @@ import {
 import type { FieldDescriptor } from '../shared/types/fill';
 import type { ProfileData } from '../shared/types/profile';
 import { resolveSiteAdapter } from '../content/adapters/registry';
+import {
+  buildSectionAddsForProfileSection,
+  narrowProfileDataForSection,
+} from '../shared/region/profileSectionScope';
+import type { ProfileSectionKey } from '../shared/region/profileSectionScope';
 
 /**
  * 将未知错误归一化为可展示的 code + message（绝不包含 apiKey）。
@@ -590,8 +595,15 @@ async function handleBuildFillPlan(
   );
 
   const attachments = await listAttachments(message.profileId);
+  const profileDataForPlan =
+    message.profileSectionKey?.trim()
+      ? narrowProfileDataForSection(
+          profile.data,
+          message.profileSectionKey.trim() as ProfileSectionKey,
+        )
+      : profile.data;
   const decisionResult = await buildFillPlanViaDecision({
-    profileData: profile.data,
+    profileData: profileDataForPlan,
     fields: fieldsForDecision,
     attachments,
     apiBaseUrl: settings.apiBaseUrl,
@@ -659,14 +671,16 @@ async function handleBuildFillPlan(
     notice = notice ?? ocrCapture.notice;
   }
 
-  // 无 Key 且规则零命中：与旧行为一致，要求先配置 API
+  // 无 Key 且规则零命中：整页扫描仍要求配置 API；选区 P3 允许空预览 + 跳过说明
   if (!hasApiConfigured && plan.items.length === 0) {
-    return {
-      type: 'ERROR',
-      requestId: message.requestId,
-      code: 'API_NOT_CONFIGURED',
-      message: '请先在设置中配置 API Base URL 与 API Key',
-    };
+    if (!message.profileSectionKey?.trim()) {
+      return {
+        type: 'ERROR',
+        requestId: message.requestId,
+        code: 'API_NOT_CONFIGURED',
+        message: '请先在设置中配置 API Base URL 与 API Key',
+      };
+    }
   }
 
   if (decisionResult.usage) {
@@ -945,11 +959,33 @@ async function forwardApplyWithFiles(
     }
   }
   const profile = message.profileId ? await getProfile(message.profileId) : null;
-  return sendToActiveTab({
+  let profileData = profile?.data;
+  let sectionAdds = message.sectionAdds ?? [];
+  if (profile) {
+    if (
+      message.fillScope === 'region' &&
+      message.profileSectionKey?.trim()
+    ) {
+      const sectionKey = message.profileSectionKey.trim() as ProfileSectionKey;
+      profileData = narrowProfileDataForSection(profile.data, sectionKey);
+      sectionAdds = buildSectionAddsForProfileSection(profile.data, sectionKey);
+    } else {
+      sectionAdds = buildSectionAdds(profile.data);
+    }
+  }
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const activeTabId = tabs[0]?.id;
+  if (message.fillScope === 'region' && activeTabId !== undefined) {
+    lastRegionFillTabId = activeTabId;
+  }
+  if (activeTabId === undefined) {
+    throw new Error('NO_ACTIVE_TAB');
+  }
+  return sendToTab(activeTabId, {
     ...message,
     filePayloads,
-    sectionAdds: profile ? buildSectionAdds(profile.data) : message.sectionAdds,
-    profileData: profile?.data,
+    sectionAdds,
+    profileData,
   });
 }
 
@@ -970,7 +1006,14 @@ async function forwardEnsureSectionRows(
         message: '找不到选中的档案，请重新选择后再扫描。',
       };
     }
-    sectionAdds = buildSectionAdds(profile.data);
+    if (message.profileSectionKey?.trim()) {
+      sectionAdds = buildSectionAddsForProfileSection(
+        profile.data,
+        message.profileSectionKey.trim() as ProfileSectionKey,
+      );
+    } else {
+      sectionAdds = buildSectionAdds(profile.data);
+    }
   }
   if (sectionAdds.length === 0) {
     return {
@@ -1282,11 +1325,20 @@ async function dispatchMessage(
       return message;
     case 'SCAN_PROGRESS':
     case 'SCAN_FIELDS_RESULT':
+    case 'REGION_SCAN_PROGRESS':
+    case 'REGION_SCAN_RESULT':
+    case 'REGION_SCAN_CLEARED':
       return message;
     case 'PAGE_OVERLAY_UPDATE':
     case 'PAGE_OVERLAY_HIDE':
     case 'COLLECT_PAGE_EVIDENCE':
     case 'UNDO_LAST_FILL':
+      if (
+        message.fillScope === 'region' &&
+        lastRegionFillTabId !== undefined
+      ) {
+        return sendToTab(lastRegionFillTabId, message);
+      }
       return forwardToActiveTab(message);
     case 'SCAN_FIELDS': {
       // 新开一轮扫描才换代；同代续扫只转发，绝不重置停止锁
@@ -1311,6 +1363,11 @@ async function dispatchMessage(
       return forwardToActiveTab(message);
     case 'TRUSTED_OUTSIDE_CLICK':
       return handleTrustedOutsideClick(message, sender);
+    case 'START_REGION_SELECT':
+    case 'QUERY_REGION_SELECT':
+    case 'SCAN_REGION_FIELDS':
+    case 'END_REGION_SELECT':
+      return forwardToActiveTab(message);
     default:
       return {
         type: 'ERROR',
@@ -1325,10 +1382,71 @@ async function dispatchMessage(
  * Background 服务工作者入口：注册 Side Panel 行为与消息编排中枢。
  * API Key 仅在本上下文中用于 fetch，永不写入发往 content 的载荷。
  */
+/** 上一次激活标签所在的浏览器窗口，用来判断是否切到了别的窗口。 */
+let regionSelectLastFocusedWindowId: number | undefined;
+
+/** 最近一次框内写入所在的标签，侧栏点撤销时焦点可能在侧栏，需回到该标签。 */
+let lastRegionFillTabId: number | undefined;
+
+/** 给指定窗口里的每个 http(s) 标签发取消选区。 */
+function cancelRegionSelectInBrowserWindow(windowId: number): void {
+  void chrome.tabs.query({ windowId }).then((tabsInWindow) => {
+    for (const tab of tabsInWindow) {
+      if (tab.id === undefined) {
+        continue;
+      }
+      void chrome.tabs
+        .sendMessage(tab.id, { type: 'CANCEL_REGION_SELECT_HOST' })
+        .catch(() => undefined);
+    }
+  });
+}
+
+/**
+ * 窗口或激活标签换到别的窗口时，给旧窗口里每个标签发取消选区。
+ * 只靠页面 visibility / hasFocus 时，新开窗口后申请页有时仍显示 visible。
+ */
+function installRegionSelectWindowFocusCancel(): void {
+  void chrome.windows.getLastFocused({ populate: false }).then((lastFocusedWindow) => {
+    if (lastFocusedWindow.id !== undefined) {
+      regionSelectLastFocusedWindowId = lastFocusedWindow.id;
+    }
+  });
+
+  chrome.windows.onFocusChanged.addListener((focusedWindowId) => {
+    if (focusedWindowId === chrome.windows.WINDOW_ID_NONE) {
+      return;
+    }
+    const previousWindowId = regionSelectLastFocusedWindowId;
+    regionSelectLastFocusedWindowId = focusedWindowId;
+    if (previousWindowId === undefined || previousWindowId === focusedWindowId) {
+      return;
+    }
+    cancelRegionSelectInBrowserWindow(previousWindowId);
+  });
+
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    void chrome.tabs.get(activeInfo.tabId).then((activatedTab) => {
+      const activatedWindowId = activatedTab.windowId;
+      if (activatedWindowId === undefined) {
+        return;
+      }
+      const previousWindowId = regionSelectLastFocusedWindowId;
+      regionSelectLastFocusedWindowId = activatedWindowId;
+      if (previousWindowId === undefined || previousWindowId === activatedWindowId) {
+        return;
+      }
+      cancelRegionSelectInBrowserWindow(previousWindowId);
+    });
+  });
+}
+
 export default defineBackground(() => {
   chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: false })
     .catch(() => undefined);
+
+  installRegionSelectWindowFocusCancel();
 
   chrome.runtime.onMessage.addListener(
     (message: ExtensionMessage, sender, sendResponse) => {

@@ -10,6 +10,7 @@ import {
   labelOfCatalog,
 } from '../catalogs/enums';
 import { canonicalFieldRole } from './fieldRole';
+import { namedInternshipExperiences, namedWorkExperiences } from './sectionAdds';
 import { restoreListLineBreaks } from '../resume/restoreListBreaks';
 import type { FieldDescriptor, FillPlan } from '../types/fill';
 import type {
@@ -95,8 +96,12 @@ function sectionKind(label: string): string {
   if (/教育/.test(head)) {
     return 'education';
   }
-  if (/实习|工作/.test(head)) {
-    return 'experience';
+  // 实习和工作分列。同时含这两个字的标题不归入任何一边，避免再写进同一份行号
+  if (/实习/.test(head) && !/工作/.test(head)) {
+    return 'internship';
+  }
+  if (/工作/.test(head) && !/实习/.test(head)) {
+    return 'work';
   }
   if (/项目经历|项目经验|项目/.test(head)) {
     return 'project';
@@ -275,8 +280,12 @@ function boundRow(profile: ProfileData, label: string): BoundRow | null | 'missi
     const item = profile.education[index];
     return item ? rowFromEducation(item) : 'missing';
   }
-  if (kind === 'experience') {
-    const item = profile.experience[index];
+  if (kind === 'internship') {
+    const item = namedInternshipExperiences(profile)[index];
+    return item ? rowFromExperience(item) : 'missing';
+  }
+  if (kind === 'work') {
+    const item = namedWorkExperiences(profile)[index];
     return item ? rowFromExperience(item) : 'missing';
   }
   if (kind === 'project') {
@@ -396,12 +405,51 @@ export function mapRankToOptions(rankText: string, options: string[] | undefined
 }
 
 /**
+ * 同一行两个「起止时间」的左右侧。预览绑定时按字段顺序记下，写入时也可传入真实左右。
+ * 键是 fieldId。不改档案。
+ */
+const rangeSideByFieldId = new Map<string, 'start' | 'end'>();
+
+/**
+ * 把同一行里仍叫「起止时间」的格子按顺序分成左开始、右结束。
+ * 调用方：bindSectionFields。输入：本轮字段。输出：无。会改 rangeSideByFieldId。
+ */
+function noteRangeSides(fields: FieldDescriptor[]): void {
+  const grouped = new Map<string, FieldDescriptor[]>();
+  for (const field of fields) {
+    const label = field.label ?? '';
+    if (!/起止时间|起止日期/.test(label) || /开始|结束/.test(label)) {
+      continue;
+    }
+    const rowKey = `${label.match(/第\d+行/)?.[0] ?? ''}::${label}`;
+    const rowFields = grouped.get(rowKey) ?? [];
+    rowFields.push(field);
+    grouped.set(rowKey, rowFields);
+  }
+  for (const rowFields of grouped.values()) {
+    if (rowFields.length < 2) {
+      continue;
+    }
+    const leftField = rowFields[0];
+    const rightField = rowFields[1];
+    if (leftField?.fieldId) {
+      rangeSideByFieldId.set(leftField.fieldId, 'start');
+    }
+    if (rightField?.fieldId) {
+      rangeSideByFieldId.set(rightField.fieldId, 'end');
+    }
+  }
+}
+
+/**
  * 把一个已经标好「卡片第几行」的字段绑到对应档案条目。
  * 排名框没有对应选项时跳过，避免把「大学本科」打进成绩排名。
+ * rangeSide：起止区间这一格在左还是右。不传时用 noteRangeSides 记下的一侧。
  */
 export function bindLabeledField(
   field: FieldDescriptor,
   profile: ProfileData,
+  rangeSide?: 'start' | 'end',
 ): SectionBindResult {
   const label = field.label ?? '';
   const fieldRole = canonicalFieldRole(label);
@@ -602,11 +650,14 @@ export function bindLabeledField(
   if (rowIndex(label) === null && !/附件|上传/.test(label)) {
     const kind = sectionKind(label);
     const multiPools: Record<string, number> = {
-      experience: profile.experience.filter((item) => (item.company || item.title || '').trim()).length,
+      internship: namedInternshipExperiences(profile).length,
+      work: namedWorkExperiences(profile).length,
       project: profile.projects.filter((item) => (item.name || '').trim()).length,
       education: profile.education.filter((item) => (item.school || '').trim()).length,
       award: profile.awards.filter((item) => (item.name || '').trim()).length,
       campus: profile.campusActivities.filter((item) => (item.organization || '').trim()).length,
+      // 与上方「多本证书无行号」规则一致：有多本时无行号宁缺勿串
+      certificate: profile.certificates.filter((item) => (item.name || '').trim()).length,
     };
     if (kind && (multiPools[kind] ?? 0) > 1) {
       return {
@@ -699,13 +750,21 @@ export function bindLabeledField(
     rawValue = end?.year ?? '';
   } else if (/结束月/.test(label)) {
     rawValue = end?.month ?? '';
+  } else if (/(获得时间|发证时间|颁发时间|取得时间)/.test(label)) {
+    // 证书/奖项：获得时间对应条目自身的 date（落在 startDate），绝不能读空的 endDate
+    rawValue = row.startDate;
   } else if (/(开始时间|起始时间|开始日期|入学时间|入职时间)/.test(label)) {
     rawValue = row.startDate;
-  } else if (/(结束时间|结束日期|截止时间|离职时间|毕业时间|获得时间)/.test(label)) {
+  } else if (/(结束时间|结束日期|截止时间|离职时间|毕业时间)/.test(label)) {
     rawValue = row.endDate;
     if (!rawValue.trim() && row.isCurrent) {
       return { kind: 'skip', reason: '这一条到至今，不写结束时间' };
     }
+  } else if (/起止时间|起止日期/.test(label)) {
+    const side = rangeSide
+      || rangeSideByFieldId.get(field.fieldId)
+      || (/结束/.test(label) ? 'end' : 'start');
+    rawValue = side === 'end' ? row.endDate : row.startDate;
   } else if ((/城市|所在地/.test(label)) && !/区|县|街道/.test(label)) {
     rawValue = row.city;
   } else if (/学院/.test(label) && !/学校|院校/.test(label)) {
@@ -750,7 +809,7 @@ export function bindLabeledField(
   }
   // 整段日期：日历组件通常无精确选项，选项对不上也把值交给写入层多策略处理
   if (
-    /(开始时间|起始时间|开始日期|结束时间|结束日期|截止时间|入学时间|入职时间|离职时间|毕业时间|获得时间)/.test(label)
+    /(开始时间|起始时间|开始日期|结束时间|结束日期|截止时间|入学时间|入职时间|离职时间|毕业时间|获得时间|发证时间|颁发时间|取得时间|起止时间|起止日期)/.test(label)
     && /^\d{4}/.test(rawValue)
   ) {
     const dateAllowed = valueAllowedByOptions(rawValue, field.options);
@@ -776,6 +835,7 @@ export function bindSectionFields(
   const items: FillPlan['items'] = [];
   const skippedFieldIds: string[] = [];
   const remainingFields: FieldDescriptor[] = [];
+  noteRangeSides(fields);
   for (const field of fields) {
     const bound = bindLabeledField(field, profile);
     if (!bound) {
@@ -837,8 +897,11 @@ export function auditFillPlanRowCollisions(
 
     // 页面上多行同文：对照档案主键是否本就相同
     const profileKeys: string[] = [];
-    if (kind === 'experience') {
-      profile.experience.forEach((item) => {
+    if (kind === 'internship' || kind === 'work') {
+      const experienceRows = kind === 'internship'
+        ? namedInternshipExperiences(profile)
+        : namedWorkExperiences(profile);
+      experienceRows.forEach((item) => {
         const keyText = (item.company || item.title || '').trim();
         if (keyText) profileKeys.push(keyText);
       });
