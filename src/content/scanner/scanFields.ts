@@ -343,13 +343,27 @@ const SCAN_QUIET_MS = 450;
 const SCAN_MAX_WAIT_MS = 1500;
 
 /**
- * 等 DOM 安静一小段时间，或到达上限。用来接住稍后插入的网申表单。
+ * 框内识别用的更短安静窗口：页面已经画好，不必再等整页扫描那 1.5 秒。
+ * 调用方：scanBlankFieldsInRegionBox。输入：无。输出：quiet/max 毫秒。
  */
-export function waitForFormSettle(rootDocument: Document = document): Promise<void> {
+const REGION_SCAN_QUIET_MS = 120;
+const REGION_SCAN_MAX_WAIT_MS = 400;
+
+/**
+ * 等 DOM 安静一小段时间，或到达上限。用来接住稍后插入的网申表单。
+ * 调用方：整页 scanFieldsSettled、框内 scanBlankFieldsInRegionBox。
+ * 输入：文档根；可选安静/上限毫秒。输出：等待结束。不改表单。
+ */
+export function waitForFormSettle(
+  rootDocument: Document = document,
+  settleTiming?: { quietMs: number; maxWaitMs: number },
+): Promise<void> {
+  const quietMs = settleTiming?.quietMs ?? SCAN_QUIET_MS;
+  const maxWaitMs = settleTiming?.maxWaitMs ?? SCAN_MAX_WAIT_MS;
   return new Promise((resolve) => {
     let settled = false;
-    let quietTimer = window.setTimeout(finish, SCAN_QUIET_MS);
-    const maxTimer = window.setTimeout(finish, SCAN_MAX_WAIT_MS);
+    let quietTimer = window.setTimeout(finish, quietMs);
+    const maxTimer = window.setTimeout(finish, maxWaitMs);
     /** 停止后尽快结束安静等待，避免点停止还卡在 MutationObserver 里 */
     const stopPollTimer = window.setInterval(() => {
       if (shouldFillStop()) {
@@ -362,7 +376,7 @@ export function waitForFormSettle(rootDocument: Document = document): Promise<vo
         return;
       }
       window.clearTimeout(quietTimer);
-      quietTimer = window.setTimeout(finish, SCAN_QUIET_MS);
+      quietTimer = window.setTimeout(finish, quietMs);
     });
 
     /**
@@ -825,8 +839,10 @@ const EDIT_OWN_TEXT = /^(编辑|修改|edit)$/i;
 /**
  * 节点自己的文字是添加。允许「+ 添加」「添加经历」，拒绝整段说明文字。
  * 有站点适配器时额外认「新增」等白名单词，并排除保存/提交。
+ * 调用方：扫描找展开钮、locateRepeatSection 找分区添加钮、cardFill.findAddButton。
+ * 输入：控件可见文案（可含空白）；输出：是否按「添加」类按钮处理。不改 DOM。
  */
-function isAddControlText(text: string): boolean {
+export function isAddControlText(text: string): boolean {
   const compact = text.replace(/\s+/g, '');
   if (!compact || compact.length > 16) {
     return false;
@@ -2281,10 +2297,11 @@ export interface RegionViewportBox {
 }
 
 /**
- * 判断控件中心点是否落在选区矩形内（含边界）。
- * 用中心点避免只压住边框的相邻字段误入清单。
+ * 判断控件与选区是否有足够相交面积。
+ * 调用方：scanBlankFieldsInRegionBox。输入：控件与视口矩形。输出：相交足够则 true。
+ * 不再只认中心点，避免框偏一点就把整行空格丢掉。
  */
-function elementCenterInsideRegionBox(
+function elementIntersectsRegionBox(
   element: Element,
   regionBox: RegionViewportBox,
 ): boolean {
@@ -2292,14 +2309,18 @@ function elementCenterInsideRegionBox(
   if (clientRect.width < 1 || clientRect.height < 1) {
     return false;
   }
-  const centerX = clientRect.left + clientRect.width / 2;
-  const centerY = clientRect.top + clientRect.height / 2;
-  return (
-    centerX >= regionBox.left &&
-    centerX <= regionBox.left + regionBox.width &&
-    centerY >= regionBox.top &&
-    centerY <= regionBox.top + regionBox.height
-  );
+  const overlapLeft = Math.max(clientRect.left, regionBox.left);
+  const overlapTop = Math.max(clientRect.top, regionBox.top);
+  const overlapRight = Math.min(clientRect.right, regionBox.left + regionBox.width);
+  const overlapBottom = Math.min(clientRect.bottom, regionBox.top + regionBox.height);
+  const overlapWidth = overlapRight - overlapLeft;
+  const overlapHeight = overlapBottom - overlapTop;
+  if (overlapWidth < 4 || overlapHeight < 4) {
+    return false;
+  }
+  const overlapArea = overlapWidth * overlapHeight;
+  const controlArea = clientRect.width * clientRect.height;
+  return overlapArea >= controlArea * 0.2 || (overlapWidth >= 8 && overlapHeight >= 8);
 }
 
 /** P2 框内扫描结果：空白字段清单与耗时（毫秒）。 */
@@ -2310,13 +2331,16 @@ export interface RegionBlankFieldScanResult {
 
 /**
  * 在不动整页滚动扫描的前提下，识别矩形内的空白控件并生成字段描述。
- * 先等 DOM 安静（上限约 1.5s），再过滤扩展 UI、已填控件与框外控件。
+ * 先等 DOM 安静（框内用更短上限），再过滤扩展 UI、已填控件与框外控件。
  */
 export async function scanBlankFieldsInRegionBox(
   regionBox: RegionViewportBox,
 ): Promise<RegionBlankFieldScanResult> {
   const startedAt = Date.now();
-  await waitForFormSettle(document);
+  await waitForFormSettle(document, {
+    quietMs: REGION_SCAN_QUIET_MS,
+    maxWaitMs: REGION_SCAN_MAX_WAIT_MS,
+  });
   const blankFields: FieldDescriptor[] = [];
   const seenElements = new WeakSet<Element>();
 
@@ -2330,7 +2354,7 @@ export async function scanBlankFieldsInRegionBox(
     if (!shouldIncludeElement(candidate)) {
       continue;
     }
-    if (!elementCenterInsideRegionBox(candidate, regionBox)) {
+    if (!elementIntersectsRegionBox(candidate, regionBox)) {
       continue;
     }
     if (!isControlEmpty(candidate)) {

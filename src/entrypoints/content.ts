@@ -91,8 +91,20 @@ export default defineContentScript({
         }
 
         if (message.type === 'SCAN_REGION_FIELDS') {
-          void runRegionFieldScan(message.requestId);
-          return false;
+          void runRegionFieldScan(message.requestId).then((outcome) => {
+            if (!outcome) {
+              sendResponse({ type: 'REGION_SCAN_CLEARED' } satisfies ExtensionMessage);
+              return;
+            }
+            sendResponse({
+              type: 'REGION_SCAN_RESULT',
+              requestId: message.requestId,
+              fields: outcome.fields,
+              durationMs: outcome.durationMs,
+              notice: outcome.notice,
+            } satisfies ExtensionMessage);
+          });
+          return true;
         }
 
         if (message.type === 'STOP_PAGE_WORK') {

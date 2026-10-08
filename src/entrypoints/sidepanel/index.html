@@ -126,7 +126,48 @@
         </label>
       </section>
 
-      <!-- 扫描和写入放在选用档案下面、映射表上面，不用滚到侧栏底部再点 -->
+      <!-- 框内空白字段：放在「本页填写」与整页操作区之间，显示时位于「确认写入」上方 -->
+      <section
+        id="regionFieldSection"
+        class="sidepanel-section region-field-section"
+        aria-labelledby="regionFieldHeading"
+        hidden
+      >
+        <h2 id="regionFieldHeading" class="section-label">框内空白字段</h2>
+        <p id="regionFieldMeta" class="hint-text region-field-meta"></p>
+        <ul id="regionFieldList" class="region-field-list"></ul>
+        <div class="region-map-controls">
+          <label class="field-label" for="regionSectionSelect">档案段</label>
+          <select id="regionSectionSelect" class="profile-select region-section-select" disabled>
+            <option value="">请先选择档案</option>
+          </select>
+          <button type="button" id="regionMapButton" class="btn btn-secondary region-map-button" disabled>
+            对照这一段
+          </button>
+          <button type="button" id="regionConfirmWriteButton" class="btn btn-primary region-confirm-write-button" disabled>
+            确认写入框内
+          </button>
+          <button type="button" id="regionUndoButton" class="btn btn-ghost region-undo-button" disabled>
+            撤销框内
+          </button>
+        </div>
+        <div id="regionMappingWrap" class="table-scroll region-mapping-wrap" hidden>
+          <table class="mapping-table region-mapping-table" aria-label="框内字段对照预览">
+            <thead>
+              <tr>
+                <th scope="col">字段</th>
+                <th scope="col">填写值</th>
+                <th scope="col">来源</th>
+                <th scope="col">置信度</th>
+              </tr>
+            </thead>
+            <tbody id="regionMappingTableBody"></tbody>
+          </table>
+        </div>
+        <p class="hint-text">先对照再点「确认写入框内」。整页的「确认写入」仍只写整页映射；「撤销本轮」与「撤销框内」互不影响。</p>
+      </section>
+
+      <!-- 扫描和写入放在选用档案（及框内区）下面、映射表上面，不用滚到侧栏底部再点 -->
       <section class="sidepanel-actions" aria-label="助手操作">
         <!-- 进度与状态提示贴在「确认写入」正上方，扫完/对照完不用滚到底部找 -->
         <div id="scanProgress" class="scan-progress" hidden>
@@ -168,46 +209,6 @@
         <button type="button" id="regionSelectButton" class="btn btn-secondary action-region">
           选区填入
         </button>
-      </section>
-
-      <section
-        id="regionFieldSection"
-        class="sidepanel-section region-field-section"
-        aria-labelledby="regionFieldHeading"
-        hidden
-      >
-        <h2 id="regionFieldHeading" class="section-label">框内空白字段</h2>
-        <p id="regionFieldMeta" class="hint-text region-field-meta"></p>
-        <ul id="regionFieldList" class="region-field-list"></ul>
-        <div class="region-map-controls">
-          <label class="field-label" for="regionSectionSelect">档案段</label>
-          <select id="regionSectionSelect" class="profile-select region-section-select" disabled>
-            <option value="">请先选择档案</option>
-          </select>
-          <button type="button" id="regionMapButton" class="btn btn-secondary region-map-button" disabled>
-            对照这一段
-          </button>
-          <button type="button" id="regionConfirmWriteButton" class="btn btn-primary region-confirm-write-button" disabled>
-            确认写入框内
-          </button>
-          <button type="button" id="regionUndoButton" class="btn btn-ghost region-undo-button" disabled>
-            撤销框内
-          </button>
-        </div>
-        <div id="regionMappingWrap" class="table-scroll region-mapping-wrap" hidden>
-          <table class="mapping-table region-mapping-table" aria-label="框内字段对照预览">
-            <thead>
-              <tr>
-                <th scope="col">字段</th>
-                <th scope="col">填写值</th>
-                <th scope="col">来源</th>
-                <th scope="col">置信度</th>
-              </tr>
-            </thead>
-            <tbody id="regionMappingTableBody"></tbody>
-          </table>
-        </div>
-        <p class="hint-text">先对照再点「确认写入框内」。上方「确认写入」仍只写整页映射；「撤销本轮」与「撤销框内」互不影响。</p>
       </section>
 
       <section class="sidepanel-section mapping-section" aria-labelledby="mappingHeading">

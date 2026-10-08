@@ -74,6 +74,11 @@ export interface BuildFillPlanViaDecisionInput {
   decisionMinConfidence: number;
   /** 本机模型/Server URL；空表示未配置下载源 */
   layaModelUrl?: string;
+  /**
+   * 选区对照：规则未吃掉的字段一律走云端，不因「偏好本机」整段停在本地。
+   * 整页扫描不传此标志。
+   */
+  preferCloudForRemaining?: boolean;
 }
 
 /**

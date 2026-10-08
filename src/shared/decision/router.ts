@@ -179,7 +179,7 @@ async function buildFillPlanViaDecisionCore(
     return { plan, usage: null, primaryEngine: 'rule' };
   }
 
-  // ② 分题：选项/是否 → 本机；自由文本 → 云端
+  // ② 分题：选项/是否 → 本机；自由文本 → 云端。框内对照跳过本机，规则剩余全部进云端。
   const { typedFields, textFields } = splitFieldsByDecisionBucket(remainingFields);
   const proposalLists: SourcedMappingItem[][] = [
     rulePlanToSourced(partialPlan, false),
@@ -187,12 +187,14 @@ async function buildFillPlanViaDecisionCore(
   let usage: BuildFillPlanViaDecisionOutput['usage'] = null;
   let notice: string | undefined;
   let primaryEngine: EngineKind = 'rule';
+  const skipLocalForCloudRemaining = Boolean(input.preferCloudForRemaining);
 
-  // ②a 本机只吃 typed（P2a 起；未就绪则跳过）
+  // ②a 本机只吃 typed（P2a 起；未就绪则跳过）。框内对照不走这一步。
   if (
     typedFields.length > 0 &&
     input.layaEnabled &&
-    input.decisionPreferLocal
+    input.decisionPreferLocal &&
+    !skipLocalForCloudRemaining
   ) {
     const localReady = await localEngine.ready();
     if (localReady) {

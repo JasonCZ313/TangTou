@@ -827,13 +827,21 @@ export function bindLabeledField(
 
 /**
  * 先把能按卡片行号对上的字段做成填写项，其余留给原来的规则和模型。
+ * 调用方：applyLocalHeuristics。输入：档案与字段。
+ * 输出：命中项、跳过 id、跳过原因（保留 bindLabeledField 原文）、未命中留给后续引擎的字段。
  */
 export function bindSectionFields(
   profile: ProfileData,
   fields: FieldDescriptor[],
-): { items: FillPlan['items']; skippedFieldIds: string[]; remainingFields: FieldDescriptor[] } {
+): {
+  items: FillPlan['items'];
+  skippedFieldIds: string[];
+  skippedNotes: NonNullable<FillPlan['skippedNotes']>;
+  remainingFields: FieldDescriptor[];
+} {
   const items: FillPlan['items'] = [];
   const skippedFieldIds: string[] = [];
+  const skippedNotes: NonNullable<FillPlan['skippedNotes']> = [];
   const remainingFields: FieldDescriptor[] = [];
   noteRangeSides(fields);
   for (const field of fields) {
@@ -844,6 +852,10 @@ export function bindSectionFields(
     }
     if (bound.kind === 'skip') {
       skippedFieldIds.push(field.fieldId);
+      skippedNotes.push({
+        fieldId: field.fieldId,
+        reason: bound.reason,
+      });
       continue;
     }
     items.push({
@@ -853,7 +865,7 @@ export function bindSectionFields(
       reason: bound.reason,
     });
   }
-  return { items, skippedFieldIds, remainingFields };
+  return { items, skippedFieldIds, skippedNotes, remainingFields };
 }
 
 /**

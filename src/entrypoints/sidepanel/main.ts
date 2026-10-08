@@ -280,18 +280,20 @@ function clearRegionMappingPreview(): void {
 }
 
 /**
- * 按当前档案刷新「档案段」下拉；无档案或无框内字段时禁用。
+ * 按当前档案刷新「档案段」下拉。
+ * 有档案即可列出各段，不再要求先扫出框内字段，以便「先选段再对照」。
  */
 function populateRegionSectionSelect(): void {
+  const previousSectionKey = regionSectionSelect.value;
   regionSectionSelect.replaceChildren();
   const selectedProfileId = profileSelect.value;
   const profile = cachedProfiles.find(
     (profileItem) => profileItem.id === selectedProfileId,
   );
-  if (!profile || regionScannedFields.length === 0) {
+  if (!profile) {
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = profile ? '先框出空白字段' : '请先选择档案';
+    placeholder.textContent = '请先选择档案';
     regionSectionSelect.appendChild(placeholder);
     regionSectionSelect.value = '';
     return;
@@ -302,19 +304,22 @@ function populateRegionSectionSelect(): void {
     option.textContent = optionMeta.label;
     regionSectionSelect.appendChild(option);
   }
-  regionSectionSelect.value = regionSectionSelect.options[0]?.value ?? '';
+  const previousStillValid = [...regionSectionSelect.options].some(
+    (option) => option.value === previousSectionKey && previousSectionKey.length > 0,
+  );
+  regionSectionSelect.value = previousStillValid
+    ? previousSectionKey
+    : (regionSectionSelect.options[0]?.value ?? '');
 }
 
 /** 同步框内对照按钮与段下拉的可用状态。 */
 function syncRegionMapControls(): void {
   const selectedProfileId = profileSelect.value;
-  const hasScan = regionScannedFields.length > 0;
   const sectionReady = Boolean(regionSectionSelect.value);
-  regionSectionSelect.disabled =
-    isBusy || !selectedProfileId || !hasScan;
+  regionSectionSelect.disabled = isBusy || !selectedProfileId;
   const previewItems = regionMappingPreview?.plan.items.length ?? 0;
   regionMapButton.disabled =
-    isBusy || !selectedProfileId || !hasScan || !sectionReady;
+    isBusy || !selectedProfileId || !sectionReady;
   regionConfirmWriteButton.disabled =
     isBusy || previewItems === 0;
   regionUndoButton.disabled = isBusy || !regionFillApplied;
@@ -398,13 +403,38 @@ async function runRegionMapFlow(): Promise<void> {
     return;
   }
   if (regionScannedFields.length === 0) {
+    showStatus('正在识别框内空白字段…', 'info');
+    const scanResponse = await requestBackground({
+      type: 'SCAN_REGION_FIELDS',
+      requestId: createRequestId(),
+    });
+    if (scanResponse.type === 'REGION_SCAN_RESULT') {
+      regionScannedFields = scanResponse.fields;
+      renderRegionFieldList(
+        scanResponse.fields,
+        `共 ${scanResponse.fields.length} 项，耗时 ${scanResponse.durationMs}ms。`,
+      );
+      populateRegionSectionSelect();
+      syncRegionMapControls();
+    }
+  }
+  if (regionScannedFields.length === 0) {
     showError('请先框出空白字段');
     return;
   }
   showStatus('正在对照框内字段与档案…', 'info');
+  const selectedProfile = cachedProfiles.find(
+    (profileItem) => profileItem.id === profileId,
+  );
+  if (!selectedProfile) {
+    showError('请先选择档案');
+    return;
+  }
+  // 打「第1行」前缀并对 experience 区分实习/工作，须用完整档案取选中那一条
   const fieldsForSection = augmentFieldsForProfileSection(
     regionScannedFields,
     sectionKey,
+    selectedProfile.data,
   );
   const planResponse = await requestFillPlanWithWait(
     createRequestId(),

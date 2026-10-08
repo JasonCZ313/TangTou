@@ -12,7 +12,6 @@ import { attachmentKindLabel } from '../types/attachment';
 import {
   notesForFieldIds,
   SKIP_REASON_NO_FILE,
-  SKIP_REASON_UNSURE,
 } from '../fill/skipReasons';
 import { bindSectionFields, cityNameOnly } from '../fill/sectionBinder';
 import { restoreListLineBreaks } from '../resume/restoreListBreaks';
@@ -363,7 +362,8 @@ export function applyLocalHeuristics(
           skippedFieldIds.filter((fieldId) => fields.some((field) => field.fieldId === fieldId && field.type === 'file')),
           SKIP_REASON_NO_FILE,
         ),
-        ...notesForFieldIds(sectionBinding.skippedFieldIds, SKIP_REASON_UNSURE),
+        // 按行绑定的跳过原因保留原文，不再统一盖成「没有把握对上档案」
+        ...sectionBinding.skippedNotes,
       ],
     },
     remainingFields,

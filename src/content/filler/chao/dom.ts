@@ -283,21 +283,33 @@ function readSelectedChipText(fieldElement) {
     searchRoot = searchRoot.parentElement;
   }
   if (!(searchRoot instanceof HTMLElement)) return '';
-  const chipNodes = [...searchRoot.querySelectorAll('span, div, a, li')].filter((node) => {
+  // 字段名压缩后用来排除「姓名」「邮箱」等左侧标题，避免空框被当成已填
+  const fieldLabelCompact = String(fieldLabelBlob(fieldElement) || '').replace(/\s+/g, '');
+  const chipNodes = [...searchRoot.querySelectorAll('span, div, a, li, label')].filter((node) => {
     if (!(node instanceof HTMLElement) || node === fieldElement || fieldElement.contains(node)) return false;
     if (isInsideTangtouUi(node)) return false;
     if (node.closest('[role="listbox"], [role="option"], [role="menu"]')) return false;
     if (isInsideFloatingChoiceList(node, fieldElement)) return false;
+    // 正式 label（或落在不包含本控件的 label 里）是字段名，不是已选芯片
+    const nearestLabel = node.closest('label');
+    if (node.tagName === 'LABEL' || (nearestLabel && !nearestLabel.contains(fieldElement))) {
+      return false;
+    }
     const chipBox = node.getBoundingClientRect();
     if (chipBox.width < 1 || chipBox.height < 1) return false;
     // 只认落在格子框内的标签。挂在格子下面的选项顶边不在框内，不能当成已经选中
     const sameRow = chipBox.top < fieldBox.bottom - 2 && chipBox.bottom > fieldBox.top + 2;
     if (!sameRow) return false;
+    // 落在控件左侧的短文是标题，不是已选值
+    if (chipBox.right <= fieldBox.left + 2) return false;
     const chipText = ownShortText(node);
     if (!chipText || isPlaceholderText(chipText)) return false;
     if (/^[×xX✕✖]$/.test(chipText)) return false;
     if (/^[①②③④⑤⑥⑦⑧⑨⑩0-9]$/.test(chipText)) return false;
     if (/搜索|取消|确定|请选择|最多可选|清空/.test(chipText)) return false;
+    if (fieldLabelCompact && (fieldLabelCompact.includes(chipText) || chipText === fieldLabelCompact.slice(0, 12))) {
+      return false;
+    }
     return true;
   });
   const leafChips = chipNodes.filter((node) => !chipNodes.some((other) => other !== node && node.contains(other)));
@@ -341,6 +353,14 @@ export function readControlText(el) {
   }
   const ownValue = String(el.value || '').trim();
   if (ownValue && !isPlaceholderText(ownValue)) return ownValue;
+  // 原生空输入不读同行芯片：否则会把左侧「姓名」「邮箱」当成已填值，框内扫描得到 0 项
+  const isNativeTextControl =
+    (el instanceof HTMLInputElement
+      && !/^(radio|checkbox|button|submit|file|hidden|image|reset)$/i.test(el.type))
+    || el instanceof HTMLTextAreaElement;
+  if (isNativeTextControl && !el.closest?.('.ant-select, .el-select')) {
+    return '';
+  }
   const ownText = String(el.textContent || '').replace(/\s+/g, ' ').trim();
   const compactText = ownText.replace(/\s+/g, '');
   // 打开的国家列表、省市弹窗整段文字不能当成这个框已经选中的值

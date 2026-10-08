@@ -4,11 +4,19 @@
  */
 
 import type { ExtensionMessage } from '../../shared/types/messages';
+import type { FieldDescriptor } from '../../shared/types/fill';
 import {
   scanBlankFieldsInRegionBox,
   type RegionViewportBox,
 } from '../scanner/scanFields';
 import { getRegionSelectBox } from './regionSelect';
+
+/** 框内识别结束后交给侧栏或消息回执的结果形状 */
+export interface RegionFieldScanOutcome {
+  fields: FieldDescriptor[];
+  durationMs: number;
+  notice?: string;
+}
 
 /** 同一矩形连拖时合并识别请求，避免重复扫。 */
 let regionScanDebounceTimer = 0;
@@ -32,12 +40,17 @@ export function readActiveRegionBox(): RegionViewportBox | null {
 
 /**
  * 在矩形已框好后执行一次框内空白识别，并上报侧栏。
+ * 调用方：框好矩形的生命周期、侧栏对照前补扫（SCAN_REGION_FIELDS）。
+ * 输入：可选请求 id。输出：识别结果；没有合格矩形则为 null。
+ * 会改 activeRegionScanRequestId，并向 runtime 发进度/结果。
  */
-export async function runRegionFieldScan(requestId?: string): Promise<void> {
+export async function runRegionFieldScan(
+  requestId?: string,
+): Promise<RegionFieldScanOutcome | null> {
   const regionBox = readActiveRegionBox();
   if (!regionBox) {
     reportRegionScanMessage({ type: 'REGION_SCAN_CLEARED' });
-    return;
+    return null;
   }
   const scanRequestId = requestId ?? crypto.randomUUID();
   activeRegionScanRequestId = scanRequestId;
@@ -50,7 +63,10 @@ export async function runRegionFieldScan(requestId?: string): Promise<void> {
   try {
     const scanResult = await scanBlankFieldsInRegionBox(regionBox);
     if (activeRegionScanRequestId !== scanRequestId) {
-      return;
+      return {
+        fields: scanResult.fields,
+        durationMs: scanResult.durationMs,
+      };
     }
     reportRegionScanMessage({
       type: 'REGION_SCAN_PROGRESS',
@@ -65,14 +81,24 @@ export async function runRegionFieldScan(requestId?: string): Promise<void> {
       fields: scanResult.fields,
       durationMs: scanResult.durationMs,
     });
+    return {
+      fields: scanResult.fields,
+      durationMs: scanResult.durationMs,
+    };
   } catch {
-    reportRegionScanMessage({
-      type: 'REGION_SCAN_RESULT',
-      requestId: scanRequestId,
+    const failedOutcome: RegionFieldScanOutcome = {
       fields: [],
       durationMs: 0,
       notice: '框内识别失败。请右键取消后重新框选。',
+    };
+    reportRegionScanMessage({
+      type: 'REGION_SCAN_RESULT',
+      requestId: scanRequestId,
+      fields: failedOutcome.fields,
+      durationMs: failedOutcome.durationMs,
+      notice: failedOutcome.notice,
     });
+    return failedOutcome;
   }
 }
 

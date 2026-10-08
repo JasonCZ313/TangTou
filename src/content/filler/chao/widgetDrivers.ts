@@ -1425,32 +1425,80 @@ function clickDayCell(panel, dayNumber) {
 }
 
 /**
- * 同一块起止控件里左右两个输入框。不是区间则返回空。
- * 调用方：driveDatePanel、rangeSideOfControl。不改页面。
+ * 这个输入框是起止自己的年月格，不是学校、专业、公司、职位或描述。
+ * 调用方：findRangeDatePair。输入：页面输入框。输出：是年月格为 true。不改页面。
+ */
+function isRangeYearMonthInput(input) {
+  if (!(input instanceof HTMLInputElement) || input.type === 'hidden') return false;
+  if (!isPageFieldVisible(input)) return false;
+  const box = input.getBoundingClientRect();
+  if (box.width < 40 || box.height < 16) return false;
+  const labelText = `${input.getAttribute('data-raf-label') || ''}${fieldLabelBlob(input)}`;
+  if (/学校|专业|公司|职位|描述/.test(labelText) && !/时间|日期|起止/.test(labelText)) {
+    return false;
+  }
+  const placeholderText = String(input.placeholder || '').replace(/\s+/g, '');
+  if (/^Y{2,4}[-/.年]?M{1,2}/i.test(placeholderText)) {
+    return true;
+  }
+  return Boolean(input.closest('.ant-picker-range, .ant-picker, .el-date-editor, .el-range-editor'));
+}
+
+/**
+ * 这一层里有没有学校、专业、公司、职位、描述的输入框。
+ * 调用方：findRangeDatePair。有的话就不再往更外层拿框。不改页面。
+ */
+function scopeHasForeignDateNeighbor(scope) {
+  return [...scope.querySelectorAll('input, textarea')].some((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const labelText = `${node.getAttribute('data-raf-label') || ''}${fieldLabelBlob(node)}`;
+    return /学校|专业|公司|职位|描述/.test(labelText) && !/时间|日期|起止/.test(labelText);
+  });
+}
+
+/**
+ * 同一块起止控件里左右两个输入框。
+ * 先认 Ant / Element 区间组件；没有组件类名时，认起止旁左右两个年月掩码框。
+ * 调用方：driveDatePanel、rangeSideOfControl。不是区间则返回空。不改页面。
  */
 function findRangeDatePair(el) {
   if (!(el instanceof HTMLElement)) return null;
-  const host = el.closest('.ant-picker-range, .el-range-editor, .el-date-editor--daterange')
+  const componentHost = el.closest('.ant-picker-range, .el-range-editor, .el-date-editor--daterange')
     || el.closest('.ant-picker, .el-date-editor');
-  if (!(host instanceof HTMLElement)) return null;
-  const inputs = [...host.querySelectorAll('input')].filter((node) => {
-    if (!(node instanceof HTMLInputElement) || node.type === 'hidden') return false;
-    return isPageFieldVisible(node);
-  });
-  if (inputs.length < 2) return null;
-  inputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
-  return { host, left: inputs[0], right: inputs[1] };
+  if (componentHost instanceof HTMLElement) {
+    const componentInputs = [...componentHost.querySelectorAll('input')].filter((node) => {
+      if (!(node instanceof HTMLInputElement) || node.type === 'hidden') return false;
+      return isPageFieldVisible(node);
+    });
+    if (componentInputs.length >= 2) {
+      componentInputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
+      return { host: componentHost, left: componentInputs[0], right: componentInputs[1] };
+    }
+  }
+  let current = el;
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    const scope = current.parentElement;
+    if (!(scope instanceof HTMLElement)) break;
+    const dateInputs = [...scope.querySelectorAll('input')].filter((node) => isRangeYearMonthInput(node));
+    if (dateInputs.length >= 2) {
+      dateInputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
+      return { host: scope, left: dateInputs[0], right: dateInputs[1] };
+    }
+    if (scopeHasForeignDateNeighbor(scope)) break;
+    current = scope;
+  }
+  return null;
 }
 
 /**
  * 这个格子在起止区间的左侧还是右侧。
  * 调用方：确认写入再绑、卡片补写。输入：页面控件。输出：'start' | 'end' | ''。不改页面。
  */
-export function rangeSideOfControl(el) {
-  const pair = findRangeDatePair(el);
-  if (!pair) return '';
+export function rangeSideOfControl(el, pair) {
+  const resolvedPair = pair && pair.left && pair.right ? pair : findRangeDatePair(el);
+  if (!resolvedPair) return '';
   const target = el instanceof HTMLInputElement ? el : resolveDateInput(el);
-  if (target && (target === pair.right || pair.right.contains(target))) return 'end';
+  if (target && (target === resolvedPair.right || resolvedPair.right.contains(target))) return 'end';
   return 'start';
 }
 
@@ -1524,11 +1572,41 @@ async function chooseYearMonth(panel, before, rawDate, preferRight) {
 }
 
 /**
+ * 把档案年月打进一个能打字的框。没有日就只留下 YYYY-MM。
+ * 调用方：leaveYearMonthWithoutPanel。只改这一格的 value。只读或禁用则不写。
+ */
+function typeYearMonthIntoInput(input, value) {
+  if (!(input instanceof HTMLInputElement) || input.readOnly || input.disabled) {
+    return false;
+  }
+  const normalized = normalizeDate(value);
+  if (!normalized || normalized === '至今' || !/^\d{4}-\d{2}/.test(normalized)) {
+    return false;
+  }
+  const typed = sourceHasCalendarDay(value) ? normalized : normalized.slice(0, 7);
+  setNativeValue(input, typed);
+  input.dispatchEvent(new InputEvent('input', { bubbles: true, data: typed, inputType: 'insertText' }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+/**
+ * 没有日历弹层时，把已有档案日期打进这一侧。回读对上才算成功。
+ * 调用方：driveRangeMonthPair、driveDatePanel。会改这一侧输入框。对不上不清已经写对的另一侧。
+ */
+async function leaveYearMonthWithoutPanel(input, value) {
+  typeYearMonthIntoInput(input, value);
+  await sleep(80);
+  return dateTextMatches(value, readControlText(input));
+}
+
+/**
  * 起止区间：先点开始月，再点结束月。两侧日期没到齐时先记下，不清空。
+ * 没有日历弹层时，以年月框里留下的 YYYY-MM 为准。
  * 调用方：driveDatePanel。会改两个输入框的显示值。
  */
 async function driveRangeMonthPair(el, value, pair) {
-  const side = rangeSideOfControl(el) === 'end' ? 'end' : 'start';
+  const side = rangeSideOfControl(el, pair) === 'end' ? 'end' : 'start';
   const stored = rangeEndpointByHost.get(pair.host) || {};
   stored[side] = value;
   stored.pendingWrites = (stored.pendingWrites || 0) + 1;
@@ -1541,21 +1619,29 @@ async function driveRangeMonthPair(el, value, pair) {
     if (!(await ensurePanelsClosed(el))) {
       return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
     }
+    const singleInput = side === 'end' ? pair.right : pair.left;
     const singleBefore = snapshotOverlays();
     openSelectLike(el);
     await sleep(220);
     const singlePanel = await waitForOverlay(singleBefore, 1000);
     if (!singlePanel) {
+      const typedOk = await leaveYearMonthWithoutPanel(singleInput, value);
+      if (typedOk) {
+        return { ok: true, reason: '无日历弹层，这一侧年月已留在框内' };
+      }
       return { ok: false, reason: '点击触发器后未见日期面板' };
     }
     const singlePick = await chooseYearMonth(singlePanel, singleBefore, value, side === 'end');
-    const singleInput = side === 'end' ? pair.right : pair.left;
     const singleMatched = dateTextMatches(value, readControlText(singleInput));
     if (singleMatched) {
       await dismissOverlay(el);
       return { ok: true, reason: '区间只有一侧日期，已写入该侧' };
     }
-    clearDateInput(singleInput);
+    const typedAfterPanel = await leaveYearMonthWithoutPanel(singleInput, value);
+    if (typedAfterPanel) {
+      await dismissOverlay(el);
+      return { ok: true, reason: '弹层没点上，这一侧年月已留在框内' };
+    }
     return { ok: false, reason: singlePick.reason || '这一侧月份没有点上' };
   }
   if (!(await ensurePanelsClosed(el))) {
@@ -1566,6 +1652,11 @@ async function driveRangeMonthPair(el, value, pair) {
   await sleep(220);
   let panel = await waitForOverlay(before, 1000);
   if (!panel) {
+    const leftTyped = await leaveYearMonthWithoutPanel(pair.left, stored.start);
+    const rightTyped = await leaveYearMonthWithoutPanel(pair.right, stored.end);
+    if (leftTyped && rightTyped) {
+      return { ok: true, reason: '无日历弹层，区间起止已留在框内' };
+    }
     return { ok: false, reason: '点击触发器后未见日期面板' };
   }
   const startPick = await chooseYearMonth(panel, before, stored.start, false);
@@ -1574,30 +1665,61 @@ async function driveRangeMonthPair(el, value, pair) {
     return { ok: false, reason: startPick.reason || '开始月没有点上' };
   }
   const endPick = await chooseYearMonth(panel, before, stored.end, true);
-  const leftText = readControlText(pair.left);
-  const rightText = readControlText(pair.right);
-  const leftMatched = dateTextMatches(stored.start, leftText);
-  const rightMatched = dateTextMatches(stored.end, rightText);
+  let leftMatched = dateTextMatches(stored.start, readControlText(pair.left));
+  let rightMatched = dateTextMatches(stored.end, readControlText(pair.right));
   if (leftMatched && rightMatched) {
     await dismissOverlay(el);
     return { ok: true, reason: '区间起止已写入' };
   }
-  if (!leftMatched) clearDateInput(pair.left);
-  if (!rightMatched) clearDateInput(pair.right);
+  // 弹层没同时对上时再打字补一次；已经对的那一侧不清
+  if (!leftMatched) {
+    leftMatched = await leaveYearMonthWithoutPanel(pair.left, stored.start);
+  }
+  if (!rightMatched) {
+    rightMatched = await leaveYearMonthWithoutPanel(pair.right, stored.end);
+  }
+  if (leftMatched && rightMatched) {
+    await dismissOverlay(el);
+    return { ok: true, reason: '区间起止已写入' };
+  }
   return { ok: false, reason: endPick.ok ? '区间起止没有同时对上' : (endPick.reason || '结束月没有点上') };
 }
 
 /**
- * 日期态机：年面板导航 → 年 → 月 →（可选）日。禁止在日视图里盲找年份。
- * 左右两个 YYYY-MM 的起止区间改走 driveRangeMonthPair，单日单框仍走下面的原路径。
+ * 把这一次日期写入记进操作记录。
+ * 调用方：driveDatePanel。不改页面。
  */
-export async function driveDatePanel(el, value) {
+function recordDatePanelStep(el, action, result, value, foundPair, extra) {
+  const labelText = fieldLabelBlob(el) || '日期';
+  const actual = readControlText(resolveDateInput(el) || el);
+  recordFillStep(
+    labelText,
+    action,
+    result,
+    `目标=${value || ''} 双框=${foundPair ? '是' : '否'} 回读=${actual || '占位'}${extra ? ` ${extra}` : ''}`,
+  );
+}
+
+/**
+ * 日期态机：年面板导航 → 年 → 月 →（可选）日。禁止在日视图里盲找年份。
+ * 左右两个 YYYY-MM 的起止区间改走 driveRangeMonthPair。
+ * knownPair：卡片路径已经找到的左右框，不再用组件类名重找。
+ * 调用方：driveWidgetWrite、fillRangeDatePair。会改日期框显示值。
+ */
+export async function driveDatePanel(el, value, knownPair) {
   const date = normalizeDate(value);
   const parts = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!parts) return { ok: false, reason: '日期无有效年份' };
-  const rangePair = findRangeDatePair(el);
+  if (!parts) {
+    recordDatePanelStep(el, '写入', '日期无有效年份', value, false, '');
+    return { ok: false, reason: '日期无有效年份' };
+  }
+  const rangePair = knownPair && knownPair.left && knownPair.right
+    ? knownPair
+    : findRangeDatePair(el);
   if (rangePair) {
-    return driveRangeMonthPair(el, value, rangePair);
+    const pairResult = await driveRangeMonthPair(el, value, rangePair);
+    recordDatePanelStep(el, '写入区间', pairResult.ok ? '留下了' : '没留下', value, true, pairResult.reason || '');
+    return pairResult;
   }
   const yearText = parts[1];
   const monthNumber = String(Number(parts[2]));
@@ -1605,6 +1727,7 @@ export async function driveDatePanel(el, value) {
   const hasDay = sourceHasCalendarDay(value);
   const dateInput = resolveDateInput(el);
   if (!(await ensurePanelsClosed(el))) {
+    recordDatePanelStep(el, '写入', '已有弹层关不掉，不再点开下一个', value, false, '');
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
 
@@ -1614,6 +1737,7 @@ export async function driveDatePanel(el, value) {
   const dateTargetIsTextField = /学校|专业|公司|职位|描述/.test(dateTargetLabel)
     && !/时间|日期|起止/.test(dateTargetLabel);
   if (dateTargetIsTextField) {
+    recordDatePanelStep(el, '写入', '日期不能写入学校、专业、公司、职位或描述', value, false, '');
     return { ok: false, reason: '日期不能写入学校、专业、公司、职位或描述' };
   }
   if (dateInput && !dateInput.readOnly && !dateInput.disabled) {
@@ -1623,9 +1747,10 @@ export async function driveDatePanel(el, value) {
     dateInput.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(80);
     if (dateTextMatches(value, readControlText(dateInput))) {
+      recordDatePanelStep(el, '写入', '日期直接写入', value, false, '');
       return { ok: true, reason: '日期直接写入' };
     }
-    setNativeValue(dateInput, '');
+    // 回读还是占位时不立刻清空，留给日历弹层；没有弹层时再以框内是否留下年月为准
   }
 
   const before = snapshotOverlays();
@@ -1633,6 +1758,18 @@ export async function driveDatePanel(el, value) {
   await sleep(220);
   let panel = await waitForOverlay(before, 1000);
   if (!panel) {
+    if (dateInput && dateTextMatches(value, readControlText(dateInput))) {
+      recordDatePanelStep(el, '写入', '无日历弹层，年月已留在框内', value, false, '');
+      return { ok: true, reason: '无日历弹层，年月已留在框内' };
+    }
+    const typedWithoutPanel = dateInput
+      ? await leaveYearMonthWithoutPanel(dateInput, value)
+      : false;
+    if (typedWithoutPanel) {
+      recordDatePanelStep(el, '写入', '无日历弹层，年月已留在框内', value, false, '');
+      return { ok: true, reason: '无日历弹层，年月已留在框内' };
+    }
+    recordDatePanelStep(el, '写入', '点击触发器后未见日期面板', value, false, '');
     return { ok: false, reason: '点击触发器后未见日期面板' };
   }
 
@@ -1675,13 +1812,19 @@ export async function driveDatePanel(el, value) {
         guard += 1;
       }
       if (!clickYearCell(panel, yearText)) {
-        clearDateInput(el);
+        recordDatePanelStep(el, '写入', '年面板未点到目标年', value, false, '');
+        if (!dateTextMatches(value, readControlText(dateInput || el))) {
+          clearDateInput(el);
+        }
         return failDrive(el, '年面板未点到目标年');
       }
       await sleep(180);
       panel = findFreshOverlay(before) || panel;
     } else {
-      clearDateInput(el);
+      recordDatePanelStep(el, '写入', '无法进入年选择面板', value, false, '');
+      if (!dateTextMatches(value, readControlText(dateInput || el))) {
+        clearDateInput(el);
+      }
       return failDrive(el, '无法进入年选择面板');
     }
   }
@@ -1694,11 +1837,17 @@ export async function driveDatePanel(el, value) {
     mode = detectDatePanelMode(panel);
   }
   if (mode !== 'month') {
-    clearDateInput(el);
+    recordDatePanelStep(el, '写入', '未出现月面板', value, false, '');
+    if (!dateTextMatches(value, readControlText(dateInput || el))) {
+      clearDateInput(el);
+    }
     return failDrive(el, '未出现月面板');
   }
   if (!clickMonthCell(panel, monthNumber)) {
-    clearDateInput(el);
+    recordDatePanelStep(el, '写入', '月面板未点到目标月', value, false, '');
+    if (!dateTextMatches(value, readControlText(dateInput || el))) {
+      clearDateInput(el);
+    }
     return failDrive(el, '月面板未点到目标月');
   }
   await sleep(180);
@@ -1715,12 +1864,17 @@ export async function driveDatePanel(el, value) {
       }
       await ensurePanelsClosed(el);
       if (monthMatches) {
+        recordDatePanelStep(el, '写入', '控件只到月份，年月已对上', value, false, '');
         return { ok: true, reason: '控件只到月份，年月已对上' };
       }
+      recordDatePanelStep(el, '写入', '点完月份后没有出现日面板', value, false, '');
       return { ok: false, reason: '点完月份后没有出现日面板' };
     }
     if (!clickDayCell(panel, dayNumber)) {
-      clearDateInput(el);
+      recordDatePanelStep(el, '写入', '日面板未点到目标日', value, false, '');
+      if (!dateTextMatches(value, readControlText(dateInput || el))) {
+        clearDateInput(el);
+      }
       return failDrive(el, '日面板未点到目标日');
     }
     await sleep(120);
@@ -1730,10 +1884,14 @@ export async function driveDatePanel(el, value) {
   const matched = dateTextMatches(value, actual);
   chaoDebug.info('日期态机回读', { 目标: date, 实际: actual, 成功: matched });
   if (!matched) {
-    clearDateInput(el);
+    recordDatePanelStep(el, '写入', '日期与目标年月日不一致', value, false, '');
+    if (!dateTextMatches(value, actual)) {
+      clearDateInput(el);
+    }
     return failDrive(el, '日期与目标年月日不一致');
   }
   await dismissOverlay(el);
+  recordDatePanelStep(el, '写入', '日期态机成功', value, false, '');
   return { ok: true, reason: '日期态机成功' };
 }
 

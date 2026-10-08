@@ -30,13 +30,11 @@ import { driveDatePanel, rangeSideOfControl } from './chao/widgetDrivers';
 import { dateTextMatches, isCalendarDate } from './chao/rules';
 import { cityNameOnly } from '../../shared/fill/sectionBinder';
 import { namedInternshipExperiences, namedWorkExperiences } from '../../shared/fill/sectionAdds';
+import { isAddControlText } from '../scanner/scanFields';
 import { recordFillStep } from './fillTrace';
 
 /** 点「添加」后等新卡挂上 */
 const ADD_WAIT_MS = 700;
-
-/** 同一分区最多再点几次添加 */
-const MAX_ADD_CLICKS = 6;
 
 /**
  * 短等待。
@@ -323,6 +321,9 @@ function listSectionCards(
 
 /**
  * 锁定这一分区的添加按钮。优先「添加」加标题原文，避免点到别的分区的添加。
+ * 调用方：fillSectionCards 在页面卡数不够、需要再长一张时。
+ * 输入：分区标题与下一分区标题；输出：分区内可点的添加控件，找不到则 null。
+ * 文案判定与扫描侧 isAddControlText 同一套，认「+ 添加」「＋添加」「新增」等，不单独再写一套以「添加」开头的规则。
  */
 function findAddButton(heading: HTMLElement, nextHeading: HTMLElement | null): HTMLElement | null {
   const headingText = ownShortText(heading).replace(/[（(].*$/, '');
@@ -335,7 +336,8 @@ function findAddButton(heading: HTMLElement, nextHeading: HTMLElement | null): H
     if (namedAddText && text === namedAddText) {
       return true;
     }
-    return isInsideSection(heading, nextHeading, node) && /^添加/.test(text) && text.length <= 12;
+    // 必须落在本分区内，且文案与扫描/补行路径一致，避免「+添加」被旧规则漏掉
+    return isInsideSection(heading, nextHeading, node) && isAddControlText(text);
   });
   const namedButton = namedAddText
     ? candidates.find((node) => ownShortText(node) === namedAddText)
@@ -707,7 +709,23 @@ function rangeInputsBeside(captionNode: HTMLElement): HTMLInputElement[] {
 }
 
 /**
+ * 包住左右两个起止框的最近祖先，给日期态机当同一块区间的宿主。
+ * 调用方：fillRangeDatePair。不改页面。
+ */
+function hostContainingRangeInputs(leftInput: HTMLInputElement, rightInput: HTMLInputElement): HTMLElement {
+  let current: HTMLElement | null = leftInput.parentElement;
+  while (current && current !== document.body) {
+    if (current.contains(rightInput)) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return leftInput;
+}
+
+/**
  * 把这一条的开始、结束写进「起止时间」左右两格。档案哪一侧空就跳过，不编造。
+ * 已找到的左右框直接交给 driveDatePanel，不再让它只用组件类名重找。
  * 调用方：fillDateTriggers。会改这两个日期框。
  */
 async function fillRangeDatePair<CardItem>(
@@ -736,38 +754,58 @@ async function fillRangeDatePair<CardItem>(
   const rightInput = inputs[1];
   if (!(leftInput instanceof HTMLInputElement) || !(rightInput instanceof HTMLInputElement)) {
     misses.push({ label: '起止时间', reason: '没有找到起止时间自己的两个日期框' });
+    recordFillStep('起止时间', '找框', '没有找到起止时间自己的两个日期框', `第${itemIndex + 1}条 双框=否`);
     return 0;
   }
+  const knownPair = {
+    host: hostContainingRangeInputs(leftInput, rightInput),
+    left: leftInput,
+    right: rightInput,
+  };
   const startValue = valueOf(item, '开始时间', leftInput).trim();
-  const endValue = rightInput ? valueOf(item, '结束时间', rightInput).trim() : '';
+  const endValue = valueOf(item, '结束时间', rightInput).trim();
   if (!startValue && !endValue) {
     return 0;
   }
-  let filled = 0;
+  let startResult: { ok: boolean; reason?: string } = { ok: true, reason: '' };
   if (startValue) {
-    let startResult = await driveDatePanel(leftInput, startValue);
+    startResult = await driveDatePanel(leftInput, startValue, knownPair);
     if (!endValue) {
       for (let attempt = 0; !startResult.ok && attempt < 2; attempt += 1) {
-        startResult = await driveDatePanel(leftInput, startValue);
+        startResult = await driveDatePanel(leftInput, startValue, knownPair);
       }
-    }
-    if (!endValue && !startResult.ok) {
-      misses.push({ label: '起止时间', reason: startResult.reason || '开始月没写上' });
-    }
-    if (startResult.ok) {
-      filled += 1;
     }
   }
-  if (endValue && rightInput) {
-    const endResult = await driveDatePanel(rightInput, endValue);
-    if (endResult.ok) {
-      filled += 1;
-      if (startValue) {
-        filled += 1;
-      }
-    } else {
-      misses.push({ label: '起止时间', reason: endResult.reason || '结束月没写上' });
-    }
+  let endResult: { ok: boolean; reason?: string } = { ok: true, reason: '' };
+  if (endValue) {
+    endResult = await driveDatePanel(rightInput, endValue, knownPair);
+  }
+  const leftActual = readControlText(leftInput);
+  const rightActual = readControlText(rightInput);
+  const leftMatched = !startValue || dateTextMatches(startValue, leftActual);
+  const rightMatched = !endValue || dateTextMatches(endValue, rightActual);
+  let filled = 0;
+  if (startValue && !leftMatched) {
+    misses.push({ label: '起止时间', reason: startResult.reason || '开始月没写上' });
+    recordFillStep(
+      '起止时间',
+      '开始月',
+      startResult.reason || '没写上',
+      `目标=${startValue} 双框=是 回读=${leftActual || '占位'}`,
+    );
+  } else if (startValue && leftMatched) {
+    filled += 1;
+  }
+  if (endValue && !rightMatched) {
+    misses.push({ label: '起止时间', reason: endResult.reason || '结束月没写上' });
+    recordFillStep(
+      '起止时间',
+      '结束月',
+      endResult.reason || '没写上',
+      `目标=${endValue} 双框=是 回读=${rightActual || '占位'}`,
+    );
+  } else if (endValue && rightMatched) {
+    filled += 1;
   }
   return filled;
 }
@@ -887,6 +925,9 @@ async function fillSectionCards<CardItem>(
   let filled = 0;
   let itemIndex = 0;
   let addClickCount = 0;
+  // 上限按「档案条数 − 当前已有卡数」动态计算，不写死次数；页上已有若干张时只允许补差额
+  const cardsAlreadyOnPage = readCards().length;
+  const maxAddClicksAllowed = Math.max(0, items.length - cardsAlreadyOnPage);
   while (itemIndex < items.length) {
     if (shouldFillStop()) {
       break;
@@ -910,7 +951,7 @@ async function fillSectionCards<CardItem>(
       itemIndex += 1;
       continue;
     }
-    if (addClickCount >= MAX_ADD_CLICKS) {
+    if (addClickCount >= maxAddClicksAllowed) {
       misses.push({
         label: sectionName,
         reason: `点了添加但卡片数量没有增加到 ${itemIndex + 1} 张`,

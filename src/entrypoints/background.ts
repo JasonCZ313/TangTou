@@ -613,6 +613,7 @@ async function handleBuildFillPlan(
     decisionPreferLocal: settings.decisionPreferLocal,
     decisionMinConfidence: settings.decisionMinConfidence,
     layaModelUrl: settings.layaModelUrl,
+    preferCloudForRemaining: Boolean(message.profileSectionKey?.trim()),
   });
   if (isPageWorkAborted()) {
     return {
