@@ -1,0 +1,14 @@
+{
+  "format": "tangtou-ort-v0",
+  "version": "0.1.0-score-v0",
+  "label": "ORT 打分协议示例清单（需自备 model.onnx，I/O=tangtou-score-v0）",
+  "ioProtocol": "tangtou-score-v0",
+  "featureDim": 64,
+  "maxOptions": 16,
+  "files": [
+    {
+      "path": "model.onnx",
+      "optional": false
+    }
+  ]
+}

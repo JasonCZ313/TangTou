@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>躺投 — 一键填写</title>
+    <script type="module" crossorigin src="/chunks/popup-DkxYummL.js"></script>
+    <link rel="modulepreload" crossorigin href="/chunks/userFacingError-ClrUqgRH.js">
+    <link rel="modulepreload" crossorigin href="/chunks/appVersion-X3s7UFoD.js">
+    <link rel="modulepreload" crossorigin href="/chunks/popupScanHandoff-DFYVjmLG.js">
+    <link rel="stylesheet" crossorigin href="/assets/popup-M2soFesH.css">
+  </head>
+  <body>
+    <!-- Popup 快捷条：选档案 + 扫描；预览与核对在侧边助手 -->
+    <main class="popup-page">
+      <header class="popup-header">
+        <div class="brand-header">
+          <img class="brand-logo is-sm" src="/brand/logo-mark.png" width="36" height="36" alt="躺投">
+          <div class="brand-copy">
+            <h1 class="brand-name">躺投</h1>
+            <p class="brand-tagline">快捷条 · 预览在侧边助手</p>
+          </div>
+        </div>
+      </header>
+
+      <section class="popup-section" aria-labelledby="profileHeading">
+        <h2 id="profileHeading" class="section-label">选用档案</h2>
+        <label class="field-label" for="profileSelect">当前档案</label>
+        <select id="profileSelect" class="profile-select">
+          <option value="">加载中…</option>
+        </select>
+        <label class="checkbox-row" for="setDefaultCheckbox">
+          <input type="checkbox" id="setDefaultCheckbox">
+          <span>设为默认档案</span>
+        </label>
+      </section>
+
+      <section class="popup-actions" aria-label="快捷操作">
+        <!-- 主操作全宽 -->
+        <button type="button" id="fillButton" class="btn btn-primary popup-action-primary">
+          扫描并预览
+        </button>
+        <!-- 次要入口并排 -->
+        <div class="popup-action-row">
+          <button type="button" id="openSidePanelButton" class="btn btn-secondary">
+            打开侧边助手
+          </button>
+          <button type="button" id="openOptionsButton" class="btn btn-secondary">
+            打开设置
+          </button>
+        </div>
+        <button type="button" id="stopButton" class="btn btn-ghost popup-action-undo" hidden>
+          停止
+        </button>
+        <button type="button" id="undoButton" class="btn btn-ghost popup-action-undo">
+          撤销本轮
+        </button>
+      </section>
+
+      <div id="scanProgress" class="scan-progress" hidden>
+        <p id="scanProgressLabel" class="scan-progress-label">正在准备扫描</p>
+        <div class="scan-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="scanProgressLabel">
+          <div id="scanProgressFill" class="scan-progress-fill"></div>
+        </div>
+      </div>
+
+      <p id="statusMessage" class="status-message" role="status" aria-live="polite"></p>
+      <p id="appVersionLabel" class="app-version">版本</p>
+      <p class="maker-credit">
+        本程序由 <span class="maker-credit-name">雪部湾扁橙</span> 编程制作，感谢您的使用！
+      </p>
+    </main>
+  </body>
+</html>

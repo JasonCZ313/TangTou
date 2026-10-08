@@ -4,6 +4,7 @@
 # 【会上传 — 功能必需】
 #   src/              扩展全部源码（background / content / UI / storage / LLM）
 #   public/icons/     扩展图标（PNG，构建与商店展示必需）
+#   .output/          预构建扩展产物（chrome-mv3 / edge-mv3），克隆后可直接加载到浏览器
 #   fixtures/         QA 空白表单夹具（无真实个人信息）
 #   docs/             设计与验收文档
 #   package.json      依赖与脚本声明
@@ -16,9 +17,10 @@
 #   API Key、.env、证书私钥
 #   用户简历导出、本机备份 JSON
 #   .superpowers/ 本地调试与 Chrome 测试档案（含 Cookie 等）
-#   node_modules/、.output/、.wxt/、zip/crx 等构建与依赖产物
+#   node_modules/、.wxt/、zip/crx 等依赖与本机中间产物（.output 除外，需入库）
 #
-# 他人克隆后：npm install && npm run build 即可完整使用。
+# 他人克隆后：可直接用浏览器「加载已解压」指向 .output/chrome-mv3 或 .output/edge-mv3；
+# 开发者也可 npm install && npm run build 自行重编。
 # API Key 与简历档案只写在扩展选项页，由浏览器本地存储，从不进仓库。
 # =============================================================================
 
@@ -85,9 +87,8 @@ jspm_packages/
 bower_components/
 
 # -----------------------------------------------------------------------------
-# 构建 / 打包产物（npm run build / npm run zip 可重新生成）
+# 构建中间产物与压缩包（.output 预构建目录需要入库，故不忽略）
 # -----------------------------------------------------------------------------
-.output/
 .tmp/
 .wxt/
 dist/

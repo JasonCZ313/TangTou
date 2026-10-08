@@ -305,20 +305,58 @@ function describeField(
 }
 
 /**
- * 判断候选节点是否应纳入扫描结果（类型黑名单 + 可见性）。
+ * 组件外壳选择器：下拉与日期认外壳，与 ant-select 同一口径。
+ * 调用方：collectFormControls、shouldIncludeElement。
+ */
+const WIDGET_SHELL_SELECTOR =
+  '.ant-select, .el-select, .ant-picker, .el-date-editor, .el-range-editor';
+
+/**
+ * 判断候选节点是否应纳入扫描结果（类型黑名单 + 外壳规则 + 可见性）。
+ * 调用方：scanFields、scanBlankFieldsInRegionBox、absorbNewFields 等。
+ * 下拉：只认外壳，内部搜索 input 不计件。
+ * 日期：内部 input 可见则保留左右格；不可见则改认外壳，避免起止整段漏扫。
  */
 function shouldIncludeElement(element: Element): boolean {
   if (element instanceof HTMLInputElement) {
     if (SKIPPED_INPUT_TYPES.has(element.type.toLowerCase())) {
       return false;
     }
-    // 年月下拉里的搜索框本身看不见，改记外面的选择框，避免点不中「年」「月」。
+    // 下拉内部搜索框一律不计件，改记外面的选择框
     if (element.closest('.ant-select, .el-select')) {
       return false;
     }
+    // 日期外壳内的不可见 input 不计件，改记 .ant-picker 等外壳
+    const dateShell = element.closest('.ant-picker, .el-date-editor, .el-range-editor');
+    if (dateShell instanceof HTMLElement && !isElementVisible(element)) {
+      return false;
+    }
   }
-  if (element instanceof HTMLElement && element.matches('.ant-select, .el-select')) {
-    if (element.parentElement?.closest('.ant-select, .el-select')) {
+  if (element instanceof HTMLElement && element.matches(WIDGET_SHELL_SELECTOR)) {
+    // 嵌套外壳只留最外一层
+    if (element.parentElement?.closest(WIDGET_SHELL_SELECTOR)) {
+      return false;
+    }
+    // 日期外壳：若已有可见 input 会被单独收录，外壳不再重复计件
+    if (element.matches('.ant-picker, .el-date-editor, .el-range-editor')) {
+      const hasVisibleDateInput = [...element.querySelectorAll('input')].some((node) => {
+        if (!(node instanceof HTMLInputElement) || SKIPPED_INPUT_TYPES.has(node.type.toLowerCase())) {
+          return false;
+        }
+        return isElementVisible(node);
+      });
+      if (hasVisibleDateInput) {
+        return false;
+      }
+    }
+  }
+  // 自定义下拉常只有 role=combobox；已在 ant/el-select 内的内层 combobox 不重复计件
+  if (element instanceof HTMLElement && element.getAttribute('role') === 'combobox') {
+    if (element.closest('.ant-select, .el-select') && !element.matches('.ant-select, .el-select')) {
+      return false;
+    }
+    const parentCombobox = element.parentElement?.closest('[role="combobox"]');
+    if (parentCombobox instanceof HTMLElement && parentCombobox !== element) {
       return false;
     }
   }
@@ -407,11 +445,17 @@ let lastUnreachableFrameCount = 0;
 
 /**
  * 收集普通文档、开放 Shadow DOM 和同源 iframe 里的表单控件。
+ * 调用方：scanFields、scanBlankFieldsInRegionBox、absorbNewFields 等共用。
+ * 除原生 input/textarea/select 外，收录下拉与日期外壳，以及无 ant/el 类名的 combobox，
+ * 避免学历、起止时间因「只有外壳、内部 input 不可见」而进不了空白清单。
  */
 function collectFormControls(root: ParentNode): Element[] {
   const controls: Element[] = [];
   const visitedRoots = new Set<ParentNode>();
-  const selector = 'input, textarea, select, [contenteditable="true"], .ant-select, .el-select';
+  const selector =
+    'input, textarea, select, [contenteditable="true"], '
+    + '.ant-select, .el-select, .ant-picker, .el-date-editor, .el-range-editor, '
+    + '[role="combobox"]';
   let unreachableFrameCount = 0;
 
   /**
@@ -2332,6 +2376,8 @@ export interface RegionBlankFieldScanResult {
 /**
  * 在不动整页滚动扫描的前提下，识别矩形内的空白控件并生成字段描述。
  * 先等 DOM 安静（框内用更短上限），再过滤扩展 UI、已填控件与框外控件。
+ * 候选来自 collectFormControls（含下拉/日期外壳与 combobox），判空走 isControlEmpty。
+ * 调用方：regionFieldScan.runRegionFieldScan。输入：视口矩形。输出：空白字段与耗时。
  */
 export async function scanBlankFieldsInRegionBox(
   regionBox: RegionViewportBox,

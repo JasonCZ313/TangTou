@@ -50,66 +50,60 @@
 ## 环境要求
 
 - **浏览器**：Google Chrome 或 Microsoft Edge（需支持 Side Panel）
-- **Node.js**：建议当前 LTS（用于从源码构建）
-- **系统**：Windows / macOS / Linux 均可构建；下文命令以 **PowerShell（Windows）** 为例
+- **直接使用**：仓库已包含预构建目录 `.output/`，**无需安装 Node、也无需先编译**
+- **从源码开发**：建议 Node.js 当前 LTS；下文构建命令以 **PowerShell（Windows）** 为例
 
 ---
 
 ## 如何加载扩展
 
-### 方式 A：从源码构建后加载（推荐）
+### 方式 A：直接加载预构建产物（推荐，无需 Node）
 
-1. 克隆仓库并进入目录：
+仓库已提交 `.output/chrome-mv3` 与 `.output/edge-mv3`。下载 ZIP 解压或克隆后即可加载：
 
 ```powershell
 git clone https://github.com/JasonCZ313/TangTou.git
 cd TangTou
 ```
 
-2. 安装依赖并构建：
-
-```powershell
-npm install
-npm run build
-```
-
-`npm install` 会自动准备 WXT、同步 ORT WASM 与 OCR 语言包。Chrome 产物目录一般为：
-
-```text
-.output\chrome-mv3
-```
-
-面向 Edge 时：
-
-```powershell
-npm run build:edge
-```
-
-产物目录一般为：
-
-```text
-.output\edge-mv3
-```
-
-3. 在浏览器中加载已解压扩展：
+也可在 GitHub 页面点击 **Code → Download ZIP**，解压到任意目录。
 
 **Google Chrome**
 
 1. 地址栏打开 `chrome://extensions/`
 2. 打开右上角「开发者模式」
 3. 点击「加载已解压的扩展程序」
-4. 选择 `.output\chrome-mv3`
+4. 选择仓库内的 `.output\chrome-mv3`（该目录内应有 `manifest.json`）
 
 **Microsoft Edge**
 
 1. 地址栏打开 `edge://extensions/`
 2. 打开左侧「开发人员模式」
 3. 点击「加载解压缩的扩展」
-4. 选择 `.output\edge-mv3`
+4. 选择仓库内的 `.output\edge-mv3`（该目录内应有 `manifest.json`）
 
-4. 工具栏出现「躺投」图标即表示加载成功。无需注册账号。
+工具栏出现「躺投」图标即表示加载成功。无需注册账号。
 
-### 方式 B：开发模式（热重载）
+### 方式 B：从源码重新构建后加载（开发者）
+
+若要改源码或本地重编：
+
+```powershell
+git clone https://github.com/JasonCZ313/TangTou.git
+cd TangTou
+npm install
+npm run build
+```
+
+`npm install` 会准备 WXT、同步 ORT WASM 与 OCR 语言包。Chrome 产物目录一般为 `.output\chrome-mv3`。Edge：
+
+```powershell
+npm run build:edge
+```
+
+产物目录一般为 `.output\edge-mv3`。然后按「方式 A」加载对应目录。
+
+### 方式 C：开发模式（热重载）
 
 ```powershell
 npm install
@@ -122,7 +116,7 @@ npm run dev
 npm run dev:edge
 ```
 
-### 方式 C：分发用 zip
+### 方式 D：分发用 zip
 
 ```powershell
 npm run zip
@@ -377,37 +371,38 @@ UI surfaces:
 ## Requirements
 
 - **Browser**: Google Chrome or Microsoft Edge (Side Panel support required)
-- **Node.js**: current LTS recommended (to build from source)
-- Commands below use **PowerShell on Windows**; adapt paths if needed on other OS
+- **Direct use**: prebuilt `.output/` is committed — **no Node.js or build step required**
+- **From source**: Node.js current LTS recommended; commands below use **PowerShell on Windows**
 
 ---
 
 ## Load the extension
 
-### A. Build from source (recommended)
+### A. Load prebuilt output (recommended, no Node)
+
+Clone or download the ZIP, then load unpacked:
 
 ```powershell
 git clone https://github.com/JasonCZ313/TangTou.git
 cd TangTou
+```
+
+**Chrome:** `chrome://extensions/` → Developer mode → Load unpacked → `.output\chrome-mv3` (must contain `manifest.json`).
+
+**Edge:** `edge://extensions/` → Developer mode → Load unpacked → `.output\edge-mv3` (must contain `manifest.json`).
+
+No account signup is required.
+
+### B. Build from source (developers)
+
+```powershell
 npm install
 npm run build
 ```
 
-Chrome output is typically `.output\chrome-mv3`. For Edge:
+Chrome output: `.output\chrome-mv3`. Edge: `npm run build:edge` → `.output\edge-mv3`. Then load as in A.
 
-```powershell
-npm run build:edge
-```
-
-Output is typically `.output\edge-mv3`.
-
-**Chrome:** open `chrome://extensions/` → enable Developer mode → Load unpacked → select `.output\chrome-mv3`.
-
-**Edge:** open `edge://extensions/` → enable Developer mode → Load unpacked → select `.output\edge-mv3`.
-
-No account signup is required.
-
-### B. Dev mode (hot reload)
+### C. Dev mode (hot reload)
 
 ```powershell
 npm run dev
@@ -417,7 +412,7 @@ npm run dev:edge
 
 Load the WXT dev output directory shown in the terminal (often similar to `.output\chrome-mv3-dev`).
 
-### C. Zip package
+### D. Zip package
 
 ```powershell
 npm run zip

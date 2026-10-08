@@ -351,9 +351,23 @@ export function readControlText(el) {
     const placeholderNode = selectWrap.querySelector('.ant-select-selection-placeholder, .el-select__placeholder');
     if (placeholderNode) return '';
   }
+  // 日期外壳本体：只认内部 input 的真实值。空壳 textContent 常把「YYYY-MM」「至」拼在一起，不能当成已填。
+  // 内部 input 仍走后面的 value 分支，避免左右两格回读被拼成同一串。
+  const dateShell = el.closest?.('.ant-picker, .el-date-editor, .el-range-editor');
+  if (dateShell instanceof HTMLElement && el === dateShell) {
+    const dateValues = [];
+    for (const node of dateShell.querySelectorAll('input')) {
+      if (!(node instanceof HTMLInputElement) || node.type === 'hidden') continue;
+      const rawValue = String(node.value || '').trim();
+      if (rawValue && !isPlaceholderText(rawValue)) dateValues.push(rawValue);
+    }
+    if (dateValues.length > 0) return dateValues.join(' ').slice(0, 60);
+    return '';
+  }
   const ownValue = String(el.value || '').trim();
   if (ownValue && !isPlaceholderText(ownValue)) return ownValue;
-  // 原生空输入不读同行芯片：否则会把左侧「姓名」「邮箱」当成已填值，框内扫描得到 0 项
+  // 原生空输入不读同行芯片：否则会把左侧「姓名」「邮箱」当成已填值，框内扫描得到 0 项。
+  // 日期格（含 ant-picker 内可见 input）value 已在上面处理；空则直接空，勿读外壳掩码字。
   const isNativeTextControl =
     (el instanceof HTMLInputElement
       && !/^(radio|checkbox|button|submit|file|hidden|image|reset)$/i.test(el.type))
@@ -361,10 +375,22 @@ export function readControlText(el) {
   if (isNativeTextControl && !el.closest?.('.ant-select, .el-select')) {
     return '';
   }
+  // role=combobox 空态：子节点常渲染「请选择」，整段 textContent 不能当已选值
+  if (el.getAttribute?.('role') === 'combobox' || el.closest?.('[role="combobox"]') === el) {
+    const comboboxText = String(el.textContent || '').replace(/\s+/g, '');
+    if (!comboboxText || isPlaceholderText(comboboxText)) return '';
+  }
   const ownText = String(el.textContent || '').replace(/\s+/g, ' ').trim();
   const compactText = ownText.replace(/\s+/g, '');
   // 打开的国家列表、省市弹窗整段文字不能当成这个框已经选中的值
   if (compactText.length > 24 && /请选择|中国香港|全部省市|已选地区/.test(compactText)) {
+    return '';
+  }
+  // 日期占位被「至/～」拼进 textContent 时整段不是纯掩码，仍按空处理
+  if (
+    compactText
+    && isPlaceholderText(compactText.replace(/[至到～~—–－]/g, ''))
+  ) {
     return '';
   }
   if (ownText && !isPlaceholderText(ownText)) return ownText.slice(0, 60);
