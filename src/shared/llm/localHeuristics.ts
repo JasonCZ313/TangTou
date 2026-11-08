@@ -73,9 +73,10 @@ function corpusMatchesEmail(rawText: string, normalizedLowerText: string): boole
   );
 }
 
-/** 判断语料是否命中手机/电话类字段（中文 + phone/mobile/tel 词界）。 */
+/** 判断语料是否命中「本人」手机/电话类字段（中文 + phone/mobile/tel 词界）。 */
 function corpusMatchesPhone(rawText: string, normalizedLowerText: string): boolean {
-  if (/区号/.test(rawText)) {
+  // 区号、紧急联系人/证明人电话不能当成本人手机去填
+  if (/区号|紧急|证明人|推荐人|联系人/.test(rawText)) {
     return false;
   }
   if (includesAnyChineseKeyword(rawText, ['手机', '电话'])) {

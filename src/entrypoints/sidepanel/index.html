@@ -147,6 +147,9 @@
           <button type="button" id="regionConfirmWriteButton" class="btn btn-primary region-confirm-write-button" disabled>
             确认写入框内
           </button>
+          <button type="button" id="regionIncrementalWriteButton" class="btn btn-secondary region-incremental-write-button" disabled>
+            增量写入框内
+          </button>
           <button type="button" id="regionUndoButton" class="btn btn-ghost region-undo-button" disabled>
             撤销框内
           </button>
@@ -164,7 +167,7 @@
             <tbody id="regionMappingTableBody"></tbody>
           </table>
         </div>
-        <p class="hint-text">先对照再点「确认写入框内」。整页的「确认写入」仍只写整页映射；「撤销本轮」与「撤销框内」互不影响。</p>
+        <p class="hint-text">先对照再点「确认写入框内」或「增量写入框内」（只填空）。整页「确认写入」覆盖计划项，「增量写入」只写空格；「撤销本轮」与「撤销框内」互不影响。</p>
       </section>
 
       <!-- 扫描和写入放在选用档案（及框内区）下面、映射表上面，不用滚到侧栏底部再点 -->
@@ -192,6 +195,9 @@
         ></p>
         <button type="button" id="confirmWriteButton" class="btn btn-primary action-confirm">
           确认写入
+        </button>
+        <button type="button" id="incrementalWriteButton" class="btn btn-secondary action-incremental" disabled>
+          增量写入
         </button>
         <button type="button" id="scanPageButton" class="btn btn-secondary action-scan">
           扫描本页

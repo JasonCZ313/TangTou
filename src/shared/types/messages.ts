@@ -91,6 +91,11 @@ export type ExtensionMessage =
       fillScope?: 'page' | 'region';
       /** P4 框内写入时只附带该档案段正文 */
       profileSectionKey?: string;
+      /**
+       * P4 写入模式：overwrite=确认写入（覆盖计划项）；incremental=增量写入（只写空控件）。
+       * 缺省按覆盖，保持旧「确认写入」行为。
+       */
+      fillMode?: 'overwrite' | 'incremental';
     }
   | {
       type: 'APPLY_FILL_RESULT';
@@ -101,6 +106,10 @@ export type ExtensionMessage =
       misses?: FillMiss[];
       /** 本轮每一步操作记录，侧边栏复制后贴回排查 */
       trace?: string;
+      /** P3：本轮写入路径（快/慢/混合），侧栏状态可观测 */
+      fillPath?: 'fast' | 'slow' | 'hybrid';
+      /** P4：覆盖或增量 */
+      fillMode?: 'overwrite' | 'incremental';
     }
   | {
       type: 'UNDO_LAST_FILL';

@@ -52,7 +52,12 @@ export async function runRegionFieldScan(
     reportRegionScanMessage({ type: 'REGION_SCAN_CLEARED' });
     return null;
   }
-  const scanRequestId = requestId ?? crypto.randomUUID();
+  // 非安全上下文（HTTP 验收 host）可能没有 randomUUID，回落本地 id
+  const scanRequestId =
+    requestId
+    ?? (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `region-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
   activeRegionScanRequestId = scanRequestId;
   reportRegionScanMessage({
     type: 'REGION_SCAN_PROGRESS',

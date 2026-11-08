@@ -87,18 +87,23 @@ export function createCloudEngine(options: {
           usage,
         };
       } catch (error: unknown) {
+        // 超时与网络/鉴权等失败都软降级：保留规则已配项，不把整次对照打成红字失败。
+        // 真实网申常有十余个干扰格；云端一时不通时仍应能写入规则能对上的学校/专业等主字段。
         const timedOut = error instanceof Error && error.name === 'AbortError';
-        if (timedOut) {
-          return {
-            usedEngine: 'cloud',
-            items: [],
-            skippedFieldIds: request.fields.map((field) => field.fieldId),
-            usage: null,
-            notice:
-              '模型超过 120 秒还没答完。已保留规则配上的项；其余可再扫一次或检查网络。',
-          };
-        }
-        throw error;
+        const detail =
+          error instanceof Error ? error.message : String(error ?? '');
+        const briefDetail = detail.replace(/\s+/g, ' ').trim().slice(0, 80);
+        return {
+          usedEngine: 'cloud',
+          items: [],
+          skippedFieldIds: request.fields.map((field) => field.fieldId),
+          usage: null,
+          notice: timedOut
+            ? '模型超过 120 秒还没答完。已保留规则配上的项；其余可再扫一次或检查网络。'
+            : briefDetail
+              ? `云端对照未完成（${briefDetail}）。已保留规则配上的项；可检查接口或再扫一次。`
+              : '云端对照未完成。已保留规则配上的项；可检查接口或再扫一次。',
+        };
       }
     },
   };

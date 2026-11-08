@@ -1,6 +1,43 @@
 /**
+ * 快路径控件策略（声明式枚举）：写入层按枚举选驱动，禁止下发可执行脚本。
+ * text=纯文本短收尾；select=下拉/combobox；date=单日期；rangeDate=起止区间一侧。
+ */
+export type FastPathWidgetKind = 'text' | 'select' | 'date' | 'rangeDate';
+
+/**
+ * 单条字段的本地快路径规则：用选择器直定位，少做扫描重绑。
+ * 给 applyFillPlan 命中站时用；选择器找不到则该格回落慢路径。
+ */
+export interface SiteFastPathFieldRule {
+  /** 角色键，与页面标签语义对齐（如 school、degree、startDate） */
+  roleKey: string;
+  /** CSS 选择器，定位可写控件或外壳 */
+  selector: string;
+  /** 组件写入策略 */
+  widget: FastPathWidgetKind;
+  /** 可选：展示用标签提示（miss/trace） */
+  labelHint?: string;
+}
+
+/**
+ * 站点本地快路径配置（随扩展打包，无网可用；P3）。
+ * 未配置或 enabled=false 时整站仍走现有慢路径，不删除慢路径。
+ */
+export interface SiteFastPathConfig {
+  /** 是否启用快路径入口 */
+  enabled: boolean;
+  /** 写入后是否跳过分区重扫补写（短扫描） */
+  skipRescan: boolean;
+  /** 快路径每格最大尝试次数；缺省 2（慢路径仍为 3） */
+  maxAttempts?: number;
+  /** 声明式字段表；空表视为无可用快路径，整轮回落慢路径 */
+  fields: SiteFastPathFieldRule[];
+}
+
+/**
  * 站点适配器类型：按 host 提供选择器与添加/保存文案，增强扫描与补行。
  * 写入仍只按 FillPlan，适配器不直接填值。
+ * 可选 fastPath：命中站时走本地声明式快路径。
  */
 export interface SiteAdapter {
   /** 稳定 id，如 beisen */
@@ -17,6 +54,8 @@ export interface SiteAdapter {
   saveLabels: string[];
   /** 编辑类按钮文案 */
   editLabels: string[];
+  /** 本地快路径配置；无则该站写入仍全部走慢路径 */
+  fastPath?: SiteFastPathConfig;
 }
 
 /**

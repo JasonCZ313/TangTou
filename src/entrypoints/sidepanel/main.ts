@@ -188,6 +188,10 @@ const executePlaybookButton = document.getElementById(
 const confirmWriteButton = document.getElementById(
   'confirmWriteButton',
 ) as HTMLButtonElement;
+/** P4：整页增量写入（只写空控件，不覆盖已填） */
+const incrementalWriteButton = document.getElementById(
+  'incrementalWriteButton',
+) as HTMLButtonElement;
 const undoButton = document.getElementById('undoButton') as HTMLButtonElement;
 const regionSelectButton = document.getElementById(
   'regionSelectButton',
@@ -209,6 +213,10 @@ const regionMapButton = document.getElementById(
 ) as HTMLButtonElement;
 const regionConfirmWriteButton = document.getElementById(
   'regionConfirmWriteButton',
+) as HTMLButtonElement;
+/** P4：框内增量写入（只写框内空格） */
+const regionIncrementalWriteButton = document.getElementById(
+  'regionIncrementalWriteButton',
 ) as HTMLButtonElement;
 const regionUndoButton = document.getElementById(
   'regionUndoButton',
@@ -322,6 +330,8 @@ function syncRegionMapControls(): void {
     isBusy || !selectedProfileId || !sectionReady;
   regionConfirmWriteButton.disabled =
     isBusy || previewItems === 0;
+  regionIncrementalWriteButton.disabled =
+    isBusy || previewItems === 0;
   regionUndoButton.disabled = isBusy || !regionFillApplied;
 }
 
@@ -430,6 +440,10 @@ async function runRegionMapFlow(): Promise<void> {
     showError('请先选择档案');
     return;
   }
+  // 换代再对照：上一轮点过停止后，不换代会一直吃到「已停止」
+  userRequestedStop = false;
+  sidepanelWorkGeneration += 1;
+  const mapWorkGeneration = sidepanelWorkGeneration;
   // 打「第1行」前缀并对 experience 区分实习/工作，须用完整档案取选中那一条
   const fieldsForSection = augmentFieldsForProfileSection(
     regionScannedFields,
@@ -441,8 +455,8 @@ async function runRegionMapFlow(): Promise<void> {
     profileId,
     fieldsForSection,
     () => undefined,
-    undefined,
-    undefined,
+    () => userRequestedStop,
+    mapWorkGeneration,
     sectionKey,
   );
   regionMappingPreview = {
@@ -462,8 +476,11 @@ async function runRegionMapFlow(): Promise<void> {
 
 /**
  * P4：按框内对照预览写入页面，并结束选区遮罩。
+ * @param fillMode overwrite=确认写入框内；incremental=增量写入框内（只写空格）
  */
-async function runRegionConfirmWrite(): Promise<void> {
+async function runRegionConfirmWrite(
+  fillMode: 'overwrite' | 'incremental' = 'overwrite',
+): Promise<void> {
   if (!regionMappingPreview) {
     showError('请先对照框内字段');
     return;
@@ -477,8 +494,13 @@ async function runRegionConfirmWrite(): Promise<void> {
   }
   const profileId = regionMappingPreview.profileId;
   const sectionKey = regionMappingPreview.sectionKey;
+  // 与整页确认写入一样换代：上一轮点过「停止」后，不换代会一直 shouldFillStop
+  userRequestedStop = false;
+  sidepanelWorkGeneration += 1;
+  const workGeneration = sidepanelWorkGeneration;
   stopButton.hidden = false;
-  showScanProgress(6, '正在补行并写入框内字段…');
+  const regionModeHint = fillMode === 'incremental' ? '增量写入框内空格…' : '正在补行并写入框内字段…';
+  showScanProgress(6, regionModeHint);
   try {
     const ensureResponse = await requestBackground({
       type: 'ENSURE_SECTION_ROWS',
@@ -500,7 +522,14 @@ async function runRegionConfirmWrite(): Promise<void> {
       profileId,
       fillScope: 'region',
       profileSectionKey: sectionKey,
+      workGeneration,
+      fillMode,
     });
+    if (userRequestedStop || (applyResponse.type === 'ERROR' && applyResponse.code === 'USER_STOPPED')) {
+      showScanProgress(100, '已停止。');
+      showStatus('已停止。', 'info');
+      return;
+    }
     if (applyResponse.type !== 'APPLY_FILL_RESULT') {
       throw new Error(
         applyResponse.type === 'ERROR'
@@ -509,16 +538,36 @@ async function runRegionConfirmWrite(): Promise<void> {
       );
     }
     regionFillApplied = true;
+    lastFillTrace = applyResponse.trace ?? '';
+    copyFillTraceButton.disabled = lastFillTrace.length === 0;
     await requestBackground({
       type: 'END_REGION_SELECT',
       requestId: createRequestId(),
     });
     clearRegionFieldList();
-    showScanProgress(100, `框内写入完成，成功 ${applyResponse.filled} 项。`);
+    // P3/P4：框内展示快慢路径与覆盖/增量模式
+    const regionPathLabel =
+      applyResponse.fillPath === 'fast'
+        ? '快路径'
+        : applyResponse.fillPath === 'hybrid'
+          ? '混合路径'
+          : applyResponse.fillPath === 'slow'
+            ? '慢路径'
+            : '';
+    const regionModeLabel = fillMode === 'incremental' ? '增量' : '覆盖';
+    const regionPathSuffix = [regionModeLabel, regionPathLabel].filter(Boolean).join('·');
+    const regionSuffixText = regionPathSuffix ? `（${regionPathSuffix}）` : '';
+    // A+B：框内与整页对齐——miss 表 + 完成对话框 + 有 miss 用 error
+    const regionMisses = applyResponse.misses ?? [];
+    renderMissTable(regionMisses);
+    showScanProgress(100, `框内写入完成，成功 ${applyResponse.filled} 项${regionSuffixText}。`);
     showStatus(
-      `框内已写入 ${applyResponse.filled} 项。可用「撤销框内」单独还原。`,
-      applyResponse.misses?.length ? 'warning' : 'success',
+      regionMisses.length > 0
+        ? `框内已写入 ${applyResponse.filled} 项${regionSuffixText}。没写上 ${regionMisses.length} 项，见下方表格。可用「撤销框内」单独还原。`
+        : `框内已写入 ${applyResponse.filled} 项${regionSuffixText}。可用「撤销框内」单独还原。`,
+      regionMisses.length > 0 ? 'error' : 'success',
     );
+    showFillDoneDialog(applyResponse.filled, regionMisses);
   } finally {
     stopButton.hidden = true;
     syncRegionMapControls();
@@ -863,6 +912,8 @@ function syncBusyUi(): void {
   mergePlaybookButton.disabled = isBusy || !hasPlaybookSteps;
   executePlaybookButton.disabled = isBusy || !hasPlaybookSteps;
   confirmWriteButton.disabled =
+    isBusy || !hasProfiles || !selectedProfileId || !sessionHasMappingRows();
+  incrementalWriteButton.disabled =
     isBusy || !hasProfiles || !selectedProfileId || !sessionHasMappingRows();
   undoButton.disabled = isBusy;
   regionSelectButton.disabled = isBusy;
@@ -1806,7 +1857,13 @@ function showFillDoneDialog(filled: number, misses: FillMiss[]): void {
   }
 }
 
-async function runConfirmWrite(): Promise<void> {
+/**
+ * 整页确认/增量写入。
+ * @param fillMode overwrite=确认写入；incremental=增量写入（只写空格）
+ */
+async function runConfirmWrite(
+  fillMode: 'overwrite' | 'incremental' = 'overwrite',
+): Promise<void> {
   userRequestedStop = false;
   sidepanelWorkGeneration += 1;
   const selectedProfileId = profileSelect.value;
@@ -1824,7 +1881,10 @@ async function runConfirmWrite(): Promise<void> {
     return;
   }
   stopButton.hidden = false;
-  showScanProgress(8, '正在按预览计划写入页面。');
+  showScanProgress(
+    8,
+    fillMode === 'incremental' ? '正在增量写入空格…' : '正在按预览计划写入页面。',
+  );
   try {
     const applyResponse = await requestBackground({
       type: 'APPLY_FILL_PLAN',
@@ -1832,6 +1892,7 @@ async function runConfirmWrite(): Promise<void> {
       plan: editedPlan,
       profileId: selectedProfileId,
       workGeneration: sidepanelWorkGeneration,
+      fillMode,
     });
     if (userRequestedStop || applyResponse.type === 'ERROR') {
       if (applyResponse.type === 'ERROR' && applyResponse.code === 'USER_STOPPED') {
@@ -1856,9 +1917,20 @@ async function runConfirmWrite(): Promise<void> {
     lastFillTrace = applyResponse.trace ?? '';
     copyFillTraceButton.disabled = lastFillTrace.length === 0;
     renderMissTable(misses);
-    showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项。`);
+    // P3/P4：快慢路径 + 覆盖/增量写进状态
+    const pathLabel =
+      applyResponse.fillPath === 'fast'
+        ? '快路径'
+        : applyResponse.fillPath === 'hybrid'
+          ? '混合路径'
+          : applyResponse.fillPath === 'slow'
+            ? '慢路径'
+            : '';
+    const modeLabel = fillMode === 'incremental' ? '增量' : '覆盖';
+    const pathSuffix = `（${[modeLabel, pathLabel].filter(Boolean).join('·')}）`;
+    showScanProgress(100, `写入结束，成功 ${applyResponse.filled} 项${pathSuffix}。`);
     showStatus(
-      `已经写入 ${applyResponse.filled} 项。没写上 ${misses.length} 项，见下方表格。`,
+      `已经写入 ${applyResponse.filled} 项${pathSuffix}。没写上 ${misses.length} 项，见下方表格。`,
       misses.length > 0 ? 'error' : 'success',
     );
     showFillDoneDialog(applyResponse.filled, misses);
@@ -2140,7 +2212,13 @@ function bindEvents(): void {
 
   regionConfirmWriteButton.addEventListener('click', () => {
     void withBusy(async () => {
-      await runRegionConfirmWrite();
+      await runRegionConfirmWrite('overwrite');
+    });
+  });
+
+  regionIncrementalWriteButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      await runRegionConfirmWrite('incremental');
     });
   });
 
@@ -2262,14 +2340,25 @@ function bindEvents(): void {
     });
   });
 
-  // 「确认写入」：按映射表（含用户改值）写入页面。框选还在时不开始。
+  // 「确认写入」：按映射表（含用户改值）覆盖写入。框选还在时不开始。
   confirmWriteButton.addEventListener('click', () => {
     void withBusy(async () => {
       if (await blockIfRegionSelectActive()) {
         return;
       }
       showStatus('正在按预览计划写入…', 'info');
-      await runConfirmWrite();
+      await runConfirmWrite('overwrite');
+    });
+  });
+
+  // P4「增量写入」：只写空控件，已填格保持不动。
+  incrementalWriteButton.addEventListener('click', () => {
+    void withBusy(async () => {
+      if (await blockIfRegionSelectActive()) {
+        return;
+      }
+      showStatus('正在增量写入空格…', 'info');
+      await runConfirmWrite('incremental');
     });
   });
 

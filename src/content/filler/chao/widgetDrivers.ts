@@ -1474,6 +1474,26 @@ function findRangeDatePair(el) {
       componentInputs.sort((leftInput, rightInput) => leftInput.getBoundingClientRect().left - rightInput.getBoundingClientRect().left);
       return { host: componentHost, left: componentInputs[0], right: componentInputs[1] };
     }
+    // 选区只收录外壳时，内部年月 input 常不可见；仍按 DOM 顺序认左右两格，
+    // 才能把起止打进框里（leaveYearMonthWithoutPanel / 回读外壳）。
+    const shellInputs = [...componentHost.querySelectorAll('input')].filter((node) => {
+      if (!(node instanceof HTMLInputElement) || node.type === 'hidden') return false;
+      return true;
+    });
+    if (shellInputs.length >= 2) {
+      const orderedShellInputs = shellInputs
+        .map((inputNode, inputOrder) => ({ inputNode, inputOrder }))
+        .sort((leftItem, rightItem) => {
+          const leftBox = leftItem.inputNode.getBoundingClientRect();
+          const rightBox = rightItem.inputNode.getBoundingClientRect();
+          if (Math.abs(leftBox.left - rightBox.left) > 1) {
+            return leftBox.left - rightBox.left;
+          }
+          return leftItem.inputOrder - rightItem.inputOrder;
+        })
+        .map((item) => item.inputNode);
+      return { host: componentHost, left: orderedShellInputs[0], right: orderedShellInputs[1] };
+    }
   }
   let current = el;
   for (let depth = 0; depth < 6 && current; depth += 1) {
@@ -1503,7 +1523,15 @@ export function rangeSideOfControl(el, pair) {
 }
 
 /** 区间两侧已经交给日期态机的档案日期。宿主是起止控件根节点。 */
-const rangeEndpointByHost = new WeakMap();
+let rangeEndpointByHost = new WeakMap();
+
+/**
+ * 清空起止区间暂存。新一轮确认写入开始时调用，避免上一轮留下的起/止串到本轮。
+ * 调用方：fillFields 进入 APPLY。不改页面。
+ */
+export function clearRangeEndpointCache() {
+  rangeEndpointByHost = new WeakMap();
+}
 
 /**
  * 在已经打开的面板上点到目标年、月。失败不清输入框，由调用方决定清哪一侧。

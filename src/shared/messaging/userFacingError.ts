@@ -24,7 +24,10 @@ export function isSoftPlanNotice(notice: string): boolean {
   return (
     /^截图识字跳过[：:]/.test(trimmed) ||
     /^截图跳过[：:]/.test(trimmed) ||
-    /离屏识字环境/.test(trimmed)
+    /离屏识字环境/.test(trimmed) ||
+    // 云端对照失败但规则项已保留：整页仍可核对写入，不当成硬失败红字
+    /^云端对照未完成/.test(trimmed) ||
+    /已保留规则配上的项/.test(trimmed)
   );
 }
 

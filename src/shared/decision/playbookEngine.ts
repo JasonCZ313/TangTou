@@ -36,10 +36,12 @@ function suggestProfileValueForLabel(
   }
   const blob = label.replace(/\s+/g, '');
   const basic = profileData.basic ?? {};
-  if (/姓名|名字|联系人/.test(blob)) {
+  // 「紧急联系人」姓名不应抢本人姓名；有「紧急/证明」时跳过姓名短路
+  if (/姓名|名字/.test(blob) && !/紧急|证明/.test(blob)) {
     return basic.fullName?.trim() || undefined;
   }
-  if (/手机|电话|联系方式/.test(blob)) {
+  // 紧急/证明/推荐人电话不能填本人手机
+  if (/手机|电话|联系方式/.test(blob) && !/紧急|证明|推荐|联系人/.test(blob)) {
     return basic.phone?.trim() || undefined;
   }
   if (/邮箱|邮件|email/i.test(blob)) {

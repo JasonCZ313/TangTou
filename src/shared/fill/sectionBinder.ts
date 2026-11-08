@@ -567,7 +567,8 @@ export function bindLabeledField(
     // 同一表单项里类型下拉的「身份证/护照」选项，不能当成号码框去 skip
     return { kind: 'value', value: idNumber, reason: '按行绑定：证件号码' };
   }
-  if (/手机号码|手机号/.test(label) && !/区号/.test(label)) {
+  // 本人手机：排除紧急/证明/联系人旁的手机格，避免把档案手机写进干扰区
+  if (/手机号码|手机号|手机/.test(label) && !/区号|紧急|证明|联系人/.test(label)) {
     const phoneNumber = profile.basic.phone.trim();
     if (!phoneNumber) {
       return null;

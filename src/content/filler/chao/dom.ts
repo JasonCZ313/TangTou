@@ -347,9 +347,17 @@ export function readControlText(el) {
   if (selectWrap instanceof HTMLElement) {
     const selectedItem = selectWrap.querySelector('.ant-select-selection-item, .el-select__selected-item');
     const selectedText = String(selectedItem?.textContent || '').replace(/\s+/g, ' ').trim();
-    if (selectedText && !isPlaceholderText(selectedText)) return selectedText.slice(0, 60);
+    if (
+      selectedItem instanceof HTMLElement
+      && !selectedItem.hidden
+      && selectedText
+      && !isPlaceholderText(selectedText)
+    ) {
+      return selectedText.slice(0, 60);
+    }
+    // 仅当占位节点仍可见时才判空；已选后站点常把 placeholder 留在 DOM 里但隐藏
     const placeholderNode = selectWrap.querySelector('.ant-select-selection-placeholder, .el-select__placeholder');
-    if (placeholderNode) return '';
+    if (placeholderNode instanceof HTMLElement && isPageFieldVisible(placeholderNode)) return '';
   }
   // 日期外壳本体：只认内部 input 的真实值。空壳 textContent 常把「YYYY-MM」「至」拼在一起，不能当成已填。
   // 内部 input 仍走后面的 value 分支，避免左右两格回读被拼成同一串。

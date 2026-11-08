@@ -320,6 +320,7 @@ export default defineContentScript({
         if (message.type === 'APPLY_FILL_PLAN') {
           beginFillWork(message.workGeneration);
           const fillScope = message.fillScope === 'region' ? 'region' : 'page';
+          const fillMode = message.fillMode === 'incremental' ? 'incremental' : 'overwrite';
           void applyFillPlan(
             message.plan,
             message.filePayloads ?? [],
@@ -327,6 +328,7 @@ export default defineContentScript({
             message.sectionAdds ?? [],
             message.profileData,
             fillScope,
+            fillMode,
           )
             .then((result) => {
               sendResponse({

@@ -229,11 +229,21 @@ function collectSelectOptions(selectElement: HTMLSelectElement): string[] {
  * 将单个 DOM 元素转为 FieldDescriptor，并登记到会话内 fieldId 映射表。
  * opener 是扫描时把它点出来的「编辑 / 添加」按钮；本来就看得见的字段为 null。
  */
+/**
+ * 生成字段 id。HTTPS 网申用 randomUUID；HTTP 验收页等非安全上下文回落时间戳，避免整轮扫描直接炸。
+ */
+function createScanFieldId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `raf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function describeField(
   element: Element,
   opener: HTMLElement | null = null,
 ): FieldDescriptor {
-  const fieldId = crypto.randomUUID();
+  const fieldId = createScanFieldId();
   fieldElementById.set(fieldId, element);
 
   const tag = element.tagName.toLowerCase();
@@ -2374,6 +2384,30 @@ export interface RegionBlankFieldScanResult {
 }
 
 /**
+ * 判断候选是否为「整段起止」外壳且内部没有两格可见年月输入。
+ * 这种外壳在选区里只会出现一次；若只生成一个字段，结束日进不了对照计划。
+ * 调用方：scanBlankFieldsInRegionBox。输入：候选节点。输出：需要补第二格则为 true。
+ */
+function isRegionRangeDateShellNeedingPair(element: Element): boolean {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  const isRangeShell = element.matches(
+    '.ant-picker-range, .el-range-editor, .el-date-editor--daterange',
+  );
+  if (!isRangeShell) {
+    return false;
+  }
+  const visibleDateInputs = [...element.querySelectorAll('input')].filter((node) => {
+    if (!(node instanceof HTMLInputElement) || SKIPPED_INPUT_TYPES.has(node.type.toLowerCase())) {
+      return false;
+    }
+    return isElementVisible(node);
+  });
+  return visibleDateInputs.length < 2;
+}
+
+/**
  * 在不动整页滚动扫描的前提下，识别矩形内的空白控件并生成字段描述。
  * 先等 DOM 安静（框内用更短上限），再过滤扩展 UI、已填控件与框外控件。
  * 候选来自 collectFormControls（含下拉/日期外壳与 combobox），判空走 isControlEmpty。
@@ -2408,6 +2442,11 @@ export async function scanBlankFieldsInRegionBox(
     }
     seenElements.add(candidate);
     blankFields.push(describeField(candidate));
+    // 区间日期外壳只有一格时，对照会只绑开始日。再记一格同标签，
+    // 让 noteRangeSides 分成起/止，框内确认写入才能左右都留下。
+    if (isRegionRangeDateShellNeedingPair(candidate)) {
+      blankFields.push(describeField(candidate));
+    }
   }
 
   blankFields.sort((fieldA, fieldB) => {

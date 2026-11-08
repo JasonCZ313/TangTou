@@ -54,10 +54,10 @@ export function getPageWorkAbortSignal(): AbortSignal | undefined {
 
 /**
  * 用户是否已经点过停止（当前代次已作废）。
+ * 只看代次：旧锁的 aborted 不能在换代后继续挡住新一轮对照/写入。
  */
 export function isPageWorkAborted(): boolean {
-  return pageWorkGeneration <= stoppedThroughGeneration
-    || pageWorkController?.signal.aborted === true;
+  return pageWorkGeneration <= stoppedThroughGeneration;
 }
 
 /**

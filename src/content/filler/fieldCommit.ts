@@ -5,6 +5,7 @@
 import type { FillMiss } from '../../shared/types/fill';
 import { shouldFillStop } from '../fillAbort';
 import {
+  CONTROL,
   classifyControl,
   isControlEmpty,
   isPageFieldVisible,
@@ -25,9 +26,17 @@ import {
 import { recordFillStep } from './fillTrace';
 
 /** 每一格已经用掉的尝试次数，分区重读和第一次写入共用这三遍。 */
-const attemptCountByElement = new WeakMap<HTMLElement, number>();
+let attemptCountByElement = new WeakMap<HTMLElement, number>();
 
 const MAX_ATTEMPTS = 3;
+
+/**
+ * 新一轮 applyFillPlan 开始时清空尝试计数。
+ * WeakMap 无 clear：换成新表，避免同页二次写入因累计满 3 次直接秒失败。
+ */
+export function resetFieldAttemptCounts(): void {
+  attemptCountByElement = new WeakMap<HTMLElement, number>();
+}
 
 /**
  * 短等待，给页面把选中状态画出来。
@@ -105,6 +114,55 @@ function clickBlankArea(current: HTMLElement): void {
 }
 
 /**
+ * 快路径声明的 widget 映射到控件分类；无声明则返回 null，交给 classifyControl。
+ */
+function controlKindFromWidgetHint(
+  widgetHint: 'text' | 'select' | 'date' | 'rangeDate' | undefined,
+): string | null {
+  if (widgetHint === 'text') {
+    return CONTROL.text;
+  }
+  if (widgetHint === 'select') {
+    return CONTROL.optionWidget;
+  }
+  if (widgetHint === 'date' || widgetHint === 'rangeDate') {
+    return CONTROL.dateInput;
+  }
+  return null;
+}
+
+/**
+ * P4：下拉/日期走完整等待；纯文本缩短格内等待，不砍正确性换秒数。
+ * A+B：快路径 widgetHint=text 时强制短等待；select/date 强制完整等待。
+ */
+function settleMsForControl(
+  element: HTMLElement,
+  label: string,
+  widgetHint?: 'text' | 'select' | 'date' | 'rangeDate',
+): {
+  afterWrite: number;
+  afterOption: number;
+  afterBlank: number;
+} {
+  if (widgetHint === 'text') {
+    return { afterWrite: 50, afterOption: 70, afterBlank: 80 };
+  }
+  if (widgetHint === 'select' || widgetHint === 'date' || widgetHint === 'rangeDate') {
+    return { afterWrite: 160, afterOption: 180, afterBlank: 220 };
+  }
+  const controlKind = classifyControl(element);
+  const heavyByType =
+    controlKind === CONTROL.optionWidget
+    || controlKind === CONTROL.nativeSelect
+    || controlKind === CONTROL.dateInput;
+  const heavyByLabel = /日期|时间|起止|学历|下拉|选择/.test(label);
+  if (heavyByType || heavyByLabel) {
+    return { afterWrite: 160, afterOption: 180, afterBlank: 220 };
+  }
+  return { afterWrite: 50, afterOption: 70, afterBlank: 80 };
+}
+
+/**
  * 写一次、对字、把还开着的列表选完、点空白、再读一次。
  * 返回是否这遍已经确认留住。
  */
@@ -114,6 +172,7 @@ async function attemptOnce(
   intended: string,
   _nextLabel: HTMLElement | null,
   attemptIndex: number,
+  widgetHint?: 'text' | 'select' | 'date' | 'rangeDate',
 ): Promise<boolean> {
   setPlainTextWriteMethod(attemptIndex);
   setWidgetAttemptIndex(attemptIndex);
@@ -122,16 +181,19 @@ async function attemptOnce(
     recordFillStep(label, '写入前关窗', '弹层还在', `第${attemptIndex + 1}遍，不再点开`);
     return false;
   }
+  const settleMs = settleMsForControl(element, label, widgetHint);
   const beforeText = readControlText(element);
+  const controlKind =
+    controlKindFromWidgetHint(widgetHint) || classifyControl(element);
   const writeResult = await writeField(
     {
       el: element,
       blob: label,
-      control: classifyControl(element),
+      control: controlKind,
     },
     intended,
   );
-  await wait(160);
+  await wait(settleMs.afterWrite);
   recordFillStep(
     label,
     '写入后',
@@ -140,7 +202,7 @@ async function attemptOnce(
   );
   if (!fieldStays(element, label, intended)) {
     await clickMatchingOpenOption(intended, label, element);
-    await wait(180);
+    await wait(settleMs.afterOption);
   }
   if (!fieldStays(element, label, intended)) {
     await ensurePanelsClosed(element);
@@ -149,7 +211,7 @@ async function attemptOnce(
   const openTexts = await collectOpenChoiceTexts(element);
   if (openTexts.length > 0) {
     await clickMatchingOpenOption(intended, label, element);
-    await wait(180);
+    await wait(settleMs.afterOption);
     if (!fieldStays(element, label, intended)) {
       await ensurePanelsClosed(element);
       return false;
@@ -166,7 +228,7 @@ async function attemptOnce(
     return false;
   }
   clickBlankArea(element);
-  await wait(220);
+  await wait(settleMs.afterBlank);
   if (!fieldStays(element, label, intended)) {
     recordFillStep(label, '点空白后再读', '内容消失', readControlText(element) || '空');
     return false;
@@ -180,13 +242,24 @@ async function attemptOnce(
 }
 
 /**
- * 把一个空填到确认留住为止。三遍用完仍不对就失败。
+ * 快路径写入选项：缩短尝试次数；可带 widget 声明驱动收尾策略。
+ */
+export interface CommitFieldOptions {
+  /** 本格最多尝试次数；缺省用 MAX_ATTEMPTS */
+  maxAttempts?: number;
+  /** 快路径声明的控件策略；影响等待与 writeField 的 control 分类 */
+  widgetHint?: 'text' | 'select' | 'date' | 'rangeDate';
+}
+
+/**
+ * 把一个空填到确认留住为止。默认三遍；快路径可传入更少次数与 widgetHint。
  */
 export async function commitFieldValue(
   element: HTMLElement,
   label: string,
   intended: string,
   nextLabel: HTMLElement | null = null,
+  options?: CommitFieldOptions,
 ): Promise<{ ok: boolean; reason: string }> {
   const text = intended.trim();
   if (!text) {
@@ -203,19 +276,30 @@ export async function commitFieldValue(
     recordFillStep(label, '开始前关窗', '弹层关不掉', '这一格没有再点开');
     return { ok: false, reason: '已有弹层关不掉，不再点开下一个' };
   }
+  const attemptLimit = Math.max(1, options?.maxAttempts ?? MAX_ATTEMPTS);
   let lastReason = '未确认填入';
-  while ((attemptCountByElement.get(element) ?? 0) < MAX_ATTEMPTS) {
+  while ((attemptCountByElement.get(element) ?? 0) < attemptLimit) {
     if (shouldFillStop()) {
       return { ok: false, reason: '已停止' };
     }
     const attemptIndex = attemptCountByElement.get(element) ?? 0;
     attemptCountByElement.set(element, attemptIndex + 1);
     try {
-      const stayed = await attemptOnce(element, label, text, nextLabel, attemptIndex);
+      const stayed = await attemptOnce(
+        element,
+        label,
+        text,
+        nextLabel,
+        attemptIndex,
+        options?.widgetHint,
+      );
       if (stayed) {
         return { ok: true, reason: '' };
       }
-      lastReason = attemptIndex >= 2 ? '三遍后仍未留住或未选中选项' : '点空白后内容消失或未选中选项';
+      lastReason =
+        attemptIndex >= attemptLimit - 1
+          ? `${attemptLimit}遍后仍未留住或未选中选项`
+          : '点空白后内容消失或未选中选项';
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : '写入异常';
       lastReason = /Illegal invocation/i.test(detail) ? '控件类型不匹配，已跳过本格' : detail.slice(0, 60);
@@ -274,12 +358,49 @@ export async function commitUnmappedChoice(
   return commitFieldValue(element, label, picked);
 }
 
+/** 与 dom.AUTOFILL_MISS_CLASS 同值，避免分区重读硬编码分叉 */
+const AUTOFILL_MISS_CLASS_NAME = 'raf-autofill-missed';
+
 /**
- * 同一分区写完后重读。框被后面的操作清掉、且这格还有剩余次数时，再补一遍。
+ * miss 表按标签去重，避免「写入失败」与「分区重读」各记一条。
+ */
+function pushMissUnique(misses: FillMiss[], label: string, reason: string): void {
+  if (misses.some((item) => item.label === label)) {
+    return;
+  }
+  misses.push({ label, reason });
+}
+
+/**
+ * 分区重读时的单格快照：带上是否走了快路径，便于按格决定是否跳过补写。
+ */
+export interface RescanCommittedItem {
+  element: HTMLElement;
+  label: string;
+  value: string;
+  /** 本格定位是否走了快路径；仅当站点 skipRescan 且本格为真时才跳过补写 */
+  usedFastPath?: boolean;
+}
+
+/**
+ * 分区重读选项：站点可开 skipRescan，但只对 usedFastPath 的格跳过补写。
+ */
+export interface RescanCommittedOptions {
+  /**
+   * true=对「本格 usedFastPath」只核对不重写；慢路径格仍补写。
+   * 禁止用全局 fastHitCount 一刀切，避免混合路径误伤。
+   */
+  skipRewriteForFastCells?: boolean;
+}
+
+/**
+ * 同一分区写完后重读。框被后面的操作清掉时，慢路径格再补一遍。
+ * 仅「站点 skipRescan 且本格快路径」跳过补写。
  */
 export async function rescanCommittedFields(
-  items: Array<{ element: HTMLElement; label: string; value: string }>,
+  items: RescanCommittedItem[],
   misses: FillMiss[],
+  options?: RescanCommittedOptions,
 ): Promise<number> {
   let stayedCount = 0;
   for (const item of items) {
@@ -288,17 +409,24 @@ export async function rescanCommittedFields(
     }
     if (fieldStays(item.element, item.label, item.value)) {
       stayedCount += 1;
-      item.element.classList.remove('raf-autofill-missed');
+      item.element.classList.remove(AUTOFILL_MISS_CLASS_NAME);
+      continue;
+    }
+    const skipThisCell =
+      Boolean(options?.skipRewriteForFastCells) && Boolean(item.usedFastPath);
+    if (skipThisCell) {
+      pushMissUnique(misses, item.label, '快路径核对未留住');
+      item.element.classList.add(AUTOFILL_MISS_CLASS_NAME);
       continue;
     }
     const again = await commitFieldValue(item.element, item.label, item.value);
     if (again.ok) {
       stayedCount += 1;
-      item.element.classList.remove('raf-autofill-missed');
+      item.element.classList.remove(AUTOFILL_MISS_CLASS_NAME);
       continue;
     }
-    misses.push({ label: item.label, reason: again.reason || '分区重读后内容不对' });
-    item.element.classList.add('raf-autofill-missed');
+    pushMissUnique(misses, item.label, again.reason || '分区重读后内容不对');
+    item.element.classList.add(AUTOFILL_MISS_CLASS_NAME);
   }
   return stayedCount;
 }
